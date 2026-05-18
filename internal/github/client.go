@@ -111,6 +111,7 @@ type WorkflowJobEvent struct {
 
 type WorkflowJob struct {
 	ID         int64  `json:"id"`
+	Name       string `json:"name"`
 	Status     string `json:"status"`
 	RunnerName string `json:"runner_name"`
 	Labels     Labels `json:"labels"`

@@ -3,7 +3,9 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestCreateRequestIsIdempotent(t *testing.T) {
@@ -42,5 +44,42 @@ func TestListStatesReturnsCorruptJSONError(t *testing.T) {
 	}
 	if _, err := store.ListStates(); err == nil {
 		t.Fatal("expected corrupt json error")
+	}
+}
+
+func TestWriteStateUsesUniqueTempFiles(t *testing.T) {
+	store := New(t.TempDir())
+	_, st, err := store.CreateRequest(RunnerRequest{
+		ID:         "123",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-123",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			next := st
+			next.Status = StatusRunning
+			next.ProcessPID = uint32(i + 1)
+			next.CreatedAt = time.Now().UTC()
+			errs <- store.WriteState(next)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.ReadState("123"); err != nil {
+		t.Fatal(err)
 	}
 }

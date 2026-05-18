@@ -67,6 +67,16 @@ func TestManualCreateAndDeleteRunner(t *testing.T) {
 	if fake.stopped != 1 {
 		t.Fatalf("expected one sandbox stop, got %d", fake.stopped)
 	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/runners/manual-1", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("unexpected second delete status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.stopped != 1 {
+		t.Fatalf("expected second delete to be idempotent, got %d stops", fake.stopped)
+	}
 }
 
 func TestWebhookQueuedIsIdempotent(t *testing.T) {
@@ -95,6 +105,149 @@ func TestWebhookQueuedIsIdempotent(t *testing.T) {
 	waitForState(t, store, "1001", state.StatusRunning)
 	if fake.started != 1 {
 		t.Fatalf("expected one sandbox start, got %d", fake.started)
+	}
+}
+
+func TestWebhookCompletedStopsActualRunnerAndRecordsJob(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"token":"runner-token","expires_at":"2026-05-18T10:00:00Z"}`))
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	fake := &fakeSandbox{}
+	srv := newTestServer(store, ghServer.URL, fake)
+
+	queued := []byte(`{"action":"queued","workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(queued))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", sign("secret", queued))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("unexpected queued status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForState(t, store, "1001", state.StatusRunning)
+
+	completed := []byte(`{"action":"completed","workflow_job":{"id":2002,"name":"staticcheck","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}}`)
+	req = httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(completed))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", sign("secret", completed))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("unexpected completed status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	st, err := store.ReadState("1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != state.StatusStopped {
+		t.Fatalf("expected stopped state, got %s", st.Status)
+	}
+	if st.AssignedJobID != 2002 || st.AssignedJobName != "staticcheck" {
+		t.Fatalf("expected assigned job to be recorded, got id=%d name=%q", st.AssignedJobID, st.AssignedJobName)
+	}
+	if fake.stopped != 1 {
+		t.Fatalf("expected one sandbox stop, got %d", fake.stopped)
+	}
+}
+
+func TestWebhookCompletedIsIdempotent(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"token":"runner-token","expires_at":"2026-05-18T10:00:00Z"}`))
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	fake := &fakeSandbox{}
+	srv := newTestServer(store, ghServer.URL, fake)
+
+	queued := []byte(`{"action":"queued","workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(queued))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", sign("secret", queued))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("unexpected queued status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForState(t, store, "1001", state.StatusRunning)
+
+	completed := []byte(`{"action":"completed","workflow_job":{"id":2002,"name":"staticcheck","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}}`)
+	for i := 0; i < 2; i++ {
+		req = httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(completed))
+		req.Header.Set("X-GitHub-Event", "workflow_job")
+		req.Header.Set("X-Hub-Signature-256", sign("secret", completed))
+		rec = httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("unexpected completed status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+
+	st, err := store.ReadState("1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != state.StatusStopped {
+		t.Fatalf("expected stopped state, got %s", st.Status)
+	}
+	if st.AssignedJobID != 2002 || st.AssignedJobName != "staticcheck" {
+		t.Fatalf("expected assigned job to be recorded, got id=%d name=%q", st.AssignedJobID, st.AssignedJobName)
+	}
+	if fake.stopped != 1 {
+		t.Fatalf("expected duplicate completed event to stop once, got %d", fake.stopped)
+	}
+}
+
+func TestWebhookCompletedWithoutManagedRunnerDoesNotStopByJobID(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"token":"runner-token","expires_at":"2026-05-18T10:00:00Z"}`))
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	fake := &fakeSandbox{}
+	srv := newTestServer(store, ghServer.URL, fake)
+
+	queued := []byte(`{"action":"queued","workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(queued))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", sign("secret", queued))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("unexpected queued status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForState(t, store, "1001", state.StatusRunning)
+
+	completed := []byte(`{"action":"completed","workflow_job":{"id":1001,"name":"staticcheck","runner_name":"","labels":["self-hosted","e2b"]}}`)
+	req = httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(completed))
+	req.Header.Set("X-GitHub-Event", "workflow_job")
+	req.Header.Set("X-Hub-Signature-256", sign("secret", completed))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("unexpected completed status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	st, err := store.ReadState("1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Status != state.StatusRunning {
+		t.Fatalf("expected running state, got %s", st.Status)
+	}
+	if fake.stopped != 0 {
+		t.Fatalf("expected no sandbox stop, got %d", fake.stopped)
 	}
 }
 

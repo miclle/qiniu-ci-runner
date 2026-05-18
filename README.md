@@ -25,7 +25,7 @@ Optional environment variables:
 - `RUNNER_LABELS` defaults to `self-hosted,e2b`
 - `RUNNER_SCOPE` defaults to `repo`
 - `SANDBOX_TIMEOUT_SECONDS` defaults to `3600`
-- `MAX_CONCURRENT_RUNNERS` defaults to `1`
+- `MAX_CONCURRENT_RUNNERS` defaults to `100`
 - `GITHUB_API_BASE_URL`
 
 ## Run

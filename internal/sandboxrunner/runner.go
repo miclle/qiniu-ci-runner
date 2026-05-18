@@ -79,7 +79,8 @@ func (s *E2BService) StartRunner(ctx context.Context, input StartInput) (StartRe
 		return StartResult{}, fmt.Errorf("write runner script: %w", err)
 	}
 	cmd := "chmod +x /tmp/start-github-runner.sh && /tmp/start-github-runner.sh"
-	handle, err := sb.Commands().Start(ctx, cmd,
+	handle, err := sb.Commands().Start(
+		ctx, cmd,
 		qnsandbox.WithTag("github-runner"),
 		qnsandbox.WithOnStdout(input.OnStdout),
 		qnsandbox.WithOnStderr(input.OnStderr),

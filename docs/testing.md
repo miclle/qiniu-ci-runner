@@ -34,7 +34,7 @@ export HTTP_ADDR=":8080"
 export STATE_DIR="./var/runners"
 export RUNNER_LABELS="self-hosted,e2b"
 export SANDBOX_TIMEOUT_SECONDS="3600"
-export MAX_CONCURRENT_RUNNERS="1"
+export MAX_CONCURRENT_RUNNERS="100"
 ```
 
 ## 2. GitHub Token 权限

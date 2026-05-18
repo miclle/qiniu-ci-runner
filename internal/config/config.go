@@ -43,7 +43,7 @@ func Load() (Config, error) {
 		SandboxTemplateID:    os.Getenv("SANDBOX_TEMPLATE_ID"),
 		RunnerLabels:         splitLabels(env("RUNNER_LABELS", "self-hosted,e2b")),
 		SandboxTimeout:       time.Duration(envInt("SANDBOX_TIMEOUT_SECONDS", 3600)) * time.Second,
-		MaxConcurrentRunners: envInt("MAX_CONCURRENT_RUNNERS", 1),
+		MaxConcurrentRunners: envInt("MAX_CONCURRENT_RUNNERS", 100),
 		GitHubAPIBaseURL:     env("GITHUB_API_BASE_URL", "https://api.github.com"),
 	}
 	var missing []string

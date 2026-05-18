@@ -30,15 +30,17 @@ type RunnerRequest struct {
 }
 
 type RunnerState struct {
-	ID         string    `json:"id"`
-	Status     string    `json:"status"`
-	RunnerName string    `json:"runner_name"`
-	SandboxID  string    `json:"sandbox_id,omitempty"`
-	ProcessPID uint32    `json:"process_pid,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	CreatedAt  time.Time `json:"created_at"`
-	StoppedAt  time.Time `json:"stopped_at,omitempty"`
+	ID              string    `json:"id"`
+	Status          string    `json:"status"`
+	RunnerName      string    `json:"runner_name"`
+	SandboxID       string    `json:"sandbox_id,omitempty"`
+	ProcessPID      uint32    `json:"process_pid,omitempty"`
+	AssignedJobID   int64     `json:"assigned_job_id,omitempty"`
+	AssignedJobName string    `json:"assigned_job_name,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	CreatedAt       time.Time `json:"created_at"`
+	StoppedAt       time.Time `json:"stopped_at,omitempty"`
 }
 
 type Store struct {
@@ -179,11 +181,24 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func readJSON(path string, v any) error {
