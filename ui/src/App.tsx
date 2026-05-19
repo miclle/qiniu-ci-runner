@@ -38,7 +38,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Toaster } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 
-type RunnerStatus = "queued" | "creating" | "running" | "stopping" | "stopped" | "failed"
+type RunnerStatus = "queued" | "creating" | "running" | "stopping" | "completed" | "failed"
 
 type RunnerState = {
   id: string
@@ -51,7 +51,7 @@ type RunnerState = {
   error?: string
   updated_at: string
   created_at: string
-  stopped_at?: string
+  completed_at?: string
 }
 
 type Metric = {
@@ -93,7 +93,7 @@ function App() {
       },
       { label: "Running", value: count("running"), description: "attached to GitHub" },
       { label: "Failed", value: count("failed"), description: "needs inspection" },
-      { label: "Stopped", value: count("stopped"), description: "cleaned or recovered" },
+      { label: "Completed", value: count("completed"), description: "cleaned or recovered" },
     ]
   }, [runners])
 
@@ -229,7 +229,7 @@ function App() {
         method: "DELETE",
       })) as RunnerState
       setSelectedID(runner.id)
-      toast.success(`Runner ${runner.id} stopped`)
+      toast.success(`Runner ${runner.id} completed`)
       await loadRunners()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to stop runner")
@@ -425,7 +425,7 @@ function App() {
                     />
                     <Detail label="Created" value={formatTime(selected.created_at)} />
                     <Detail label="Updated" value={formatTime(selected.updated_at)} />
-                    <Detail label="Stopped" value={formatTime(selected.stopped_at)} />
+                    <Detail label="Completed" value={formatTime(selected.completed_at)} />
                     <Detail label="Error" value={selected.error || "-"} />
                   </div>
                   <Tabs
@@ -475,11 +475,11 @@ function StatusBadge({ status }: { status: RunnerStatus }) {
       </Badge>
     )
   }
-  if (status === "stopped") {
+  if (status === "completed") {
     return (
       <Badge variant="outline">
         <Square />
-        stopped
+        completed
       </Badge>
     )
   }

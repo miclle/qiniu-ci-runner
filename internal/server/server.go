@@ -27,7 +27,7 @@ import (
 
 type Server struct {
 	cfg     config.Config
-	store   *state.Store
+	store   state.Store
 	gh      *github.Client
 	sandbox sandboxrunner.Service
 	logger  *slog.Logger
@@ -46,7 +46,7 @@ type manualCreateRequest struct {
 //go:embed admin/*
 var adminAssets embed.FS
 
-func New(cfg config.Config, store *state.Store, gh *github.Client, sandbox sandboxrunner.Service, logger *slog.Logger) *Server {
+func New(cfg config.Config, store state.Store, gh *github.Client, sandbox sandboxrunner.Service, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -305,7 +305,7 @@ func (s *Server) startRunner(ctx context.Context, id string) {
 		s.logger.Error("read runner state", "id", id, "error", err)
 		return
 	}
-	if st.Status == state.StatusStopped || st.Status == state.StatusStopping {
+	if st.Status == state.StatusCompleted || st.Status == state.StatusStopping {
 		unlock()
 		s.logger.Info("runner start skipped because request is stopped", "id", id, "status", st.Status)
 		s.store.AppendLog(id, "control.log", []byte("runner start skipped because request is stopped\n"))
@@ -359,7 +359,7 @@ func (s *Server) startRunner(ctx context.Context, id string) {
 		s.cleanupStartedSandbox(id, result)
 		return
 	}
-	if current.Status == state.StatusFailed || current.Status == state.StatusStopped || current.Status == state.StatusStopping {
+	if current.Status == state.StatusFailed || current.Status == state.StatusCompleted || current.Status == state.StatusStopping {
 		unlock()
 		s.logger.Info("runner exited before running update", "id", id, "status", current.Status)
 		s.cleanupStartedSandbox(id, result)
@@ -389,7 +389,7 @@ func (s *Server) failState(id string, st state.RunnerState, err error) {
 
 	current, readErr := s.store.ReadState(id)
 	if readErr == nil {
-		if current.Status == state.StatusStopped || current.Status == state.StatusStopping {
+		if current.Status == state.StatusCompleted || current.Status == state.StatusStopping {
 			s.logger.Info("runner failure ignored because request is stopped", "id", id, "status", current.Status, "error", err)
 			return
 		}
@@ -413,7 +413,7 @@ func (s *Server) runnerExited(id string, result sandboxrunner.ExitResult, err er
 		s.logger.Error("read state after runner exit", "id", id, "error", readErr)
 		return
 	}
-	if st.Status == state.StatusStopped || st.Status == state.StatusStopping {
+	if st.Status == state.StatusCompleted || st.Status == state.StatusStopping {
 		return
 	}
 	if err != nil {
@@ -440,8 +440,8 @@ func (s *Server) runnerExited(id string, result sandboxrunner.ExitResult, err er
 		st.Status = state.StatusFailed
 		st.Error = "cleanup sandbox after runner exit: " + cleanupErr.Error()
 	} else if st.Status != state.StatusFailed {
-		st.Status = state.StatusStopped
-		st.StoppedAt = time.Now().UTC()
+		st.Status = state.StatusCompleted
+		st.CompletedAt = time.Now().UTC()
 	}
 	s.writeStateOrLog(id, st, "write exited state")
 }
@@ -490,13 +490,13 @@ func (s *Server) recoverRunner(ctx context.Context, id string) error {
 			}
 		}
 	}
-	st.Status = state.StatusStopped
-	st.StoppedAt = time.Now().UTC()
+	st.Status = state.StatusCompleted
+	st.CompletedAt = time.Now().UTC()
 	st.Error = ""
 	if err := s.store.WriteState(st); err != nil {
 		return err
 	}
-	s.store.AppendLog(id, "control.log", []byte("runner marked stopped during recovery\n"))
+	s.store.AppendLog(id, "control.log", []byte("runner marked completed during recovery\n"))
 	return nil
 }
 
@@ -517,7 +517,7 @@ func (s *Server) stopRunner(ctx context.Context, id string, job github.WorkflowJ
 	if err != nil {
 		return state.RunnerState{}, err
 	}
-	if st.Status == state.StatusStopped {
+	if st.Status == state.StatusCompleted {
 		if shouldRecordAssignedJob(st, job) {
 			st.AssignedJobID = job.ID
 			st.AssignedJobName = job.Name
@@ -535,6 +535,7 @@ func (s *Server) stopRunner(ctx context.Context, id string, job github.WorkflowJ
 	if err := s.store.WriteState(st); err != nil {
 		return state.RunnerState{}, fmt.Errorf("write stopping state: %w", err)
 	}
+	st.Version++
 	if st.SandboxID != "" {
 		if err := s.stopSandboxWithTimeout(ctx, st.SandboxID, st.ProcessPID); err != nil {
 			if isSandboxGone(err) {
@@ -550,8 +551,8 @@ func (s *Server) stopRunner(ctx context.Context, id string, job github.WorkflowJ
 			}
 		}
 	}
-	st.Status = state.StatusStopped
-	st.StoppedAt = time.Now().UTC()
+	st.Status = state.StatusCompleted
+	st.CompletedAt = time.Now().UTC()
 	st.Error = ""
 	if err := s.store.WriteState(st); err != nil {
 		return state.RunnerState{}, err

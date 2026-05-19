@@ -22,7 +22,7 @@ Runner scope:
 Optional environment variables:
 
 - `HTTP_ADDR` defaults to `:25500`
-- `STATE_DIR` defaults to `./var/runners`
+- `STATE_DIR` defaults to `./var/runners` and stores the SQLite state database (`runnerd.db`)
 - `RUNNER_LABELS` defaults to `self-hosted,e2b`
 - `RUNNER_SCOPE` defaults to `repo`
 - `SANDBOX_TIMEOUT_SECONDS` defaults to `3600`
@@ -37,6 +37,8 @@ Optional environment variables:
 - `GITHUB_API_BASE_URL`
 
 `/webhooks/github` uses GitHub HMAC signature verification. The manual management API under `/runners` requires `Authorization: Bearer $ADMIN_TOKEN`.
+
+Runner state is persisted in a DB-backed store under `STATE_DIR` instead of per-request JSON directories. Control/stdout/stderr logs are kept as runner events and remain available from the admin API and UI.
 
 ## Run
 

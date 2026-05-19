@@ -106,15 +106,21 @@ curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" http://127.0.0.1:25500/runne
 curl -fsS -X DELETE -H "authorization: Bearer ${ADMIN_TOKEN}" http://127.0.0.1:25500/runners/manual-001 | jq
 ```
 
-状态文件会写到：
+状态库默认会写到：
 
 ```text
-var/runners/<request_id>/
-  request.json
-  state.json
-  control.log
-  stdout.log
-  stderr.log
+var/runners/runnerd.db
+```
+
+runner 的 control/stdout/stderr 日志存放在 DB-backed event store 里，仍然通过管理 API 读取：
+
+```bash
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/manual-001/logs/control.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/manual-001/logs/stdout.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/manual-001/logs/stderr.log
 ```
 
 ## 4. 暴露 Webhook 地址
@@ -185,7 +191,7 @@ jobs:
 触发 `workflow_dispatch` 后预期流程：
 
 1. GitHub 创建一个 `workflow_job.queued` webhook。
-2. 本服务校验签名并创建 `var/runners/<workflow_job.id>/`。
+2. 本服务校验签名并在状态库里写入一条 `queued` runner request。
 3. 服务创建 sandbox，获取 GitHub registration token，并在 sandbox 内启动 ephemeral runner。
 4. GitHub job 被 `self-hosted,e2b` runner 接走执行。
 5. runner 进程退出后，服务清理对应 sandbox。
@@ -198,19 +204,23 @@ jobs:
 curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" http://127.0.0.1:25500/runners | jq
 ```
 
-再看请求目录：
+再看 request 状态和日志：
 
 ```bash
-cat var/runners/<request_id>/state.json
-cat var/runners/<request_id>/control.log
-cat var/runners/<request_id>/stdout.log
-cat var/runners/<request_id>/stderr.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id> | jq
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id>/logs/control.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id>/logs/stdout.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id>/logs/stderr.log
 ```
 
 常见问题：
 
 - `invalid signature`：GitHub webhook secret 和 `GITHUB_WEBHOOK_SECRET` 不一致。
-- `runner concurrency limit reached`：活跃状态目录数量达到 `MAX_CONCURRENT_RUNNERS`。
+- `runner concurrency limit reached`：活跃 request 数量达到 `MAX_CONCURRENT_RUNNERS`。
 - GitHub job 一直 queued：workflow 的 `runs-on` labels 必须包含 `self-hosted` 和 `e2b`。
 - sandbox 创建失败：确认 `E2B_API_KEY`、`E2B_API_URL`、`E2B_DOMAIN` 是否匹配本地环境。
 - registration token 失败：确认 `GITHUB_TOKEN` 对目标仓库有 `Administration: Read and write` 权限。
@@ -235,13 +245,17 @@ Repository -> Actions -> 选择 workflow run -> 选择 job
 - runner 下载、`config.sh` 注册、`run.sh` 启动前的错误。
 - webhook 校验失败、GitHub token 申请失败、sandbox API 调用失败。
 
-这些控制面日志看本服务本地：
+这些控制面日志看本服务管理 API：
 
 ```bash
-cat var/runners/<request_id>/state.json
-cat var/runners/<request_id>/control.log
-cat var/runners/<request_id>/stdout.log
-cat var/runners/<request_id>/stderr.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id> | jq
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id>/logs/control.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id>/logs/stdout.log
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" \
+  http://127.0.0.1:25500/runners/<request_id>/logs/stderr.log
 ```
 
 服务自身日志会输出到启动 `go run ./cmd/runnerd` 的终端。

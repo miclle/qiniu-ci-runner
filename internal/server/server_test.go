@@ -255,8 +255,8 @@ func TestWebhookCompletedStopsActualRunnerAndRecordsJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Status != state.StatusStopped {
-		t.Fatalf("expected stopped state, got %s", st.Status)
+	if st.Status != state.StatusCompleted {
+		t.Fatalf("expected completed state, got %s", st.Status)
 	}
 	if st.AssignedJobID != 2002 || st.AssignedJobName != "staticcheck" {
 		t.Fatalf("expected assigned job to be recorded, got id=%d name=%q", st.AssignedJobID, st.AssignedJobName)
@@ -305,8 +305,8 @@ func TestWebhookCompletedIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Status != state.StatusStopped {
-		t.Fatalf("expected stopped state, got %s", st.Status)
+	if st.Status != state.StatusCompleted {
+		t.Fatalf("expected completed state, got %s", st.Status)
 	}
 	if st.AssignedJobID != 2002 || st.AssignedJobName != "staticcheck" {
 		t.Fatalf("expected assigned job to be recorded, got id=%d name=%q", st.AssignedJobID, st.AssignedJobName)
@@ -398,8 +398,8 @@ func TestStopDuringCreateCleansStartedSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Status != state.StatusStopped {
-		t.Fatalf("expected stopped state, got %s", st.Status)
+	if st.Status != state.StatusCompleted {
+		t.Fatalf("expected completed state, got %s", st.Status)
 	}
 }
 
@@ -429,8 +429,8 @@ func TestRecoverStopsActiveRunnerState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != state.StatusStopped {
-		t.Fatalf("expected recovered state to be stopped, got %s", got.Status)
+	if got.Status != state.StatusCompleted {
+		t.Fatalf("expected recovered state to be completed, got %s", got.Status)
 	}
 	if fake.stoppedCount() != 1 {
 		t.Fatalf("expected recovery to stop sandbox once, got %d", fake.stoppedCount())
@@ -465,11 +465,11 @@ func TestConcurrencyLimitAppliesBeforeCreate(t *testing.T) {
 	}
 }
 
-func newTestServer(store *state.Store, ghURL string, fake *fakeSandbox) *Server {
+func newTestServer(store state.Store, ghURL string, fake *fakeSandbox) *Server {
 	return newTestServerWithLimit(store, ghURL, fake, 10)
 }
 
-func newTestServerWithLimit(store *state.Store, ghURL string, fake *fakeSandbox, limit int) *Server {
+func newTestServerWithLimit(store state.Store, ghURL string, fake *fakeSandbox, limit int) *Server {
 	cfg := config.Config{
 		StateDir:             "./var/runners",
 		AdminToken:           "admin-token",
@@ -495,7 +495,7 @@ func adminRequest(method, target string, body io.Reader) *http.Request {
 	return req
 }
 
-func waitForState(t *testing.T, store *state.Store, id, want string) {
+func waitForState(t *testing.T, store state.Store, id, want string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

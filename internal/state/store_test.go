@@ -1,9 +1,7 @@
 package state
 
 import (
-	"os"
-	"path/filepath"
-	"sync"
+	"errors"
 	"testing"
 	"time"
 )
@@ -24,68 +22,14 @@ func TestCreateRequestIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if created {
-		t.Fatal("expected duplicate request to reuse existing directory")
+		t.Fatal("expected duplicate request to reuse existing row")
 	}
 	if st.ID != "123" {
 		t.Fatalf("unexpected state id: %q", st.ID)
 	}
-	if _, err := os.Stat(filepath.Join(store.RequestDir("123"), "github_payload.json")); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestListStatesReturnsCorruptJSONError(t *testing.T) {
-	store := New(t.TempDir())
-	if err := os.MkdirAll(store.RequestDir("bad"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(store.RequestDir("bad"), "state.json"), []byte("{"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.ListStates(); err == nil {
-		t.Fatal("expected corrupt json error")
-	}
-}
-
-func TestCreateRequestRepairsMissingStateInExistingDirectory(t *testing.T) {
-	store := New(t.TempDir())
-	dir := store.RequestDir("partial")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "request.json"), []byte(`{"id":"partial","source":"test","labels":["self-hosted"],"runner_name":"e2b-partial","created_at":"2026-05-18T10:00:00Z"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	created, st, err := store.CreateRequest(RunnerRequest{ID: "partial", Source: "test", Labels: []string{"self-hosted"}, RunnerName: "e2b-partial"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created {
-		t.Fatal("expected existing partial directory to be repaired, not created")
-	}
-	if st.Status != StatusQueued || st.ID != "partial" {
-		t.Fatalf("unexpected repaired state: %#v", st)
-	}
-	if _, err := store.ReadState("partial"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestListStatesSkipsAtomicCreateTempDirectories(t *testing.T) {
-	store := New(t.TempDir())
-	if err := os.MkdirAll(filepath.Join(store.dir, ".123.tmp"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	states, err := store.ListStates()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(states) != 0 {
-		t.Fatalf("expected temp directories to be ignored, got %d states", len(states))
-	}
-}
-
-func TestWriteStateUsesUniqueTempFiles(t *testing.T) {
+func TestWriteStateUsesVersionCAS(t *testing.T) {
 	store := New(t.TempDir())
 	_, st, err := store.CreateRequest(RunnerRequest{
 		ID:         "123",
@@ -97,28 +41,60 @@ func TestWriteStateUsesUniqueTempFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var wg sync.WaitGroup
-	errs := make(chan error, 20)
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			next := st
-			next.Status = StatusRunning
-			next.ProcessPID = uint32(i + 1)
-			next.CreatedAt = time.Now().UTC()
-			errs <- store.WriteState(next)
-		}(i)
+	st.Status = StatusRunning
+	st.ProcessPID = 42
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
+
+	st.Status = StatusFailed
+	err = store.WriteState(st)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected version conflict, got %v", err)
+	}
+}
+
+func TestListStatesAndActiveCount(t *testing.T) {
+	store := New(t.TempDir())
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID:         "active",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-active",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, st, err := store.CreateRequest(RunnerRequest{
+		ID:         "done",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-done",
+	}, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		st.Status = StatusCompleted
+		if err := store.WriteState(st); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.ReadState("123"); err != nil {
+
+	states, err := store.ListStates()
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("expected 2 states, got %d", len(states))
+	}
+	if states[0].ID != "done" {
+		t.Fatalf("expected newest state first, got %q", states[0].ID)
+	}
+	active, err := store.ActiveCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 {
+		t.Fatalf("expected 1 active runner, got %d", active)
 	}
 }
 
@@ -132,7 +108,8 @@ func TestReadLogCanReturnTail(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	store.AppendLog("123", "control.log", []byte("line-1\nline-2\n"))
+	store.AppendLog("123", "control.log", []byte("line-1\n"))
+	store.AppendLog("123", "control.log", []byte("line-2\n"))
 	data, err := store.ReadLog("123", "control.log", 7)
 	if err != nil {
 		t.Fatal(err)
