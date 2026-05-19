@@ -10,6 +10,7 @@
 export E2B_API_KEY="<e2b api key>"
 export E2B_API_URL="<e2b api url>"
 export E2B_DOMAIN="<e2b domain>"
+export ADMIN_TOKEN="<random admin token>"
 export GITHUB_TOKEN="<github token>"
 export GITHUB_WEBHOOK_SECRET="<random webhook secret>"
 export RUNNER_SCOPE="repo"
@@ -30,10 +31,17 @@ export GITHUB_ORG="<org name>"
 可选变量：
 
 ```bash
-export HTTP_ADDR=":8080"
+export HTTP_ADDR=":25500"
 export STATE_DIR="./var/runners"
 export RUNNER_LABELS="self-hosted,e2b"
 export SANDBOX_TIMEOUT_SECONDS="3600"
+export SANDBOX_API_TIMEOUT_SECONDS="60"
+export SANDBOX_CREATE_TIMEOUT_SECONDS="120"
+export SANDBOX_STOP_TIMEOUT_SECONDS="30"
+export RECOVERY_TIMEOUT_SECONDS="120"
+export HTTP_READ_TIMEOUT_SECONDS="15"
+export HTTP_WRITE_TIMEOUT_SECONDS="60"
+export HTTP_IDLE_TIMEOUT_SECONDS="120"
 export MAX_CONCURRENT_RUNNERS="100"
 ```
 
@@ -63,13 +71,24 @@ go run ./cmd/runnerd
 健康检查：
 
 ```bash
-curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:25500/healthz
 ```
+
+后台管理页面：
+
+```text
+http://127.0.0.1:25500/admin/
+```
+
+页面会要求输入 `ADMIN_TOKEN`，之后在浏览器 local storage 中保存 token，并对 `/runners` 管理接口自动携带 `Authorization: Bearer $ADMIN_TOKEN`。
+
+后台页面源码在 `ui/`，使用和 `kubevirt-console` 相同的 React、Vite、Tailwind CSS、shadcn 风格组件和主题 CSS。`task build` 会先执行 `task ui-build`，把前端产物写入 `internal/server/admin/` 后再编译 `runnerd`。
 
 手动创建一个 runner：
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:8080/runners \
+curl -fsS -X POST http://127.0.0.1:25500/runners \
+  -H "authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'content-type: application/json' \
   -d '{"id":"manual-001","labels":["self-hosted","e2b"]}' | jq
 ```
@@ -77,14 +96,14 @@ curl -fsS -X POST http://127.0.0.1:8080/runners \
 查看状态：
 
 ```bash
-curl -fsS http://127.0.0.1:8080/runners | jq
-curl -fsS http://127.0.0.1:8080/runners/manual-001 | jq
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" http://127.0.0.1:25500/runners | jq
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" http://127.0.0.1:25500/runners/manual-001 | jq
 ```
 
 停止 runner：
 
 ```bash
-curl -fsS -X DELETE http://127.0.0.1:8080/runners/manual-001 | jq
+curl -fsS -X DELETE -H "authorization: Bearer ${ADMIN_TOKEN}" http://127.0.0.1:25500/runners/manual-001 | jq
 ```
 
 状态文件会写到：
@@ -103,13 +122,15 @@ var/runners/<request_id>/
 GitHub webhook 必须能访问到本地服务。任选一种方式：
 
 ```bash
-ngrok http 8080
+ngrok http 25500
 ```
 
 或：
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8080
+cloudflared tunnel create e2b-local-runner
+cloudflared tunnel route dns e2b-local-runner runner.example.com
+cloudflared tunnel run --url http://127.0.0.1:25500 e2b-local-runner
 ```
 
 最终 webhook URL 形如：
@@ -117,6 +138,10 @@ cloudflared tunnel --url http://127.0.0.1:8080
 ```text
 https://<public-host>/webhooks/github
 ```
+
+这里的 `runner.example.com` 换成你自己的域名；不要把临时 quick tunnel 的随机 `trycloudflare.com` 地址写死到 GitHub 配置里。
+
+公网部署时只需要把 `/webhooks/github` 暴露给 GitHub。`/runners` 管理接口也可以在同一个服务上访问，但必须带 `Authorization: Bearer $ADMIN_TOKEN`；生产环境建议放在 HTTPS 反向代理后面，并限制管理接口来源 IP。
 
 ## 5. 配置 GitHub Repository Webhook
 
@@ -170,7 +195,7 @@ jobs:
 先看服务状态：
 
 ```bash
-curl -fsS http://127.0.0.1:8080/runners | jq
+curl -fsS -H "authorization: Bearer ${ADMIN_TOKEN}" http://127.0.0.1:25500/runners | jq
 ```
 
 再看请求目录：
