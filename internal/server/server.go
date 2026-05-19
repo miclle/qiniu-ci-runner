@@ -3,12 +3,17 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,13 +33,18 @@ type Server struct {
 	logger  *slog.Logger
 	mux     *http.ServeMux
 	slots   chan struct{}
-	locks   sync.Map
+
+	admissionMu sync.Mutex
+	locks       [64]sync.Mutex
 }
 
 type manualCreateRequest struct {
 	ID     string   `json:"id"`
 	Labels []string `json:"labels"`
 }
+
+//go:embed admin/*
+var adminAssets embed.FS
 
 func New(cfg config.Config, store *state.Store, gh *github.Client, sandbox sandboxrunner.Service, logger *slog.Logger) *Server {
 	if logger == nil {
@@ -49,13 +59,58 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
+func (s *Server) Recover(ctx context.Context) error {
+	states, err := s.store.ListStates()
+	if err != nil {
+		return err
+	}
+	for _, st := range states {
+		if !isActiveStatus(st.Status) {
+			continue
+		}
+		if err := s.recoverRunner(ctx, st.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /admin", s.handleAdminRedirect)
+	s.mux.HandleFunc("GET /admin/", s.handleAdmin)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("POST /webhooks/github", s.handleGitHubWebhook)
 	s.mux.HandleFunc("POST /runners", s.handleCreateRunner)
 	s.mux.HandleFunc("GET /runners", s.handleListRunners)
 	s.mux.HandleFunc("GET /runners/{id}", s.handleGetRunner)
+	s.mux.HandleFunc("GET /runners/{id}/logs/{name}", s.handleGetRunnerLog)
 	s.mux.HandleFunc("DELETE /runners/{id}", s.handleDeleteRunner)
+}
+
+func (s *Server) handleAdminRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/admin/", http.StatusMovedPermanently)
+}
+
+func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/admin/")
+	if name == "" {
+		name = "index.html"
+	}
+	name = path.Clean("/" + name)
+	if strings.HasPrefix(name, "/..") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := adminAssets.ReadFile("admin" + name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if contentType := mime.TypeByExtension(path.Ext(name)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +158,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stopID := strings.TrimPrefix(event.WorkflowJob.RunnerName, "e2b-")
-		s.stopIfExists(r.Context(), stopID, event.WorkflowJob)
+		s.stopIfExists(context.Background(), stopID, event.WorkflowJob)
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping"})
 	default:
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "ignored"})
@@ -111,6 +166,9 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateRunner(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
 	var input manualCreateRequest
 	if r.Body != nil {
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input)
@@ -133,6 +191,9 @@ func (s *Server) handleCreateRunner(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListRunners(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
 	states, err := s.store.ListStates()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -142,6 +203,9 @@ func (s *Server) handleListRunners(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetRunner(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
 	st, err := s.store.ReadState(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "runner not found")
@@ -150,9 +214,33 @@ func (s *Server) handleGetRunner(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+func (s *Server) handleGetRunnerLog(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	switch name {
+	case "control.log", "stdout.log", "stderr.log":
+	default:
+		writeError(w, http.StatusBadRequest, "unsupported log name")
+		return
+	}
+	data, err := s.store.ReadLog(r.PathValue("id"), name, 256<<10)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "log not found")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
+}
+
 func (s *Server) handleDeleteRunner(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
 	id := r.PathValue("id")
-	st, err := s.stopRunner(r.Context(), id, github.WorkflowJob{})
+	st, err := s.stopRunner(context.Background(), id, github.WorkflowJob{})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -161,21 +249,26 @@ func (s *Server) handleDeleteRunner(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createAndStart(w http.ResponseWriter, r *http.Request, req state.RunnerRequest, payload []byte) {
+	s.admissionMu.Lock()
 	if st, err := s.store.ReadState(req.ID); err == nil {
+		s.admissionMu.Unlock()
 		s.logger.Info("runner request already exists", "id", req.ID, "status", st.Status)
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
 	active, err := s.store.ActiveCount()
 	if err != nil {
+		s.admissionMu.Unlock()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if active >= s.cfg.MaxConcurrentRunners {
+		s.admissionMu.Unlock()
 		writeError(w, http.StatusTooManyRequests, "runner concurrency limit reached")
 		return
 	}
 	created, st, err := s.store.CreateRequest(req, payload)
+	s.admissionMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -199,26 +292,33 @@ func (s *Server) startRunnerWhenSlotAvailable(ctx context.Context, id string) {
 }
 
 func (s *Server) startRunner(ctx context.Context, id string) {
+	unlock := s.lockRunner(id)
 	req, err := s.store.ReadRequest(id)
 	if err != nil {
+		unlock()
 		s.logger.Error("read runner request", "id", id, "error", err)
 		return
 	}
 	st, err := s.store.ReadState(id)
 	if err != nil {
+		unlock()
 		s.logger.Error("read runner state", "id", id, "error", err)
 		return
 	}
 	if st.Status == state.StatusStopped || st.Status == state.StatusStopping {
+		unlock()
 		s.logger.Info("runner start skipped because request is stopped", "id", id, "status", st.Status)
 		s.store.AppendLog(id, "control.log", []byte("runner start skipped because request is stopped\n"))
 		return
 	}
 	st.Status = state.StatusCreating
 	if err := s.store.WriteState(st); err != nil {
+		unlock()
 		s.logger.Error("write creating state", "id", id, "error", err)
 		return
 	}
+	unlock()
+
 	s.logger.Info("creating github registration token", "id", id)
 	s.store.AppendLog(id, "control.log", []byte("creating github registration token\n"))
 	token, err := s.gh.CreateRegistrationToken(ctx)
@@ -229,7 +329,8 @@ func (s *Server) startRunner(ctx context.Context, id string) {
 	s.logger.Info("starting sandbox runner", "id", id, "runner_name", req.RunnerName)
 	s.store.AppendLog(id, "control.log", []byte("starting sandbox runner\n"))
 	exitCh := make(chan struct{})
-	result, err := s.sandbox.StartRunner(ctx, sandboxrunner.StartInput{
+	createCtx, cancel := context.WithTimeout(ctx, s.cfg.SandboxCreateTimeout)
+	result, err := s.sandbox.StartRunner(createCtx, sandboxrunner.StartInput{
 		RequestID:         req.ID,
 		RunnerName:        req.RunnerName,
 		RepositoryURL:     s.gh.RunnerURL(),
@@ -244,17 +345,24 @@ func (s *Server) startRunner(ctx context.Context, id string) {
 			s.runnerExited(id, result, err)
 		},
 	})
+	cancel()
 	if err != nil {
 		s.failState(id, st, err)
 		return
 	}
+
+	unlock = s.lockRunner(id)
 	current, err := s.store.ReadState(id)
 	if err != nil {
+		unlock()
 		s.logger.Error("read state before running update", "id", id, "error", err)
+		s.cleanupStartedSandbox(id, result)
 		return
 	}
 	if current.Status == state.StatusFailed || current.Status == state.StatusStopped || current.Status == state.StatusStopping {
+		unlock()
 		s.logger.Info("runner exited before running update", "id", id, "status", current.Status)
+		s.cleanupStartedSandbox(id, result)
 		return
 	}
 	st = current
@@ -263,19 +371,30 @@ func (s *Server) startRunner(ctx context.Context, id string) {
 	st.ProcessPID = result.PID
 	st.Error = ""
 	if err := s.store.WriteState(st); err != nil {
+		unlock()
 		s.logger.Error("write running state", "id", id, "error", err)
 		s.store.AppendLog(id, "control.log", []byte("write running state failed: "+err.Error()+"\n"))
-		if stopErr := s.sandbox.StopRunner(context.Background(), result.SandboxID, result.PID); stopErr != nil && !isSandboxGone(stopErr) {
-			s.logger.Error("cleanup sandbox after running state write failure", "id", id, "sandbox_id", result.SandboxID, "error", stopErr)
-		}
+		s.cleanupStartedSandbox(id, result)
 		return
 	}
+	unlock()
 	s.logger.Info("sandbox runner started", "id", id, "sandbox_id", result.SandboxID, "pid", result.PID)
 	s.store.AppendLog(id, "control.log", []byte(fmt.Sprintf("sandbox runner started sandbox_id=%s pid=%d\n", result.SandboxID, result.PID)))
 	<-exitCh
 }
 
 func (s *Server) failState(id string, st state.RunnerState, err error) {
+	unlock := s.lockRunner(id)
+	defer unlock()
+
+	current, readErr := s.store.ReadState(id)
+	if readErr == nil {
+		if current.Status == state.StatusStopped || current.Status == state.StatusStopping {
+			s.logger.Info("runner failure ignored because request is stopped", "id", id, "status", current.Status, "error", err)
+			return
+		}
+		st = current
+	}
 	st.Status = state.StatusFailed
 	st.Error = err.Error()
 	s.logger.Error("runner failed", "id", id, "error", err)
@@ -331,7 +450,7 @@ func (s *Server) cleanupSandboxAfterExit(id string, st state.RunnerState) error 
 	if st.SandboxID == "" {
 		return nil
 	}
-	if err := s.sandbox.StopRunner(context.Background(), st.SandboxID, st.ProcessPID); err != nil {
+	if err := s.stopSandboxWithTimeout(context.Background(), st.SandboxID, st.ProcessPID); err != nil {
 		if isSandboxGone(err) {
 			s.logger.Info("sandbox already gone after runner exit", "id", id, "sandbox_id", st.SandboxID, "error", err)
 			s.store.AppendLog(id, "control.log", []byte("sandbox already gone after runner exit: "+err.Error()+"\n"))
@@ -343,6 +462,41 @@ func (s *Server) cleanupSandboxAfterExit(id string, st state.RunnerState) error 
 	}
 	s.logger.Info("sandbox cleaned after runner exit", "id", id, "sandbox_id", st.SandboxID)
 	s.store.AppendLog(id, "control.log", []byte("sandbox cleaned after runner exit\n"))
+	return nil
+}
+
+func (s *Server) recoverRunner(ctx context.Context, id string) error {
+	unlock := s.lockRunner(id)
+	defer unlock()
+
+	st, err := s.store.ReadState(id)
+	if err != nil {
+		return err
+	}
+	if !isActiveStatus(st.Status) {
+		return nil
+	}
+	s.logger.Info("recovering runner after restart", "id", id, "status", st.Status, "sandbox_id", st.SandboxID)
+	s.store.AppendLog(id, "control.log", []byte("recovering runner after service restart\n"))
+	if st.SandboxID != "" {
+		if err := s.stopSandboxWithTimeout(ctx, st.SandboxID, st.ProcessPID); err != nil {
+			if isSandboxGone(err) {
+				s.logger.Info("sandbox already gone during recovery", "id", id, "sandbox_id", st.SandboxID, "error", err)
+				s.store.AppendLog(id, "control.log", []byte("sandbox already gone during recovery: "+err.Error()+"\n"))
+			} else {
+				st.Status = state.StatusFailed
+				st.Error = "recover cleanup sandbox: " + err.Error()
+				return s.store.WriteState(st)
+			}
+		}
+	}
+	st.Status = state.StatusStopped
+	st.StoppedAt = time.Now().UTC()
+	st.Error = ""
+	if err := s.store.WriteState(st); err != nil {
+		return err
+	}
+	s.store.AppendLog(id, "control.log", []byte("runner marked stopped during recovery\n"))
 	return nil
 }
 
@@ -382,7 +536,7 @@ func (s *Server) stopRunner(ctx context.Context, id string, job github.WorkflowJ
 		return state.RunnerState{}, fmt.Errorf("write stopping state: %w", err)
 	}
 	if st.SandboxID != "" {
-		if err := s.sandbox.StopRunner(ctx, st.SandboxID, st.ProcessPID); err != nil {
+		if err := s.stopSandboxWithTimeout(ctx, st.SandboxID, st.ProcessPID); err != nil {
 			if isSandboxGone(err) {
 				s.logger.Info("sandbox already gone", "id", id, "sandbox_id", st.SandboxID, "error", err)
 				s.store.AppendLog(id, "control.log", []byte("sandbox already gone: "+err.Error()+"\n"))
@@ -419,13 +573,59 @@ func shouldRecordAssignedJob(st state.RunnerState, job github.WorkflowJob) bool 
 	return st.AssignedJobID != job.ID || st.AssignedJobName != job.Name
 }
 
+func isActiveStatus(status string) bool {
+	switch status {
+	case state.StatusQueued, state.StatusCreating, state.StatusRunning, state.StatusStopping:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) lockRunner(id string) func() {
-	value, _ := s.locks.LoadOrStore(id, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	mu := &s.locks[int(h.Sum32())%len(s.locks)]
 	mu.Lock()
 	return func() {
 		mu.Unlock()
 	}
+}
+
+func (s *Server) cleanupStartedSandbox(id string, result sandboxrunner.StartResult) {
+	if result.SandboxID == "" {
+		return
+	}
+	if err := s.stopSandboxWithTimeout(context.Background(), result.SandboxID, result.PID); err != nil && !isSandboxGone(err) {
+		s.logger.Error("cleanup started sandbox", "id", id, "sandbox_id", result.SandboxID, "error", err)
+		s.store.AppendLog(id, "control.log", []byte("cleanup started sandbox failed: "+err.Error()+"\n"))
+		return
+	}
+	s.logger.Info("cleaned started sandbox", "id", id, "sandbox_id", result.SandboxID)
+	s.store.AppendLog(id, "control.log", []byte("cleaned started sandbox\n"))
+}
+
+func (s *Server) stopSandboxWithTimeout(ctx context.Context, sandboxID string, pid uint32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, s.cfg.SandboxStopTimeout)
+	defer cancel()
+	return s.sandbox.StopRunner(stopCtx, sandboxID, pid)
+}
+
+func (s *Server) requireAdminAuth(w http.ResponseWriter, r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	token := ""
+	if strings.HasPrefix(auth, "Bearer ") {
+		token = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	}
+	if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AdminToken)) == 1 {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", `Bearer realm="runnerd"`)
+	writeError(w, http.StatusUnauthorized, "missing or invalid admin token")
+	return false
 }
 
 func isSandboxGone(err error) bool {

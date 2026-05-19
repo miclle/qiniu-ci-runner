@@ -4,4 +4,6 @@ coverage.txt
 dist/
 var/
 node_modules/
+ui/node_modules/
+internal/server/admin/
 templates/*/node_modules/

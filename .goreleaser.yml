@@ -2,6 +2,10 @@ version: 2
 
 project_name: e2b-github-runner
 
+before:
+  hooks:
+    - sh -c "cd ui && bun install --frozen-lockfile && bun run build"
+
 builds:
   - id: runnerd
     main: ./cmd/runnerd

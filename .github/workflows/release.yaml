@@ -23,6 +23,8 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx

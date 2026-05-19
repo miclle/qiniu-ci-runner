@@ -17,8 +17,10 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install --frozen-lockfile && bun run build
       - run: go install honnef.co/go/tools/cmd/staticcheck@latest
-      - run: staticcheck ./...
+      - run: staticcheck ./cmd/... ./internal/...
 
   gofmt:
     runs-on: ubuntu-latest
@@ -31,7 +33,7 @@ jobs:
           go-version: stable
           cache-dependency-path: go.sum
       - run: |
-          UNFORMATTED=$(gofmt -l .)
+          UNFORMATTED=$(gofmt -l cmd internal)
           if [ -n "$UNFORMATTED" ]; then
             echo "unformatted files (run: gofmt -w .):"
             echo "$UNFORMATTED"
@@ -50,7 +52,7 @@ jobs:
           cache-dependency-path: go.sum
       - run: go install mvdan.cc/gofumpt@latest
       - run: |
-          UNFORMATTED=$(gofumpt -l .)
+          UNFORMATTED=$(gofumpt -l cmd internal)
           if [ -n "$UNFORMATTED" ]; then
             echo "unformatted files (run: gofumpt -w .):"
             echo "$UNFORMATTED"
@@ -69,7 +71,7 @@ jobs:
           cache-dependency-path: go.sum
       - run: go install golang.org/x/tools/cmd/goimports@latest
       - run: |
-          UNFORMATTED=$(goimports -l .)
+          UNFORMATTED=$(goimports -l cmd internal)
           if [ -n "$UNFORMATTED" ]; then
             echo "unformatted files (run: goimports -w .):"
             echo "$UNFORMATTED"
@@ -86,7 +88,9 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
-      - run: go vet ./...
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install --frozen-lockfile && bun run build
+      - run: go vet ./cmd/... ./internal/...
 
   gomod:
     runs-on: ubuntu-latest
@@ -98,6 +102,8 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install --frozen-lockfile && bun run build
       - run: go mod tidy
       - run: git diff --exit-code -- go.mod go.sum
 
@@ -111,7 +117,9 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
-      - run: GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover -coverprofile=coverage.txt ./...
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install --frozen-lockfile && bun run build
+      - run: GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover -coverprofile=coverage.txt ./cmd/... ./internal/...
 
   build:
     runs-on: ubuntu-latest
@@ -123,6 +131,8 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install --frozen-lockfile && bun run build
       - run: go build -trimpath -buildvcs=true -ldflags "-s -w" -o bin/runnerd ./cmd/runnerd
 
   config:
@@ -135,6 +145,7 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go.sum
+      - uses: oven-sh/setup-bun@v2
       - name: Check GoReleaser config
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -162,6 +173,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install --frozen-lockfile && bun run build
       - name: Check service Dockerfile
         run: docker build --check -f Dockerfile .
       - name: Check E2B template Dockerfile

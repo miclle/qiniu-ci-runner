@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -72,18 +73,28 @@ func (s *Store) CreateRequest(req RunnerRequest, payload []byte) (bool, RunnerSt
 		req.CreatedAt = now
 	}
 	path := s.RequestDir(req.ID)
-	if err := os.Mkdir(path, 0o755); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			st, readErr := s.ReadState(req.ID)
-			return false, st, readErr
-		}
+	if _, err := os.Stat(path); err == nil {
+		st, readErr := s.readExistingOrRepair(req)
+		return false, st, readErr
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, RunnerState{}, err
 	}
-	if err := writeJSON(filepath.Join(path, "request.json"), req); err != nil {
+
+	tmp, err := os.MkdirTemp(s.dir, "."+req.ID+".*.tmp")
+	if err != nil {
+		return false, RunnerState{}, err
+	}
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+	if err := writeJSON(filepath.Join(tmp, "request.json"), req); err != nil {
 		return false, RunnerState{}, err
 	}
 	if payload != nil {
-		if err := os.WriteFile(filepath.Join(path, "github_payload.json"), payload, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(tmp, "github_payload.json"), payload, 0o600); err != nil {
 			return false, RunnerState{}, err
 		}
 	}
@@ -94,9 +105,17 @@ func (s *Store) CreateRequest(req RunnerRequest, payload []byte) (bool, RunnerSt
 		CreatedAt:  req.CreatedAt,
 		UpdatedAt:  now,
 	}
-	if err := s.WriteState(st); err != nil {
+	if err := writeJSON(filepath.Join(tmp, "state.json"), st); err != nil {
 		return false, RunnerState{}, err
 	}
+	if err := os.Rename(tmp, path); err != nil {
+		if _, statErr := os.Stat(path); statErr == nil {
+			st, readErr := s.readExistingOrRepair(req)
+			return false, st, readErr
+		}
+		return false, RunnerState{}, err
+	}
+	cleanupTmp = false
 	return true, st, nil
 }
 
@@ -135,6 +154,9 @@ func (s *Store) ListStates() ([]RunnerState, error) {
 		if !entry.IsDir() {
 			continue
 		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
 		st, err := s.ReadState(entry.Name())
 		if err != nil {
 			return nil, err
@@ -145,6 +167,44 @@ func (s *Store) ListStates() ([]RunnerState, error) {
 		return states[i].CreatedAt.After(states[j].CreatedAt)
 	})
 	return states, nil
+}
+
+func (s *Store) readExistingOrRepair(req RunnerRequest) (RunnerState, error) {
+	st, err := s.ReadState(req.ID)
+	if err == nil {
+		return st, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return RunnerState{}, err
+	}
+	existingReq, reqErr := s.ReadRequest(req.ID)
+	if reqErr != nil {
+		if !errors.Is(reqErr, os.ErrNotExist) {
+			return RunnerState{}, reqErr
+		}
+		if err := writeJSON(filepath.Join(s.RequestDir(req.ID), "request.json"), req); err != nil {
+			return RunnerState{}, err
+		}
+		existingReq = req
+	}
+	now := time.Now().UTC()
+	if existingReq.CreatedAt.IsZero() {
+		existingReq.CreatedAt = now
+	}
+	if existingReq.RunnerName == "" {
+		existingReq.RunnerName = "e2b-" + existingReq.ID
+	}
+	st = RunnerState{
+		ID:         existingReq.ID,
+		Status:     StatusQueued,
+		RunnerName: existingReq.RunnerName,
+		CreatedAt:  existingReq.CreatedAt,
+		UpdatedAt:  now,
+	}
+	if err := s.WriteState(st); err != nil {
+		return RunnerState{}, err
+	}
+	return st, nil
 }
 
 func (s *Store) ActiveCount() (int, error) {
@@ -173,6 +233,31 @@ func (s *Store) AppendLog(id, name string, data []byte) {
 	}
 	defer f.Close()
 	_, _ = f.Write(data)
+}
+
+func (s *Store) ReadLog(id, name string, maxBytes int64) ([]byte, error) {
+	name = filepath.Base(name)
+	if name == "." || name == string(filepath.Separator) {
+		return nil, fmt.Errorf("invalid log name")
+	}
+	f, err := os.Open(filepath.Join(s.RequestDir(id), name))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if maxBytes <= 0 {
+		return io.ReadAll(f)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxBytes {
+		if _, err := f.Seek(info.Size()-maxBytes, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	return io.ReadAll(f)
 }
 
 func writeJSON(path string, v any) error {

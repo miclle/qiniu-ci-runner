@@ -2,6 +2,7 @@ bin/
 coverage.txt
 dist/
 node_modules/
+ui/node_modules/
 runnerd
 templates/*/node_modules/
 var/

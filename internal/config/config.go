@@ -10,7 +10,11 @@ import (
 
 type Config struct {
 	HTTPAddr             string
+	HTTPReadTimeout      time.Duration
+	HTTPWriteTimeout     time.Duration
+	HTTPIdleTimeout      time.Duration
 	StateDir             string
+	AdminToken           string
 	E2BAPIKey            string
 	E2BAPIURL            string
 	E2BDomain            string
@@ -23,14 +27,22 @@ type Config struct {
 	SandboxTemplateID    string
 	RunnerLabels         []string
 	SandboxTimeout       time.Duration
+	SandboxAPITimeout    time.Duration
+	SandboxCreateTimeout time.Duration
+	SandboxStopTimeout   time.Duration
+	RecoveryTimeout      time.Duration
 	MaxConcurrentRunners int
 	GitHubAPIBaseURL     string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:             env("HTTP_ADDR", ":8080"),
+		HTTPAddr:             env("HTTP_ADDR", ":25500"),
+		HTTPReadTimeout:      time.Duration(envInt("HTTP_READ_TIMEOUT_SECONDS", 15)) * time.Second,
+		HTTPWriteTimeout:     time.Duration(envInt("HTTP_WRITE_TIMEOUT_SECONDS", 60)) * time.Second,
+		HTTPIdleTimeout:      time.Duration(envInt("HTTP_IDLE_TIMEOUT_SECONDS", 120)) * time.Second,
 		StateDir:             env("STATE_DIR", "./var/runners"),
+		AdminToken:           os.Getenv("ADMIN_TOKEN"),
 		E2BAPIKey:            os.Getenv("E2B_API_KEY"),
 		E2BAPIURL:            os.Getenv("E2B_API_URL"),
 		E2BDomain:            os.Getenv("E2B_DOMAIN"),
@@ -43,11 +55,16 @@ func Load() (Config, error) {
 		SandboxTemplateID:    os.Getenv("SANDBOX_TEMPLATE_ID"),
 		RunnerLabels:         splitLabels(env("RUNNER_LABELS", "self-hosted,e2b")),
 		SandboxTimeout:       time.Duration(envInt("SANDBOX_TIMEOUT_SECONDS", 3600)) * time.Second,
+		SandboxAPITimeout:    time.Duration(envInt("SANDBOX_API_TIMEOUT_SECONDS", 60)) * time.Second,
+		SandboxCreateTimeout: time.Duration(envInt("SANDBOX_CREATE_TIMEOUT_SECONDS", 120)) * time.Second,
+		SandboxStopTimeout:   time.Duration(envInt("SANDBOX_STOP_TIMEOUT_SECONDS", 30)) * time.Second,
+		RecoveryTimeout:      time.Duration(envInt("RECOVERY_TIMEOUT_SECONDS", 120)) * time.Second,
 		MaxConcurrentRunners: envInt("MAX_CONCURRENT_RUNNERS", 100),
 		GitHubAPIBaseURL:     env("GITHUB_API_BASE_URL", "https://api.github.com"),
 	}
 	var missing []string
 	for name, value := range map[string]string{
+		"ADMIN_TOKEN":           cfg.AdminToken,
 		"E2B_API_KEY":           cfg.E2BAPIKey,
 		"E2B_API_URL":           cfg.E2BAPIURL,
 		"E2B_DOMAIN":            cfg.E2BDomain,

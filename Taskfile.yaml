@@ -5,6 +5,7 @@ vars:
   IMAGE: ghcr.io/jimyag/e2b-github-runner
   LDFLAGS: "-s -w"
   TEMPLATE_DIR: templates/github-runner-ubuntu-24.04
+  GO_PACKAGES: "./cmd/... ./internal/..."
 
 tasks:
   default:
@@ -28,51 +29,83 @@ tasks:
       - gofumpt -w cmd internal
       - goimports -w cmd internal
 
+  ui-deps:
+    desc: Install admin UI dependencies
+    dir: ui
+    cmds:
+      - bun install --frozen-lockfile
+
+  ui-build:
+    desc: Build the embedded admin UI
+    dir: ui
+    cmds:
+      - bun install --frozen-lockfile
+      - bun run build
+
+  ui-lint:
+    desc: Lint and type-check the admin UI
+    dir: ui
+    cmds:
+      - bun install --frozen-lockfile
+      - bun run lint
+      - bun run build
+
   lint:
     desc: Run staticcheck, formatting checks, goimports checks, and go vet
+    deps:
+      - ui-build
     cmds:
-      - staticcheck ./...
+      - staticcheck {{.GO_PACKAGES}}
       - cmd: |
-          UNFORMATTED=$(gofmt -l .)
+          UNFORMATTED=$(gofmt -l cmd internal)
           if [ -n "$UNFORMATTED" ]; then
             echo "unformatted files (run: gofmt -w .):"
             echo "$UNFORMATTED"
             exit 1
           fi
       - cmd: |
-          UNFORMATTED=$(gofumpt -l .)
+          UNFORMATTED=$(gofumpt -l cmd internal)
           if [ -n "$UNFORMATTED" ]; then
             echo "unformatted files (run: gofumpt -w .):"
             echo "$UNFORMATTED"
             exit 1
           fi
       - cmd: |
-          UNFORMATTED=$(goimports -l .)
+          UNFORMATTED=$(goimports -l cmd internal)
           if [ -n "$UNFORMATTED" ]; then
             echo "unformatted files (run: goimports -w .):"
             echo "$UNFORMATTED"
             exit 1
           fi
-      - go vet ./...
+      - go vet {{.GO_PACKAGES}}
+      - task: ui-lint
 
   test:
     desc: Run tests with the race detector and coverage
+    deps:
+      - ui-build
     cmds:
-      - GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover -coverprofile=coverage.txt ./...
+      - GORACE=atexit_sleep_ms=0 go test -v -trimpath -failfast -race -cover -coverprofile=coverage.txt {{.GO_PACKAGES}}
 
   build:
     desc: Build the local binary into bin/
+    deps:
+      - ui-build
     cmds:
       - mkdir -p bin
       - go build -trimpath -buildvcs=true -ldflags "{{.LDFLAGS}}" -o bin/{{.BINARY}} ./cmd/{{.BINARY}}
 
   run:
     desc: Run the service locally
+    deps:
+      - ui-build
     cmds:
       - go run ./cmd/{{.BINARY}} {{.CLI_ARGS}}
 
   docker-build:
     desc: Build the local Docker image
+    deps:
+      - ui-build
     cmds:
       - docker build -t {{.IMAGE}}:local .
 
@@ -107,10 +140,12 @@ tasks:
 
   release-snapshot:
     desc: Dry-run a GoReleaser release locally without publishing
+    deps:
+      - ui-build
     cmds:
       - goreleaser release --snapshot --clean
 
   clean:
     desc: Remove generated local build artifacts
     cmds:
-      - rm -rf bin dist coverage.txt
+      - rm -rf bin dist coverage.txt ui/node_modules
