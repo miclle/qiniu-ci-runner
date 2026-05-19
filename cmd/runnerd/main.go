@@ -26,6 +26,10 @@ func main() {
 		logger.Error("ensure state dir", "error", err)
 		os.Exit(1)
 	}
+	if err := seedProfilesAndPolicies(store, cfg); err != nil {
+		logger.Error("seed profiles and policies", "error", err)
+		os.Exit(1)
+	}
 	githubHTTPClient := &http.Client{Timeout: 30 * time.Second}
 	sandboxHTTPClient := &http.Client{Timeout: cfg.SandboxAPITimeout}
 	gh := github.NewClient(cfg.GitHubAPIBaseURL, cfg.GitHubToken, cfg.RunnerScope, cfg.GitHubOwner, cfg.GitHubOrg, cfg.GitHubRepo, githubHTTPClient)
@@ -56,4 +60,33 @@ func main() {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func seedProfilesAndPolicies(store state.Store, cfg config.Config) error {
+	for _, profile := range cfg.Profiles {
+		if _, err := store.UpsertProfile(state.RunnerProfile{
+			Name:           profile.Name,
+			Labels:         profile.Labels,
+			TemplateID:     profile.TemplateID,
+			RunnerGroup:    profile.RunnerGroup,
+			MaxConcurrency: profile.MaxConcurrency,
+			MinIdle:        profile.MinIdle,
+			Priority:       profile.Priority,
+			Enabled:        profile.Enabled,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, policy := range cfg.RepositoryPolicies {
+		for _, profileName := range policy.AllowedProfiles {
+			if _, err := store.UpsertRepositoryPolicy(state.RepositoryPolicy{
+				RepositoryFullName: policy.Repository,
+				ProfileName:        profileName,
+				Enabled:            true,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

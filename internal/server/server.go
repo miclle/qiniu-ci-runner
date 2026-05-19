@@ -39,8 +39,32 @@ type Server struct {
 }
 
 type manualCreateRequest struct {
-	ID     string   `json:"id"`
-	Labels []string `json:"labels"`
+	ID                 string   `json:"id"`
+	RepositoryFullName string   `json:"repository_full_name"`
+	ProfileName        string   `json:"profile_name"`
+	Labels             []string `json:"labels"`
+}
+
+type upsertProfileRequest struct {
+	Name           string   `json:"name"`
+	Labels         []string `json:"labels"`
+	TemplateID     string   `json:"template_id"`
+	RunnerGroup    string   `json:"runner_group"`
+	MaxConcurrency int      `json:"max_concurrency"`
+	MinIdle        int      `json:"min_idle"`
+	Priority       int      `json:"priority"`
+	Enabled        *bool    `json:"enabled"`
+}
+
+type upsertRepositoryPolicyRequest struct {
+	RepositoryFullName string `json:"repository_full_name"`
+	ProfileName        string `json:"profile_name"`
+	Enabled            *bool  `json:"enabled"`
+}
+
+type profileMatchRequest struct {
+	RepositoryFullName string   `json:"repository_full_name"`
+	Labels             []string `json:"labels"`
 }
 
 //go:embed admin/*
@@ -85,6 +109,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /runners/{id}", s.handleGetRunner)
 	s.mux.HandleFunc("GET /runners/{id}/logs/{name}", s.handleGetRunnerLog)
 	s.mux.HandleFunc("DELETE /runners/{id}", s.handleDeleteRunner)
+	s.mux.HandleFunc("GET /profiles", s.handleListProfiles)
+	s.mux.HandleFunc("POST /profiles", s.handleCreateProfile)
+	s.mux.HandleFunc("POST /profiles/match-test", s.handleMatchProfile)
+	s.mux.HandleFunc("GET /profiles/{name}", s.handleGetProfile)
+	s.mux.HandleFunc("PATCH /profiles/{name}", s.handlePatchProfile)
+	s.mux.HandleFunc("DELETE /profiles/{name}", s.handleDeleteProfile)
+	s.mux.HandleFunc("GET /repository-policies", s.handleListRepositoryPolicies)
+	s.mux.HandleFunc("POST /repository-policies", s.handleCreateRepositoryPolicy)
+	s.mux.HandleFunc("PATCH /repository-policies/{id}", s.handlePatchRepositoryPolicy)
+	s.mux.HandleFunc("DELETE /repository-policies/{id}", s.handleDeleteRepositoryPolicy)
 }
 
 func (s *Server) handleAdminRedirect(w http.ResponseWriter, r *http.Request) {
@@ -139,17 +173,31 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	id := strconv.FormatInt(event.WorkflowJob.ID, 10)
 	switch event.Action {
 	case "queued":
-		if !github.LabelsMatch(event.WorkflowJob.Labels, s.cfg.RunnerLabels) {
-			writeJSON(w, http.StatusAccepted, map[string]string{"status": "ignored"})
+		match, err := s.store.MatchProfile(event.Repository.FullName, event.WorkflowJob.Labels)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		req := state.RunnerRequest{
-			ID:         id,
-			Source:     "github_webhook",
-			JobID:      event.WorkflowJob.ID,
-			Labels:     s.cfg.RunnerLabels,
-			RunnerName: "e2b-" + id,
+			ID:                 id,
+			Source:             "github_webhook",
+			JobID:              event.WorkflowJob.ID,
+			RepositoryFullName: event.Repository.FullName,
+			Labels:             []string(event.WorkflowJob.Labels),
+			RunnerName:         "e2b-" + id,
 		}
+		if match.Profile == nil {
+			st, err := s.rejectAdmission(req, body, match.Reason)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusAccepted, st)
+			return
+		}
+		req.ProfileName = match.Profile.Name
+		req.RunnerGroup = match.Profile.RunnerGroup
+		req.Labels = append([]string(nil), match.Profile.Labels...)
 		s.createAndStart(w, r, req, body)
 	case "completed":
 		if !strings.HasPrefix(event.WorkflowJob.RunnerName, "e2b-") {
@@ -178,14 +226,47 @@ func (s *Server) handleCreateRunner(w http.ResponseWriter, r *http.Request) {
 		id = newID()
 	}
 	labels := input.Labels
-	if len(labels) == 0 {
-		labels = s.cfg.RunnerLabels
+	repositoryFullName := strings.TrimSpace(input.RepositoryFullName)
+	if repositoryFullName == "" {
+		repositoryFullName = s.cfg.DefaultRepositoryPattern()
+	}
+	profileName := strings.TrimSpace(input.ProfileName)
+	runnerGroup := ""
+	if profileName == "" {
+		if len(labels) == 0 {
+			labels = s.cfg.RunnerLabels
+		}
+		match, err := s.store.MatchProfile(repositoryFullName, labels)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if match.Profile == nil {
+			writeError(w, http.StatusBadRequest, "no matching profile")
+			return
+		}
+		profileName = match.Profile.Name
+		runnerGroup = match.Profile.RunnerGroup
+		labels = append([]string(nil), match.Profile.Labels...)
+	} else {
+		profile, err := s.store.GetProfile(profileName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "profile not found")
+			return
+		}
+		runnerGroup = profile.RunnerGroup
+		if len(labels) == 0 {
+			labels = append([]string(nil), profile.Labels...)
+		}
 	}
 	req := state.RunnerRequest{
-		ID:         id,
-		Source:     "manual_api",
-		Labels:     labels,
-		RunnerName: "e2b-" + id,
+		ID:                 id,
+		Source:             "manual_api",
+		RepositoryFullName: repositoryFullName,
+		Labels:             labels,
+		ProfileName:        profileName,
+		RunnerGroup:        runnerGroup,
+		RunnerName:         "e2b-" + id,
 	}
 	s.createAndStart(w, r, req, nil)
 }
@@ -248,6 +329,227 @@ func (s *Server) handleDeleteRunner(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, st)
 }
 
+func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	profiles, err := s.store.ListProfiles()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, profiles)
+}
+
+func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	var input upsertProfileRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid profile payload")
+		return
+	}
+	enabled := true
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+	profile, err := s.store.UpsertProfile(state.RunnerProfile{
+		Name:           input.Name,
+		Labels:         input.Labels,
+		TemplateID:     input.TemplateID,
+		RunnerGroup:    input.RunnerGroup,
+		MaxConcurrency: input.MaxConcurrency,
+		MinIdle:        input.MinIdle,
+		Priority:       input.Priority,
+		Enabled:        enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, profile)
+}
+
+func (s *Server) handleGetProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	profile, err := s.store.GetProfile(r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "profile not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	current, err := s.store.GetProfile(r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "profile not found")
+		return
+	}
+	var input upsertProfileRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid profile payload")
+		return
+	}
+	if len(input.Labels) > 0 {
+		current.Labels = input.Labels
+	}
+	if input.TemplateID != "" {
+		current.TemplateID = input.TemplateID
+	}
+	if input.RunnerGroup != "" {
+		current.RunnerGroup = input.RunnerGroup
+	}
+	if input.MaxConcurrency > 0 {
+		current.MaxConcurrency = input.MaxConcurrency
+	}
+	current.MinIdle = input.MinIdle
+	current.Priority = input.Priority
+	if input.Enabled != nil {
+		current.Enabled = *input.Enabled
+	}
+	profile, err := s.store.UpsertProfile(current)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, profile)
+}
+
+func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	if err := s.store.DeleteProfile(r.PathValue("name")); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleListRepositoryPolicies(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	policies, err := s.store.ListRepositoryPolicies()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, policies)
+}
+
+func (s *Server) handleCreateRepositoryPolicy(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	var input upsertRepositoryPolicyRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid repository policy payload")
+		return
+	}
+	enabled := true
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+	policy, err := s.store.UpsertRepositoryPolicy(state.RepositoryPolicy{
+		RepositoryFullName: input.RepositoryFullName,
+		ProfileName:        input.ProfileName,
+		Enabled:            enabled,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, policy)
+}
+
+func (s *Server) handlePatchRepositoryPolicy(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	policies, err := s.store.ListRepositoryPolicies()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var existing *state.RepositoryPolicy
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid policy id")
+		return
+	}
+	for i := range policies {
+		if policies[i].ID == id {
+			existing = &policies[i]
+			break
+		}
+	}
+	if existing == nil {
+		writeError(w, http.StatusNotFound, "repository policy not found")
+		return
+	}
+	var input upsertRepositoryPolicyRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid repository policy payload")
+		return
+	}
+	if input.RepositoryFullName != "" {
+		existing.RepositoryFullName = input.RepositoryFullName
+	}
+	if input.ProfileName != "" {
+		existing.ProfileName = input.ProfileName
+	}
+	if input.Enabled != nil {
+		existing.Enabled = *input.Enabled
+	}
+	policy, err := s.store.UpsertRepositoryPolicy(*existing)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, policy)
+}
+
+func (s *Server) handleDeleteRepositoryPolicy(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid policy id")
+		return
+	}
+	if err := s.store.DeleteRepositoryPolicy(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleMatchProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminAuth(w, r) {
+		return
+	}
+	var input profileMatchRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid match payload")
+		return
+	}
+	match, err := s.store.MatchProfile(input.RepositoryFullName, input.Labels)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, match)
+}
+
 func (s *Server) createAndStart(w http.ResponseWriter, r *http.Request, req state.RunnerRequest, payload []byte) {
 	s.admissionMu.Lock()
 	if st, err := s.store.ReadState(req.ID); err == nil {
@@ -281,6 +583,25 @@ func (s *Server) createAndStart(w http.ResponseWriter, r *http.Request, req stat
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) rejectAdmission(req state.RunnerRequest, payload []byte, reason string) (state.RunnerState, error) {
+	created, st, err := s.store.CreateRequest(req, payload)
+	if err != nil {
+		return state.RunnerState{}, err
+	}
+	if !created {
+		return st, nil
+	}
+	st.Status = state.StatusFailed
+	st.FailureStage = "admission"
+	st.FailureReason = reason
+	st.Error = "runner admission rejected"
+	if err := s.store.WriteState(st); err != nil {
+		return state.RunnerState{}, err
+	}
+	s.store.AppendLog(req.ID, "control.log", []byte("runner admission rejected: "+reason+"\n"))
+	return st, nil
 }
 
 func (s *Server) startRunnerWhenSlotAvailable(ctx context.Context, id string) {
@@ -328,6 +649,11 @@ func (s *Server) startRunner(ctx context.Context, id string) {
 	}
 	s.logger.Info("starting sandbox runner", "id", id, "runner_name", req.RunnerName)
 	s.store.AppendLog(id, "control.log", []byte("starting sandbox runner\n"))
+	profile, err := s.store.GetProfile(req.ProfileName)
+	if err != nil {
+		s.failState(id, st, fmt.Errorf("load profile %q: %w", req.ProfileName, err))
+		return
+	}
 	exitCh := make(chan struct{})
 	createCtx, cancel := context.WithTimeout(ctx, s.cfg.SandboxCreateTimeout)
 	result, err := s.sandbox.StartRunner(createCtx, sandboxrunner.StartInput{
@@ -336,7 +662,7 @@ func (s *Server) startRunner(ctx context.Context, id string) {
 		RepositoryURL:     s.gh.RunnerURL(),
 		RegistrationToken: token.Token,
 		Labels:            req.Labels,
-		TemplateID:        s.cfg.SandboxTemplateID,
+		TemplateID:        profile.TemplateID,
 		Timeout:           s.cfg.SandboxTimeout,
 		OnStdout:          func(data []byte) { s.store.AppendLog(id, "stdout.log", data) },
 		OnStderr:          func(data []byte) { s.store.AppendLog(id, "stderr.log", data) },

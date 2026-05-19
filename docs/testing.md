@@ -43,6 +43,23 @@ export HTTP_READ_TIMEOUT_SECONDS="15"
 export HTTP_WRITE_TIMEOUT_SECONDS="60"
 export HTTP_IDLE_TIMEOUT_SECONDS="120"
 export MAX_CONCURRENT_RUNNERS="100"
+export RUNNERD_CONFIG_FILE="./runnerd.yaml"
+```
+
+可选的 `runnerd.yaml` 可以 seed profiles 和 repository policies，例如：
+
+```yaml
+profiles:
+  - name: default
+    labels: [self-hosted, e2b]
+    template_id: <template id>
+    runner_group: default
+    max_concurrency: 100
+    enabled: true
+
+repository_policies:
+  - repository: <owner>/<repo>
+    allowed_profiles: [default]
 ```
 
 ## 2. GitHub Token 权限
@@ -90,7 +107,7 @@ http://127.0.0.1:25500/admin/
 curl -fsS -X POST http://127.0.0.1:25500/runners \
   -H "authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'content-type: application/json' \
-  -d '{"id":"manual-001","labels":["self-hosted","e2b"]}' | jq
+  -d '{"id":"manual-001","repository_full_name":"<owner>/<repo>","profile_name":"default"}' | jq
 ```
 
 查看状态：

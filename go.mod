@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/qiniu/go-sdk/v7 v7.26.13-0.20260515114350-0068302da18a
+	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
 )
@@ -22,6 +23,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/oapi-codegen/runtime v1.1.2 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

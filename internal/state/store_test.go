@@ -118,3 +118,59 @@ func TestReadLogCanReturnTail(t *testing.T) {
 		t.Fatalf("unexpected log tail: %q", string(data))
 	}
 }
+
+func TestProfilesAndPoliciesCanBeMatched(t *testing.T) {
+	store := New(t.TempDir())
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "default",
+		Labels:         []string{"self-hosted", "e2b"},
+		TemplateID:     "base",
+		MaxConcurrency: 10,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "large",
+		Labels:         []string{"self-hosted", "e2b", "large"},
+		TemplateID:     "large",
+		MaxConcurrency: 2,
+		Priority:       10,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertRepositoryPolicy(RepositoryPolicy{
+		RepositoryFullName: "owner/repo",
+		ProfileName:        "default",
+		Enabled:            true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertRepositoryPolicy(RepositoryPolicy{
+		RepositoryFullName: "owner/repo",
+		ProfileName:        "large",
+		Enabled:            true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	match, err := store.MatchProfile("owner/repo", []string{"self-hosted", "e2b", "large"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match.Profile == nil || match.Profile.Name != "large" {
+		t.Fatalf("expected large profile match, got %#v", match.Profile)
+	}
+}
+
+func TestMatchProfileReturnsReasonWhenPolicyMissing(t *testing.T) {
+	store := New(t.TempDir())
+	match, err := store.MatchProfile("owner/repo", []string{"self-hosted", "e2b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match.Profile != nil || match.Reason != "profile_not_allowed" {
+		t.Fatalf("unexpected match result: %#v", match)
+	}
+}

@@ -107,6 +107,8 @@ func VerifyWebhookSignature(secret string, body []byte, signature string) bool {
 type WorkflowJobEvent struct {
 	Action      string      `json:"action"`
 	WorkflowJob WorkflowJob `json:"workflow_job"`
+	Repository  Repository  `json:"repository"`
+	WorkflowRun WorkflowRun `json:"workflow_run"`
 }
 
 type WorkflowJob struct {
@@ -115,6 +117,17 @@ type WorkflowJob struct {
 	Status     string `json:"status"`
 	RunnerName string `json:"runner_name"`
 	Labels     Labels `json:"labels"`
+}
+
+type Repository struct {
+	FullName string `json:"full_name"`
+	Name     string `json:"name"`
+}
+
+type WorkflowRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	HeadBranch string `json:"head_branch"`
 }
 
 type Labels []string

@@ -201,7 +201,7 @@ func TestWebhookQueuedIsIdempotent(t *testing.T) {
 	fake := &fakeSandbox{}
 	srv := newTestServer(store, ghServer.URL, fake)
 
-	payload := []byte(`{"action":"queued","workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
+	payload := []byte(`{"action":"queued","repository":{"full_name":"o/r"},"workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(payload))
 		req.Header.Set("X-GitHub-Event", "workflow_job")
@@ -230,7 +230,7 @@ func TestWebhookCompletedStopsActualRunnerAndRecordsJob(t *testing.T) {
 	fake := &fakeSandbox{}
 	srv := newTestServer(store, ghServer.URL, fake)
 
-	queued := []byte(`{"action":"queued","workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
+	queued := []byte(`{"action":"queued","repository":{"full_name":"o/r"},"workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(queued))
 	req.Header.Set("X-GitHub-Event", "workflow_job")
 	req.Header.Set("X-Hub-Signature-256", sign("secret", queued))
@@ -241,7 +241,7 @@ func TestWebhookCompletedStopsActualRunnerAndRecordsJob(t *testing.T) {
 	}
 	waitForState(t, store, "1001", state.StatusRunning)
 
-	completed := []byte(`{"action":"completed","workflow_job":{"id":2002,"name":"staticcheck","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}}`)
+	completed := []byte(`{"action":"completed","repository":{"full_name":"o/r"},"workflow_job":{"id":2002,"name":"staticcheck","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}}`)
 	req = httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(completed))
 	req.Header.Set("X-GitHub-Event", "workflow_job")
 	req.Header.Set("X-Hub-Signature-256", sign("secret", completed))
@@ -278,7 +278,7 @@ func TestWebhookCompletedIsIdempotent(t *testing.T) {
 	fake := &fakeSandbox{}
 	srv := newTestServer(store, ghServer.URL, fake)
 
-	queued := []byte(`{"action":"queued","workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
+	queued := []byte(`{"action":"queued","repository":{"full_name":"o/r"},"workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(queued))
 	req.Header.Set("X-GitHub-Event", "workflow_job")
 	req.Header.Set("X-Hub-Signature-256", sign("secret", queued))
@@ -289,7 +289,7 @@ func TestWebhookCompletedIsIdempotent(t *testing.T) {
 	}
 	waitForState(t, store, "1001", state.StatusRunning)
 
-	completed := []byte(`{"action":"completed","workflow_job":{"id":2002,"name":"staticcheck","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}}`)
+	completed := []byte(`{"action":"completed","repository":{"full_name":"o/r"},"workflow_job":{"id":2002,"name":"staticcheck","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}}`)
 	for i := 0; i < 2; i++ {
 		req = httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(completed))
 		req.Header.Set("X-GitHub-Event", "workflow_job")
@@ -328,7 +328,7 @@ func TestWebhookCompletedWithoutManagedRunnerDoesNotStopByJobID(t *testing.T) {
 	fake := &fakeSandbox{}
 	srv := newTestServer(store, ghServer.URL, fake)
 
-	queued := []byte(`{"action":"queued","workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
+	queued := []byte(`{"action":"queued","repository":{"full_name":"o/r"},"workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(queued))
 	req.Header.Set("X-GitHub-Event", "workflow_job")
 	req.Header.Set("X-Hub-Signature-256", sign("secret", queued))
@@ -339,7 +339,7 @@ func TestWebhookCompletedWithoutManagedRunnerDoesNotStopByJobID(t *testing.T) {
 	}
 	waitForState(t, store, "1001", state.StatusRunning)
 
-	completed := []byte(`{"action":"completed","workflow_job":{"id":1001,"name":"staticcheck","runner_name":"","labels":["self-hosted","e2b"]}}`)
+	completed := []byte(`{"action":"completed","repository":{"full_name":"o/r"},"workflow_job":{"id":1001,"name":"staticcheck","runner_name":"","labels":["self-hosted","e2b"]}}`)
 	req = httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(completed))
 	req.Header.Set("X-GitHub-Event", "workflow_job")
 	req.Header.Set("X-Hub-Signature-256", sign("secret", completed))
@@ -465,6 +465,37 @@ func TestConcurrencyLimitAppliesBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestProfileAndRepositoryPolicyEndpoints(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(store, "http://example.test", &fakeSandbox{})
+
+	profileBody := bytes.NewBufferString(`{"name":"large","labels":["self-hosted","e2b","large"],"template_id":"large","runner_group":"large","max_concurrency":5,"min_idle":1,"priority":10,"enabled":true}`)
+	req := adminRequest(http.MethodPost, "/profiles", profileBody)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("unexpected create profile status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	policyBody := bytes.NewBufferString(`{"repository_full_name":"o/heavy","profile_name":"large","enabled":true}`)
+	req = adminRequest(http.MethodPost, "/repository-policies", policyBody)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("unexpected create policy status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = adminRequest(http.MethodPost, "/profiles/match-test", bytes.NewBufferString(`{"repository_full_name":"o/heavy","labels":["self-hosted","e2b","large"]}`))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected match status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"name":"large"`) {
+		t.Fatalf("expected large profile in match response, got %s", rec.Body.String())
+	}
+}
+
 func newTestServer(store state.Store, ghURL string, fake *fakeSandbox) *Server {
 	return newTestServerWithLimit(store, ghURL, fake, 10)
 }
@@ -484,6 +515,23 @@ func newTestServerWithLimit(store state.Store, ghURL string, fake *fakeSandbox, 
 		SandboxStopTimeout:   time.Second,
 		MaxConcurrentRunners: limit,
 		GitHubAPIBaseURL:     ghURL,
+	}
+	if _, err := store.UpsertProfile(state.RunnerProfile{
+		Name:           "default",
+		Labels:         []string{"self-hosted", "e2b"},
+		TemplateID:     "base",
+		RunnerGroup:    "default",
+		MaxConcurrency: limit,
+		Enabled:        true,
+	}); err != nil {
+		panic(err)
+	}
+	if _, err := store.UpsertRepositoryPolicy(state.RepositoryPolicy{
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+		Enabled:            true,
+	}); err != nil {
+		panic(err)
 	}
 	gh := github.NewClient(ghURL, "gh-token", "repo", "o", "", "r", http.DefaultClient)
 	return New(cfg, store, gh, fake, nil)

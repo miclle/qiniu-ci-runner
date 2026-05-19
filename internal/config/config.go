@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -33,6 +35,25 @@ type Config struct {
 	RecoveryTimeout      time.Duration
 	MaxConcurrentRunners int
 	GitHubAPIBaseURL     string
+	ConfigFile           string
+	Profiles             []RunnerProfileConfig
+	RepositoryPolicies   []RepositoryPolicyConfig
+}
+
+type RunnerProfileConfig struct {
+	Name           string   `yaml:"name"`
+	Labels         []string `yaml:"labels"`
+	TemplateID     string   `yaml:"template_id"`
+	RunnerGroup    string   `yaml:"runner_group"`
+	MaxConcurrency int      `yaml:"max_concurrency"`
+	MinIdle        int      `yaml:"min_idle"`
+	Priority       int      `yaml:"priority"`
+	Enabled        bool     `yaml:"enabled"`
+}
+
+type RepositoryPolicyConfig struct {
+	Repository      string   `yaml:"repository"`
+	AllowedProfiles []string `yaml:"allowed_profiles"`
 }
 
 func Load() (Config, error) {
@@ -61,6 +82,10 @@ func Load() (Config, error) {
 		RecoveryTimeout:      time.Duration(envInt("RECOVERY_TIMEOUT_SECONDS", 120)) * time.Second,
 		MaxConcurrentRunners: envInt("MAX_CONCURRENT_RUNNERS", 100),
 		GitHubAPIBaseURL:     env("GITHUB_API_BASE_URL", "https://api.github.com"),
+		ConfigFile:           os.Getenv("RUNNERD_CONFIG_FILE"),
+	}
+	if err := cfg.loadSeedConfig(); err != nil {
+		return Config{}, err
 	}
 	var missing []string
 	for name, value := range map[string]string{
@@ -103,7 +128,59 @@ func Load() (Config, error) {
 	if len(cfg.RunnerLabels) == 0 {
 		return Config{}, fmt.Errorf("RUNNER_LABELS must include at least one label")
 	}
+	cfg.ensureDefaultSeeds()
 	return cfg, nil
+}
+
+func (c Config) DefaultRepositoryPattern() string {
+	if c.RunnerScope == "org" && c.GitHubOrg != "" {
+		return c.GitHubOrg + "/*"
+	}
+	if c.GitHubOwner != "" && c.GitHubRepo != "" {
+		return c.GitHubOwner + "/" + c.GitHubRepo
+	}
+	return ""
+}
+
+func (c *Config) loadSeedConfig() error {
+	if strings.TrimSpace(c.ConfigFile) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(c.ConfigFile)
+	if err != nil {
+		return err
+	}
+	var file struct {
+		Profiles           []RunnerProfileConfig    `yaml:"profiles"`
+		RepositoryPolicies []RepositoryPolicyConfig `yaml:"repository_policies"`
+	}
+	if err := yaml.Unmarshal(data, &file); err != nil {
+		return err
+	}
+	c.Profiles = file.Profiles
+	c.RepositoryPolicies = file.RepositoryPolicies
+	return nil
+}
+
+func (c *Config) ensureDefaultSeeds() {
+	if len(c.Profiles) == 0 {
+		c.Profiles = []RunnerProfileConfig{{
+			Name:           "default",
+			Labels:         append([]string(nil), c.RunnerLabels...),
+			TemplateID:     c.SandboxTemplateID,
+			RunnerGroup:    "default",
+			MaxConcurrency: c.MaxConcurrentRunners,
+			Enabled:        true,
+		}}
+	}
+	if len(c.RepositoryPolicies) == 0 {
+		if repository := c.DefaultRepositoryPattern(); repository != "" {
+			c.RepositoryPolicies = []RepositoryPolicyConfig{{
+				Repository:      repository,
+				AllowedProfiles: []string{"default"},
+			}}
+		}
+	}
 }
 
 func env(name, fallback string) string {

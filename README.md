@@ -35,6 +35,7 @@ Optional environment variables:
 - `HTTP_IDLE_TIMEOUT_SECONDS` defaults to `120`
 - `MAX_CONCURRENT_RUNNERS` defaults to `100`
 - `GITHUB_API_BASE_URL`
+- `RUNNERD_CONFIG_FILE` optionally seeds runner profiles and repository policies from YAML
 
 `/webhooks/github` uses GitHub HMAC signature verification. The manual management API under `/runners` requires `Authorization: Bearer $ADMIN_TOKEN`.
 
@@ -47,6 +48,8 @@ go run ./cmd/runnerd
 ```
 
 Open the embedded admin console at `http://127.0.0.1:25500/admin/`. The UI is built from `ui/` with the same React, Vite, Tailwind CSS, shadcn-style components, and theme tokens used by `kubevirt-console`. It stores `ADMIN_TOKEN` in browser local storage and sends it as `Authorization: Bearer $ADMIN_TOKEN` for management API calls.
+
+The admin console manages runner requests, profiles, repository policies, and profile-match tests. When `RUNNERD_CONFIG_FILE` is provided, `profiles:` and `repository_policies:` are loaded as seed data at startup and then kept in the DB-backed control plane.
 
 ![Admin console](docs/images/admin-console.png)
 
