@@ -36,6 +36,10 @@ type Server struct {
 
 	admissionMu sync.Mutex
 	locks       [64]sync.Mutex
+	pendingMu   sync.Mutex
+	pending     map[string]bool
+	queueNotify chan struct{}
+	startOnce   sync.Once
 }
 
 type manualCreateRequest struct {
@@ -74,8 +78,19 @@ func New(cfg config.Config, store state.Store, gh *github.Client, sandbox sandbo
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Server{cfg: cfg, store: store, gh: gh, sandbox: sandbox, logger: logger, mux: http.NewServeMux(), slots: make(chan struct{}, cfg.MaxConcurrentRunners)}
+	s := &Server{
+		cfg:         cfg,
+		store:       store,
+		gh:          gh,
+		sandbox:     sandbox,
+		logger:      logger,
+		mux:         http.NewServeMux(),
+		slots:       make(chan struct{}, cfg.MaxConcurrentRunners),
+		pending:     map[string]bool{},
+		queueNotify: make(chan struct{}, 1),
+	}
 	s.routes()
+	s.startBackgroundLoops()
 	return s
 }
 
@@ -119,6 +134,100 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /repository-policies", s.handleCreateRepositoryPolicy)
 	s.mux.HandleFunc("PATCH /repository-policies/{id}", s.handlePatchRepositoryPolicy)
 	s.mux.HandleFunc("DELETE /repository-policies/{id}", s.handleDeleteRepositoryPolicy)
+}
+
+func (s *Server) startBackgroundLoops() {
+	s.startOnce.Do(func() {
+		go s.workerLoop()
+		go s.sweeperLoop()
+		go s.reconcilerLoop()
+	})
+}
+
+func (s *Server) workerLoop() {
+	for {
+		select {
+		case <-s.queueNotify:
+		case <-time.After(500 * time.Millisecond):
+		}
+		s.processQueuedRequests()
+	}
+}
+
+func (s *Server) sweeperLoop() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.sweepOnce()
+	}
+}
+
+func (s *Server) reconcilerLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.reconcileOnce()
+	}
+}
+
+func (s *Server) processQueuedRequests() {
+	states, err := s.store.ListStates()
+	if err != nil {
+		s.logger.Error("list states for worker", "error", err)
+		return
+	}
+	for _, st := range states {
+		if st.Status != state.StatusQueued {
+			continue
+		}
+		if s.markPending(st.ID) {
+			go s.startRunnerWhenSlotAvailable(context.Background(), st.ID)
+		}
+	}
+}
+
+func (s *Server) sweepOnce() {
+	states, err := s.store.ListStates()
+	if err != nil {
+		s.logger.Error("list states for sweeper", "error", err)
+		return
+	}
+	now := time.Now().UTC()
+	for _, st := range states {
+		switch st.Status {
+		case state.StatusCreating:
+			if !st.CreatingAt.IsZero() && now.Sub(st.CreatingAt) > s.cfg.SandboxCreateTimeout {
+				s.markFailed(st, "sweeper", "create_timeout", "runner create timed out")
+			}
+		case state.StatusRunning:
+			if !st.RunningAt.IsZero() && now.Sub(st.RunningAt) > s.cfg.SandboxTimeout {
+				s.stopIfExists(context.Background(), st.ID, github.WorkflowJob{})
+			}
+		case state.StatusStopping:
+			if !st.StoppingAt.IsZero() && now.Sub(st.StoppingAt) > s.cfg.SandboxStopTimeout {
+				s.stopIfExists(context.Background(), st.ID, github.WorkflowJob{})
+			}
+		}
+	}
+}
+
+func (s *Server) reconcileOnce() {
+	s.processQueuedRequests()
+	states, err := s.store.ListStates()
+	if err != nil {
+		s.logger.Error("list states for reconciler", "error", err)
+		return
+	}
+	for _, st := range states {
+		switch st.Status {
+		case state.StatusQueued:
+			s.signalQueue()
+		case state.StatusStopping:
+			if !st.StoppingAt.IsZero() && time.Since(st.StoppingAt) > s.cfg.SandboxStopTimeout {
+				s.stopIfExists(context.Background(), st.ID, github.WorkflowJob{})
+			}
+		}
+	}
 }
 
 func (s *Server) handleAdminRedirect(w http.ResponseWriter, r *http.Request) {
@@ -578,7 +687,7 @@ func (s *Server) createAndStart(w http.ResponseWriter, r *http.Request, req stat
 	if created {
 		s.logger.Info("runner request created", "id", req.ID, "source", req.Source, "labels", req.Labels)
 		s.store.AppendLog(req.ID, "control.log", []byte("runner request created\n"))
-		go s.startRunnerWhenSlotAvailable(context.Background(), req.ID)
+		s.signalQueue()
 		writeJSON(w, http.StatusAccepted, st)
 		return
 	}
@@ -605,6 +714,7 @@ func (s *Server) rejectAdmission(req state.RunnerRequest, payload []byte, reason
 }
 
 func (s *Server) startRunnerWhenSlotAvailable(ctx context.Context, id string) {
+	defer s.clearPending(id)
 	s.store.AppendLog(id, "control.log", []byte("waiting for runner slot\n"))
 	s.slots <- struct{}{}
 	defer func() { <-s.slots }()
@@ -898,6 +1008,51 @@ func shouldRecordAssignedJob(st state.RunnerState, job github.WorkflowJob) bool 
 		return false
 	}
 	return st.AssignedJobID != job.ID || st.AssignedJobName != job.Name
+}
+
+func (s *Server) signalQueue() {
+	select {
+	case s.queueNotify <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Server) markPending(id string) bool {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if s.pending[id] {
+		return false
+	}
+	s.pending[id] = true
+	return true
+}
+
+func (s *Server) clearPending(id string) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	delete(s.pending, id)
+}
+
+func (s *Server) markFailed(st state.RunnerState, stage, reason, message string) {
+	unlock := s.lockRunner(st.ID)
+	defer unlock()
+	current, err := s.store.ReadState(st.ID)
+	if err != nil {
+		s.logger.Error("read state for failure mark", "id", st.ID, "error", err)
+		return
+	}
+	if current.Status == state.StatusCompleted || current.Status == state.StatusFailed {
+		return
+	}
+	current.Status = state.StatusFailed
+	current.FailureStage = stage
+	current.FailureReason = reason
+	current.Error = message
+	if err := s.store.WriteState(current); err != nil {
+		s.logger.Error("write failed state", "id", st.ID, "error", err)
+		return
+	}
+	s.store.AppendLog(st.ID, "control.log", []byte(message+"\n"))
 }
 
 func isActiveStatus(status string) bool {

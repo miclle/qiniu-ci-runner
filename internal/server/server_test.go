@@ -496,6 +496,38 @@ func TestProfileAndRepositoryPolicyEndpoints(t *testing.T) {
 	}
 }
 
+func TestSweeperMarksTimedOutCreatesFailed(t *testing.T) {
+	store := state.New(t.TempDir())
+	if _, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "timed-out-create",
+		Source:             "test",
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted", "e2b"},
+		ProfileName:        "default",
+		RunnerGroup:        "default",
+		RunnerName:         "e2b-timed-out-create",
+	}, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		st.Status = state.StatusCreating
+		st.CreatingAt = time.Now().Add(-5 * time.Second).UTC()
+		if err := store.WriteState(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := newTestServerWithLimit(store, "http://example.test", &fakeSandbox{}, 10)
+	srv.cfg.SandboxCreateTimeout = time.Second
+	srv.sweepOnce()
+
+	got, err := store.ReadState("timed-out-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusFailed || got.FailureReason != "create_timeout" {
+		t.Fatalf("unexpected swept state: %#v", got)
+	}
+}
+
 func newTestServer(store state.Store, ghURL string, fake *fakeSandbox) *Server {
 	return newTestServerWithLimit(store, ghURL, fake, 10)
 }
