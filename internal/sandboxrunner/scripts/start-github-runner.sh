@@ -24,10 +24,15 @@ if [ -x /usr/local/bin/ensure-docker ]; then
   /usr/local/bin/ensure-docker || true
 fi
 
-echo "configuring GitHub Actions runner %[3]s"
-./config.sh --url %[1]q --token %[2]q --name %[3]q --labels %[4]q --ephemeral --unattended --replace --disableupdate
+runner_url="$(printf '%%s' "%[1]s" | base64 -d)"
+registration_token="$(printf '%%s' "%[2]s" | base64 -d)"
+runner_name="$(printf '%%s' "%[3]s" | base64 -d)"
+runner_labels="$(printf '%%s' "%[4]s" | base64 -d)"
+
+echo "configuring GitHub Actions runner ${runner_name}"
+./config.sh --url "$runner_url" --token "$registration_token" --name "$runner_name" --labels "$runner_labels" --ephemeral --unattended --replace --disableupdate
 cleanup() {
-  ./config.sh remove --token %[2]q || true
+  ./config.sh remove --token "$registration_token" || true
 }
 trap cleanup EXIT
 echo "starting GitHub Actions runner"

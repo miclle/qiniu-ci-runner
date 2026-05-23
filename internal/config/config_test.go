@@ -67,6 +67,9 @@ runner_policies:
 	if cfg.GitHubAuthMode() != "app" {
 		t.Fatalf("unexpected auth mode: %s", cfg.GitHubAuthMode())
 	}
+	if cfg.GitHubAppPrivateKeyFile != filepath.Join(dir, "secrets", "app.pem") {
+		t.Fatalf("unexpected private key path: %s", cfg.GitHubAppPrivateKeyFile)
+	}
 	if cfg.DefaultRepositoryPattern() != "" {
 		t.Fatalf("repo scope should not require a default repository, got %q", cfg.DefaultRepositoryPattern())
 	}

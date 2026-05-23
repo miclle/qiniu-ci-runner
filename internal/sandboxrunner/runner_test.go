@@ -1,0 +1,31 @@
+package sandboxrunner
+
+import (
+	"encoding/base64"
+	"strings"
+	"testing"
+)
+
+func TestStartScriptEncodesRunnerArguments(t *testing.T) {
+	input := StartInput{
+		RepositoryURL:     `https://github.com/o/r$(touch /tmp/pwn)`,
+		RegistrationToken: `tok"$(touch /tmp/token)"`,
+		RunnerName:        "runner`touch /tmp/name`",
+		Labels:            []string{"self-hosted", `e2b$(touch /tmp/label)`},
+	}
+	script := startScript(input)
+
+	for _, raw := range []string{
+		input.RepositoryURL,
+		input.RegistrationToken,
+		input.RunnerName,
+		strings.Join(input.Labels, ","),
+	} {
+		if strings.Contains(script, raw) {
+			t.Fatalf("script contains raw argument %q:\n%s", raw, script)
+		}
+		if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(raw))) {
+			t.Fatalf("script does not contain encoded argument %q:\n%s", raw, script)
+		}
+	}
+}

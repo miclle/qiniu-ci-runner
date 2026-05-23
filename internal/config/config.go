@@ -144,6 +144,7 @@ func LoadFile(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
 	}
+	configDir := filepath.Dir(path)
 	cfg := Config{
 		HTTPAddr:                defaultString(raw.Server.HTTPAddr, ":25500"),
 		HTTPReadTimeout:         durationSeconds(raw.Server.ReadTimeoutSec, 15),
@@ -157,7 +158,7 @@ func LoadFile(path string) (Config, error) {
 		E2BDomain:               raw.E2B.Domain,
 		GitHubAppID:             raw.GitHub.App.ID,
 		GitHubAppInstallationID: raw.GitHub.App.InstallationID,
-		GitHubAppPrivateKeyFile: raw.GitHub.App.PrivateKeyFile,
+		GitHubAppPrivateKeyFile: resolveConfigPath(configDir, raw.GitHub.App.PrivateKeyFile),
 		GitHubWebhookSecret:     raw.GitHub.WebhookSecret,
 		RunnerScope:             strings.ToLower(defaultString(raw.GitHub.Scope, "repo")),
 		GitHubOwner:             raw.GitHub.Owner,
@@ -325,4 +326,12 @@ func normalizeLabels(values []string) []string {
 		labels = append(labels, label)
 	}
 	return labels
+}
+
+func resolveConfigPath(configDir, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || filepath.IsAbs(value) {
+		return value
+	}
+	return filepath.Join(configDir, value)
 }

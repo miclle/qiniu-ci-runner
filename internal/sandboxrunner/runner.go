@@ -3,6 +3,7 @@ package sandboxrunner
 import (
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -130,5 +131,11 @@ func (s *E2BService) StopRunner(ctx context.Context, sandboxID string, pid uint3
 
 func startScript(input StartInput) string {
 	labels := strings.Join(input.Labels, ",")
-	return fmt.Sprintf(startRunnerScriptTemplate, input.RepositoryURL, input.RegistrationToken, input.RunnerName, labels)
+	return fmt.Sprintf(
+		startRunnerScriptTemplate,
+		base64.StdEncoding.EncodeToString([]byte(input.RepositoryURL)),
+		base64.StdEncoding.EncodeToString([]byte(input.RegistrationToken)),
+		base64.StdEncoding.EncodeToString([]byte(input.RunnerName)),
+		base64.StdEncoding.EncodeToString([]byte(labels)),
+	)
 }

@@ -2,12 +2,20 @@ package github
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/bradleyfalzon/ghinstallation/v2"
 )
 
 func TestVerifyWebhookSignature(t *testing.T) {
@@ -98,6 +106,25 @@ func TestCreateRegistrationTokenUsesRequestRepository(t *testing.T) {
 	}
 }
 
+func TestNewAppClientUsesConfiguredBaseURLForInstallationTransport(t *testing.T) {
+	privateKey := testPrivateKeyFile(t)
+	client, err := NewAppClient("https://github.example/api/v3", "repo", "o", "", "r", AppAuth{
+		AppID:          123,
+		InstallationID: 456,
+		PrivateKeyFile: privateKey,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := client.http.Transport.(*ghinstallation.Transport)
+	if !ok {
+		t.Fatalf("unexpected transport type %T", client.http.Transport)
+	}
+	if transport.BaseURL != "https://github.example/api/v3" {
+		t.Fatalf("unexpected installation transport base URL: %s", transport.BaseURL)
+	}
+}
+
 func TestCreateOrgRegistrationToken(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/orgs/my-org/actions/runners/registration-token" {
@@ -145,6 +172,43 @@ func TestListWorkflowRunJobs(t *testing.T) {
 	}
 }
 
+func TestListWorkflowRunJobsFollowsPagination(t *testing.T) {
+	var requests int
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/repos/o/r/actions/runs/123/jobs" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("per_page") != "100" {
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "":
+			w.Header().Set("Link", `<`+ts.URL+`/repos/o/r/actions/runs/123/jobs?per_page=100&page=2>; rel="next"`)
+			w.Write([]byte(`{"jobs":[{"id":1001,"name":"first","status":"queued","labels":["self-hosted"]}]}`))
+		case "2":
+			w.Write([]byte(`{"jobs":[{"id":1002,"name":"second","status":"queued","labels":["e2b"]}]}`))
+		default:
+			t.Fatalf("unexpected page: %s", r.URL.Query().Get("page"))
+		}
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "repo", "o", "", "r", ts.Client())
+	jobs, err := client.ListWorkflowRunJobs(t.Context(), "o/r", 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected 2 requests, got %d", requests)
+	}
+	if len(jobs) != 2 || jobs[0].ID != 1001 || jobs[1].ID != 1002 {
+		t.Fatalf("unexpected jobs: %#v", jobs)
+	}
+}
+
 func TestGetWorkflowJob(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/o/r/actions/jobs/1001" {
@@ -163,4 +227,21 @@ func TestGetWorkflowJob(t *testing.T) {
 	if job.ID != 1001 || job.Status != "completed" || job.Conclusion != "cancelled" {
 		t.Fatalf("unexpected job: %#v", job)
 	}
+}
+
+func testPrivateKeyFile(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	path := filepath.Join(t.TempDir(), "github-app.pem")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

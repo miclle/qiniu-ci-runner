@@ -70,6 +70,7 @@ func NewAppClient(baseURL, scope, owner, org, repo string, auth AppAuth, httpCli
 	if err != nil {
 		return nil, err
 	}
+	transport.BaseURL = strings.TrimRight(baseURL, "/")
 	cloned := *httpClient
 	cloned.Transport = transport
 	return NewClient(baseURL, scope, owner, org, repo, &cloned), nil
@@ -126,30 +127,35 @@ func (c *Client) ListWorkflowRunJobs(ctx context.Context, repositoryFullName str
 	if repositoryFullName == "" {
 		return nil, fmt.Errorf("repository full name is required")
 	}
-	url := fmt.Sprintf("%s/repos/%s/actions/runs/%d/jobs?per_page=100", c.baseURL, repositoryFullName, runID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	nextURL := fmt.Sprintf("%s/repos/%s/actions/runs/%d/jobs?per_page=100", c.baseURL, repositoryFullName, runID)
+	var jobs []WorkflowJob
+	for nextURL != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("github workflow run jobs: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var out struct {
+			Jobs []WorkflowJob `json:"jobs"`
+		}
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, out.Jobs...)
+		nextURL = nextLink(resp.Header.Get("Link"))
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("github workflow run jobs: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var out struct {
-		Jobs []WorkflowJob `json:"jobs"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, err
-	}
-	return out.Jobs, nil
+	return jobs, nil
 }
 
 func (c *Client) GetWorkflowJob(ctx context.Context, repositoryFullName string, jobID int64) (WorkflowJob, error) {
@@ -188,6 +194,25 @@ func (c *Client) repositoryFullName(repositoryFullName string) string {
 	}
 	if c.owner != "" && c.repo != "" {
 		return fmt.Sprintf("%s/%s", c.owner, c.repo)
+	}
+	return ""
+}
+
+func nextLink(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		sections := strings.Split(part, ";")
+		if len(sections) < 2 {
+			continue
+		}
+		link := strings.TrimSpace(sections[0])
+		if !strings.HasPrefix(link, "<") || !strings.HasSuffix(link, ">") {
+			continue
+		}
+		for _, section := range sections[1:] {
+			if strings.TrimSpace(section) == `rel="next"` {
+				return strings.TrimSuffix(strings.TrimPrefix(link, "<"), ">")
+			}
+		}
 	}
 	return ""
 }
