@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v docker >/dev/null 2>&1 || ! command -v dockerd >/dev/null 2>&1; then
+  exit 0
+fi
+
+if docker info >/dev/null 2>&1; then
+  exit 0
+fi
+
+mkdir -p /var/lib/docker /var/run
+nohup dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
+
+for _ in $(seq 1 30); do
+  if docker info >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "dockerd did not become ready; Docker jobs may fail" >&2
+tail -n 80 /tmp/dockerd.log >&2 || true
+exit 0
