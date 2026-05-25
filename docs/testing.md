@@ -51,7 +51,7 @@ worker:
   retry_max_attempts: 5
 ```
 
-Runner spec、runner group 和 repository policy 不在 `runnerd.yaml` 中配置；服务启动后通过后台页面或 admin API 创建。spec 名称建议使用有意义的名字，例如 `ubuntu-24-04`，`template_id` 填对应的 E2B template ID。保存 runner spec 前，admin API 会验证该 template 存在且有 ready build。
+Runner spec、runner group 和 repository policy 不在 `runnerd.yaml` 中配置；服务启动后通过后台页面或 admin API 创建。spec 名称建议使用有意义的名字，例如 `ubuntu-24-04`，`template_id` 填对应的 E2B template ID。保存 runner spec 前，admin API 会验证该 template 存在且有 usable build。
 
 ## 2. 配置 GitHub 鉴权
 

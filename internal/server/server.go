@@ -982,7 +982,7 @@ func writeTemplateValidationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, sandboxrunner.ErrTemplateNotFound):
 		writeError(w, http.StatusBadRequest, "template_id not found")
 	case errors.Is(err, sandboxrunner.ErrTemplateNotReady):
-		writeError(w, http.StatusBadRequest, "template_id has no ready build")
+		writeError(w, http.StatusBadRequest, "template_id has no usable build")
 	default:
 		writeError(w, http.StatusBadGateway, "validate template_id: "+err.Error())
 	}

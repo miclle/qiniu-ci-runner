@@ -81,12 +81,19 @@ func (s *E2BService) ValidateTemplate(ctx context.Context, templateID string) er
 		}
 		return err
 	}
+	if len(template.Builds) == 0 {
+		return nil
+	}
 	for _, build := range template.Builds {
-		if build.Status == qnsandbox.BuildStatusReady {
+		if templateBuildUsable(build.Status) {
 			return nil
 		}
 	}
 	return ErrTemplateNotReady
+}
+
+func templateBuildUsable(status qnsandbox.TemplateBuildStatus) bool {
+	return status == qnsandbox.BuildStatusReady || status == qnsandbox.BuildStatusUploaded
 }
 
 func (s *E2BService) StartRunner(ctx context.Context, input StartInput) (StartResult, error) {

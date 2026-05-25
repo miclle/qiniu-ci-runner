@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	qnsandbox "github.com/qiniu/go-sdk/v7/sandbox"
 )
 
 func TestStartScriptEncodesRunnerArguments(t *testing.T) {
@@ -45,5 +47,26 @@ func TestStartScriptRunsCleanupAfterRunnerExit(t *testing.T) {
 	}
 	if !strings.Contains(script, "trap cleanup EXIT") || !strings.Contains(script, "./run.sh") {
 		t.Fatalf("script does not preserve cleanup trap and runner execution:\n%s", script)
+	}
+}
+
+func TestTemplateBuildUsableAcceptsRunnableStatuses(t *testing.T) {
+	for _, status := range []qnsandbox.TemplateBuildStatus{
+		qnsandbox.BuildStatusReady,
+		qnsandbox.BuildStatusUploaded,
+	} {
+		if !templateBuildUsable(status) {
+			t.Fatalf("expected status %q to be usable", status)
+		}
+	}
+
+	for _, status := range []qnsandbox.TemplateBuildStatus{
+		qnsandbox.BuildStatusBuilding,
+		qnsandbox.BuildStatusWaiting,
+		qnsandbox.BuildStatusError,
+	} {
+		if templateBuildUsable(status) {
+			t.Fatalf("expected status %q to be unusable", status)
+		}
 	}
 }
