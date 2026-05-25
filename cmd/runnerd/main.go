@@ -35,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 	githubHTTPClient := &http.Client{Timeout: 30 * time.Second}
-	sandboxHTTPClient := &http.Client{Timeout: cfg.SandboxAPITimeout}
+	sandboxHTTPClient := &http.Client{}
 	var gh *github.Client
 	switch cfg.GitHubAuthMode() {
 	case "app":

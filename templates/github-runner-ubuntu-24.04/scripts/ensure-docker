@@ -5,12 +5,20 @@ if ! command -v docker >/dev/null 2>&1 || ! command -v dockerd >/dev/null 2>&1; 
   exit 0
 fi
 
+run_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+    return
+  fi
+  sudo "$@"
+}
+
 if docker info >/dev/null 2>&1; then
   exit 0
 fi
 
-mkdir -p /var/lib/docker /var/run
-nohup dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
+run_root mkdir -p /var/lib/docker /var/run
+run_root nohup dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
 
 for _ in $(seq 1 30); do
   if docker info >/dev/null 2>&1; then
