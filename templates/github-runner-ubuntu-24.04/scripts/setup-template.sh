@@ -17,6 +17,7 @@ apt-get install -y --no-install-recommends \
   wget \
   git \
   git-lfs \
+  golang-golang-x-tools \
   gawk \
   jq \
   sudo \
@@ -38,7 +39,6 @@ apt-get install -y --no-install-recommends \
   automake \
   libtool \
   lsb-release \
-  software-properties-common \
   gnupg \
   iptables \
   iproute2 \
@@ -72,10 +72,23 @@ tar -C /usr/local -xzf /tmp/go.tar.gz
 rm /tmp/go.tar.gz
 mkdir -p "${GOPATH}/pkg/mod" "${GOPATH}/bin"
 go version
-go install "github.com/go-task/task/v3/cmd/task@v${TASK_VERSION}"
-go install "mvdan.cc/gofumpt@v${GOFUMPT_VERSION}"
-go install "golang.org/x/tools/cmd/goimports@v${GOIMPORTS_VERSION}"
-go install "honnef.co/go/tools/cmd/staticcheck@v${STATICCHECK_VERSION}"
+download \
+  "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_amd64.tar.gz" \
+  /tmp/task.tar.gz
+tar -C /usr/local/bin -xzf /tmp/task.tar.gz task
+chmod 0755 /usr/local/bin/task
+rm /tmp/task.tar.gz
+download \
+  "https://github.com/mvdan/gofumpt/releases/download/v${GOFUMPT_VERSION}/gofumpt_v${GOFUMPT_VERSION}_linux_amd64" \
+  /tmp/gofumpt
+install -m 0755 /tmp/gofumpt /usr/local/bin/gofumpt
+rm /tmp/gofumpt
+download \
+  "https://github.com/dominikh/go-tools/releases/download/${STATICCHECK_RELEASE}/staticcheck_linux_amd64.tar.gz" \
+  /tmp/staticcheck.tar.gz
+tar -C /tmp -xzf /tmp/staticcheck.tar.gz staticcheck/staticcheck
+install -m 0755 /tmp/staticcheck/staticcheck /usr/local/bin/staticcheck
+rm -rf /tmp/staticcheck /tmp/staticcheck.tar.gz
 chmod -R a+rX "${GOPATH}"
 
 mkdir -p "${OPENTOFU_CACHE_DIR}/${OPENTOFU_VERSION}" "${TERRAFORM_CACHE_DIR}/${TERRAFORM_VERSION}"
@@ -127,4 +140,4 @@ tofu version
 terraform version
 
 apt-get clean
-rm -rf /var/lib/apt/lists/* /tmp/*
+rm -rf /var/lib/apt/lists/*
