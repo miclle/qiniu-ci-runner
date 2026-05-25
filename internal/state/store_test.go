@@ -371,3 +371,60 @@ func TestAuditEventsCanBeListed(t *testing.T) {
 		t.Fatalf("unexpected audit events: %#v", events)
 	}
 }
+
+func TestRunnerStateDerivesGitHubJobLinkFromWorkflowJobPayload(t *testing.T) {
+	store := New(t.TempDir())
+	payload := []byte(`{
+		"workflow_job": {
+			"id": 77684492230,
+			"run_id": 26392225417,
+			"html_url": "https://github.com/qbox/las/actions/runs/26392225417/job/77684492230",
+			"pull_requests": [{"number": 3335}]
+		}
+	}`)
+	_, st, err := store.CreateRequest(RunnerRequest{
+		ID:                 "77684492230",
+		Source:             "github",
+		JobID:              77684492230,
+		RepositoryFullName: "qbox/las",
+		RequestedLabels:    []string{"github-runner-ubuntu-24-04"},
+		Labels:             []string{"github-runner-ubuntu-24-04"},
+		RunnerName:         "e2b-77684492230",
+	}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.WorkflowRunID != 26392225417 || st.WorkflowJobID != 77684492230 || st.PullRequestNumber != 3335 {
+		t.Fatalf("unexpected github metadata: %#v", st)
+	}
+	wantURL := "https://github.com/qbox/las/actions/runs/26392225417/job/77684492230?pr=3335"
+	if st.GitHubJobURL != wantURL {
+		t.Fatalf("unexpected github job url: %q", st.GitHubJobURL)
+	}
+}
+
+func TestRunnerStateBuildsGitHubJobLinkFromWorkflowRunPayload(t *testing.T) {
+	store := New(t.TempDir())
+	payload := []byte(`{
+		"workflow_run": {
+			"id": 26392225417,
+			"pull_requests": [{"number": 3335}]
+		}
+	}`)
+	_, st, err := store.CreateRequest(RunnerRequest{
+		ID:                 "77684492230",
+		Source:             "github_reconcile",
+		JobID:              77684492230,
+		RepositoryFullName: "qbox/las",
+		RequestedLabels:    []string{"github-runner-ubuntu-24-04"},
+		Labels:             []string{"github-runner-ubuntu-24-04"},
+		RunnerName:         "e2b-77684492230",
+	}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantURL := "https://github.com/qbox/las/actions/runs/26392225417/job/77684492230?pr=3335"
+	if st.WorkflowRunID != 26392225417 || st.GitHubJobURL != wantURL {
+		t.Fatalf("unexpected github metadata: %#v", st)
+	}
+}

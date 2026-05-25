@@ -61,6 +61,10 @@ type RunnerState struct {
 	RunnerName         string    `json:"runner_name"`
 	SandboxID          string    `json:"sandbox_id,omitempty"`
 	ProcessPID         uint32    `json:"process_pid,omitempty"`
+	WorkflowJobID      int64     `json:"workflow_job_id,omitempty"`
+	WorkflowRunID      int64     `json:"workflow_run_id,omitempty"`
+	GitHubJobURL       string    `json:"github_job_url,omitempty"`
+	PullRequestNumber  int64     `json:"pull_request_number,omitempty"`
 	AssignedJobID      int64     `json:"assigned_job_id,omitempty"`
 	AssignedJobName    string    `json:"assigned_job_name,omitempty"`
 	Error              string    `json:"error,omitempty"`
@@ -1291,6 +1295,7 @@ func recordToRequest(record runnerRequestRecord) (RunnerRequest, error) {
 
 func recordToState(record runnerRequestRecord) RunnerState {
 	requestedLabels, _ := labelsFromJSON(record.RequestedLabelsJSON)
+	githubLinks := githubLinksFromPayload(record)
 	return RunnerState{
 		ID:                 record.ID,
 		Status:             record.Status,
@@ -1301,6 +1306,10 @@ func recordToState(record runnerRequestRecord) RunnerState {
 		RunnerName:         record.RunnerName,
 		SandboxID:          record.SandboxID,
 		ProcessPID:         record.ProcessPID,
+		WorkflowJobID:      pointerToInt64(record.WorkflowJobID),
+		WorkflowRunID:      githubLinks.workflowRunID,
+		GitHubJobURL:       githubLinks.jobURL,
+		PullRequestNumber:  githubLinks.pullRequestNumber,
 		AssignedJobID:      record.AssignedJobID,
 		AssignedJobName:    record.AssignedJobName,
 		Error:              record.Error,
@@ -1323,6 +1332,90 @@ func recordToState(record runnerRequestRecord) RunnerState {
 		LeaseExpiresAt:     pointerToTime(record.LeaseExpiresAt),
 		Version:            record.Version,
 	}
+}
+
+type githubPayloadLinks struct {
+	workflowRunID     int64
+	jobURL            string
+	pullRequestNumber int64
+}
+
+type githubPayloadPullRequest struct {
+	Number int64 `json:"number"`
+}
+
+func githubLinksFromPayload(record runnerRequestRecord) githubPayloadLinks {
+	var payload struct {
+		WorkflowJob struct {
+			RunID        int64                      `json:"run_id"`
+			HTMLURL      string                     `json:"html_url"`
+			PullRequests []githubPayloadPullRequest `json:"pull_requests"`
+			WorkflowRun  struct {
+				ID int64 `json:"id"`
+			} `json:"workflow_run"`
+		} `json:"workflow_job"`
+		WorkflowRun struct {
+			ID           int64                      `json:"id"`
+			HTMLURL      string                     `json:"html_url"`
+			PullRequests []githubPayloadPullRequest `json:"pull_requests"`
+		} `json:"workflow_run"`
+		PullRequest struct {
+			Number int64 `json:"number"`
+		} `json:"pull_request"`
+	}
+	if record.GitHubPayloadJSON != "" {
+		_ = json.Unmarshal([]byte(record.GitHubPayloadJSON), &payload)
+	}
+
+	runID := payload.WorkflowJob.RunID
+	if runID == 0 {
+		runID = payload.WorkflowJob.WorkflowRun.ID
+	}
+	if runID == 0 {
+		runID = payload.WorkflowRun.ID
+	}
+
+	prNumber := firstPullRequestNumber(payload.WorkflowJob.PullRequests)
+	if prNumber == 0 {
+		prNumber = firstPullRequestNumber(payload.WorkflowRun.PullRequests)
+	}
+	if prNumber == 0 {
+		prNumber = payload.PullRequest.Number
+	}
+
+	jobURL := payload.WorkflowJob.HTMLURL
+	jobID := record.AssignedJobID
+	if jobID == 0 {
+		jobID = pointerToInt64(record.WorkflowJobID)
+	}
+	if jobURL == "" && record.RepositoryFullName != "" && runID > 0 && jobID > 0 {
+		jobURL = fmt.Sprintf("https://github.com/%s/actions/runs/%d/job/%d", record.RepositoryFullName, runID, jobID)
+	}
+	jobURL = appendPullRequestQuery(jobURL, prNumber)
+
+	return githubPayloadLinks{
+		workflowRunID:     runID,
+		jobURL:            jobURL,
+		pullRequestNumber: prNumber,
+	}
+}
+
+func firstPullRequestNumber(pulls []githubPayloadPullRequest) int64 {
+	if len(pulls) == 0 {
+		return 0
+	}
+	return pulls[0].Number
+}
+
+func appendPullRequestQuery(rawURL string, prNumber int64) string {
+	if rawURL == "" || prNumber == 0 || strings.Contains(rawURL, "pr=") {
+		return rawURL
+	}
+	separator := "?"
+	if strings.Contains(rawURL, "?") {
+		separator = "&"
+	}
+	return fmt.Sprintf("%s%spr=%d", rawURL, separator, prNumber)
 }
 
 func recordToProfile(record runnerProfileRecord) (RunnerProfile, error) {

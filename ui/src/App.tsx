@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import {
   AlertCircle,
   CheckCircle2,
   Clock3,
   Copy,
+  ExternalLink,
   Loader2,
   Play,
   Plus,
@@ -65,6 +66,10 @@ type RunnerState = {
   runner_name: string
   sandbox_id?: string
   process_pid?: number
+  workflow_job_id?: number
+  workflow_run_id?: number
+  github_job_url?: string
+  pull_request_number?: number
   assigned_job_id?: number
   assigned_job_name?: string
   error?: string
@@ -182,6 +187,9 @@ function App() {
   const [createRunnerSpec, setCreateRunnerSpec] = useState("")
   const [createLabels, setCreateLabels] = useState("self-hosted,e2b")
   const [createRunnerOpen, setCreateRunnerOpen] = useState(false)
+  const [runnerStatusFilter, setRunnerStatusFilter] = useState<RunnerStatus | "all">("all")
+  const [runnerRepositoryFilter, setRunnerRepositoryFilter] = useState("all")
+  const [runnerSpecFilter, setRunnerSpecFilter] = useState("all")
   const [runnerSpecOpen, setRunnerSpecOpen] = useState(false)
   const [runnerGroupOpen, setRunnerGroupOpen] = useState(false)
   const [runnerPolicyOpen, setRunnerPolicyOpen] = useState(false)
@@ -230,6 +238,36 @@ function App() {
   const selected = useMemo(
     () => runners.find((runner) => runner.id === selectedID),
     [runners, selectedID]
+  )
+
+  const runnerRepositories = useMemo(
+    () =>
+      Array.from(new Set(runners.map((runner) => runner.repository_full_name).filter(Boolean) as string[])).sort(),
+    [runners]
+  )
+
+  const runnerSpecNames = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [
+            ...runnerSpecs.map((runnerSpec) => runnerSpec.name),
+            ...runners.map((runner) => runner.runner_spec_name || ""),
+          ].filter(Boolean)
+        )
+      ).sort(),
+    [runnerSpecs, runners]
+  )
+
+  const filteredRunners = useMemo(
+    () =>
+      runners.filter((runner) => {
+        if (runnerStatusFilter !== "all" && runner.status !== runnerStatusFilter) return false
+        if (runnerRepositoryFilter !== "all" && runner.repository_full_name !== runnerRepositoryFilter) return false
+        if (runnerSpecFilter !== "all" && runner.runner_spec_name !== runnerSpecFilter) return false
+        return true
+      }),
+    [runnerRepositoryFilter, runnerSpecFilter, runnerStatusFilter, runners]
   )
 
   const groupNamesForSpec = useCallback(
@@ -708,9 +746,9 @@ function App() {
         onSectionChange={setSection}
         onClearToken={clearToken}
       />
-      <SidebarInset>
+      <SidebarInset className="min-h-0 overflow-hidden">
         <SiteHeader />
-        <main className="flex flex-1 flex-col gap-4 p-4 lg:gap-6 lg:p-6">
+        <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 lg:gap-6 lg:p-6">
           {!token ? (
             <Card className="max-w-xl">
               <CardHeader>
@@ -886,30 +924,75 @@ function App() {
                         </form>
                       </DialogContent>
                     </Dialog>
+                    <div className="grid gap-2 md:grid-cols-[minmax(160px,220px)_minmax(180px,1fr)_minmax(180px,1fr)]">
+                      <Select value={runnerStatusFilter} onValueChange={(value) => setRunnerStatusFilter(value as RunnerStatus | "all")}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All statuses</SelectItem>
+                          {(["queued", "creating", "running", "stopping", "completed", "failed"] as RunnerStatus[]).map((status) => (
+                            <SelectItem key={status} value={status}>
+                              {status}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={runnerRepositoryFilter} onValueChange={setRunnerRepositoryFilter}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Repository" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All repositories</SelectItem>
+                          {runnerRepositories.map((repository) => (
+                            <SelectItem key={repository} value={repository}>
+                              {repository}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={runnerSpecFilter} onValueChange={setRunnerSpecFilter}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Runner spec" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All runner specs</SelectItem>
+                          {runnerSpecNames.map((runnerSpecName) => (
+                            <SelectItem key={runnerSpecName} value={runnerSpecName}>
+                              {runnerSpecName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Showing {filteredRunners.length} of {runners.length} runner requests.
+                    </div>
                   </div>
                 </CardHeader>
-                <CardContent className="p-0">
+                <CardContent className="max-h-[calc(100vh-18rem)] overflow-auto p-0">
                   <Table>
-                    <TableHeader>
+                    <TableHeader className="sticky top-0 z-10 bg-background">
                       <TableRow>
                         <TableHead>Status</TableHead>
                         <TableHead>Repository</TableHead>
                         <TableHead>Runner spec</TableHead>
                         <TableHead>Runner</TableHead>
                         <TableHead>Sandbox</TableHead>
+                        <TableHead>GitHub</TableHead>
                         <TableHead>Updated</TableHead>
                         <TableHead className="w-36" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {runners.length === 0 ? (
+                      {filteredRunners.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                          <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                             No runner requests found
                           </TableCell>
                         </TableRow>
                       ) : (
-                        runners.map((runner) => (
+                        filteredRunners.map((runner) => (
                           <TableRow
                             key={runner.id}
                             data-state={runner.id === selectedID ? "selected" : undefined}
@@ -929,6 +1012,24 @@ function App() {
                             </TableCell>
                             <TableCell className="max-w-[180px] truncate">
                               {runner.sandbox_id || "-"}
+                            </TableCell>
+                            <TableCell>
+                              {runner.github_job_url ? (
+                                <Button
+                                  asChild
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <a href={runner.github_job_url} target="_blank" rel="noreferrer">
+                                    <ExternalLink />
+                                    Job
+                                  </a>
+                                </Button>
+                              ) : (
+                                <span className="text-muted-foreground">-</span>
+                              )}
                             </TableCell>
                             <TableCell>{formatTime(runner.updated_at)}</TableCell>
                             <TableCell>
@@ -1003,6 +1104,26 @@ function App() {
                         label="Job"
                         value={selected.assigned_job_name || selected.assigned_job_id || "-"}
                       />
+                      <Detail
+                        label="GitHub job"
+                        value={
+                          selected.github_job_url ? (
+                            <a
+                              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                              href={selected.github_job_url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open job
+                              <ExternalLink className="size-3.5" />
+                            </a>
+                          ) : (
+                            "-"
+                          )
+                        }
+                      />
+                      <Detail label="Workflow run" value={selected.workflow_run_id || "-"} />
+                      <Detail label="Pull request" value={selected.pull_request_number || "-"} />
                       <Detail label="Created" value={formatTime(selected.created_at)} />
                       <Detail label="Updated" value={formatTime(selected.updated_at)} />
                       <Detail label="Completed" value={formatTime(selected.completed_at)} />
@@ -1740,7 +1861,7 @@ function StatusBadge({ status }: { status: RunnerStatus }) {
   )
 }
 
-function Detail({ label, value }: { label: string; value: string | number }) {
+function Detail({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
       <div className="text-muted-foreground">{label}</div>
