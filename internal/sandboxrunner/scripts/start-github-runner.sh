@@ -4,6 +4,11 @@ set -euo pipefail
 export RUNNER_ALLOW_RUNASROOT=1
 export HOME="${RUNNER_HOME:-/tmp/runner-home}"
 export XDG_CONFIG_HOME="${HOME}/.config"
+export GOPATH="${GOPATH:-/opt/go}"
+export GOBIN="${GOBIN:-/usr/local/bin}"
+export RUNNER_TOOL_CACHE="${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"
+export AGENT_TOOLSDIRECTORY="${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+export PATH="/usr/local/go/bin:/usr/local/bin:${GOPATH}/bin:${PATH}"
 workdir="${RUNNER_WORKDIR:-/tmp/actions-runner}"
 mkdir -p "$workdir" "$HOME" "$XDG_CONFIG_HOME/git"
 cd "$workdir"
