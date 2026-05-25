@@ -1,0 +1,572 @@
+package state
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+// ---------- InFlightCount ----------
+
+func TestInFlightCountExcludesQueuedAndCompleted(t *testing.T) {
+	store := New(t.TempDir())
+
+	// queued (should not be counted)
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID: "if-queued", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-if-queued",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// running (should be counted)
+	_, stRunning, err := store.CreateRequest(RunnerRequest{
+		ID: "if-running", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-if-running",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stRunning.Status = StatusRunning
+	if err := store.WriteState(stRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	// creating (should be counted)
+	_, stCreating, err := store.CreateRequest(RunnerRequest{
+		ID: "if-creating", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-if-creating",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stCreating.Status = StatusCreating
+	if err := store.WriteState(stCreating); err != nil {
+		t.Fatal(err)
+	}
+
+	// completed (should not be counted)
+	_, stDone, err := store.CreateRequest(RunnerRequest{
+		ID: "if-done", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-if-done",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stDone.Status = StatusCompleted
+	if err := store.WriteState(stDone); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := store.InFlightCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("InFlightCount: got %d, want 2 (running + creating only)", count)
+	}
+}
+
+func TestInFlightCountIncludesStopping(t *testing.T) {
+	store := New(t.TempDir())
+
+	_, st, err := store.CreateRequest(RunnerRequest{
+		ID: "if-stopping", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-if-stopping",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = StatusRunning
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+	st, err = store.ReadState("if-stopping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = StatusStopping
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := store.InFlightCount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("InFlightCount: got %d, want 1 (stopping counts)", count)
+	}
+}
+
+// ---------- ActiveCountForProfile / InFlightCountForProfile ----------
+
+func TestActiveCountForProfileCountsAllActiveStatuses(t *testing.T) {
+	store := New(t.TempDir())
+
+	// alpha: 1 queued + 1 running
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID: "acp-alpha-queued", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-acp-alpha-queued", ProfileName: "alpha",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, stRun, err := store.CreateRequest(RunnerRequest{
+		ID: "acp-alpha-running", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-acp-alpha-running", ProfileName: "alpha",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stRun.Status = StatusRunning
+	if err := store.WriteState(stRun); err != nil {
+		t.Fatal(err)
+	}
+
+	// beta: 1 queued
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID: "acp-beta-queued", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-acp-beta-queued", ProfileName: "beta",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	alphaCount, err := store.ActiveCountForProfile("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alphaCount != 2 {
+		t.Errorf("ActiveCountForProfile(alpha): got %d, want 2", alphaCount)
+	}
+
+	betaCount, err := store.ActiveCountForProfile("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if betaCount != 1 {
+		t.Errorf("ActiveCountForProfile(beta): got %d, want 1", betaCount)
+	}
+}
+
+func TestInFlightCountForProfileExcludesQueued(t *testing.T) {
+	store := New(t.TempDir())
+
+	// queued: should NOT be counted by InFlightCountForProfile
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID: "icp-queued", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-icp-queued", ProfileName: "gamma",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// running: should be counted
+	_, stRun, err := store.CreateRequest(RunnerRequest{
+		ID: "icp-running", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-icp-running", ProfileName: "gamma",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stRun.Status = StatusRunning
+	if err := store.WriteState(stRun); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := store.InFlightCountForProfile("gamma")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("InFlightCountForProfile(gamma): got %d, want 1 (only running, not queued)", count)
+	}
+}
+
+// ---------- ReleaseLease ----------
+
+func TestReleaseLeaseClears(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID: "lease-test", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-lease-test",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, claimed, err := store.ClaimNextRunnable("worker-A", now, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !claimed {
+		t.Fatal("expected claim to succeed")
+	}
+
+	if err := store.ReleaseLease("lease-test", "worker-A"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.ReadState("lease-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LeaseOwner != "" {
+		t.Errorf("expected empty lease owner after release, got %q", got.LeaseOwner)
+	}
+	if !got.LeaseExpiresAt.IsZero() {
+		t.Errorf("expected zero lease expiry after release, got %v", got.LeaseExpiresAt)
+	}
+}
+
+func TestReleaseLeaseDoesNotClearOtherWorkerLease(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID: "lease-other", Source: "test", Labels: []string{"sl"}, RunnerName: "e2b-lease-other",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, claimed, err := store.ClaimNextRunnable("worker-A", now, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !claimed {
+		t.Fatal("expected initial claim to succeed")
+	}
+
+	// worker-B tries to release worker-A's lease — should be a no-op
+	if err := store.ReleaseLease("lease-other", "worker-B"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.ReadState("lease-other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Lease should still be held by worker-A
+	if got.LeaseOwner != "worker-A" {
+		t.Errorf("expected lease still owned by worker-A after wrong-worker release, got %q", got.LeaseOwner)
+	}
+}
+
+// ---------- DeleteProfile ----------
+
+func TestDeleteProfileRemovesProfile(t *testing.T) {
+	store := New(t.TempDir())
+
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "to-delete",
+		Labels:         []string{"self-hosted"},
+		TemplateID:     "base",
+		MaxConcurrency: 5,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteProfile("to-delete"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetProfile("to-delete"); err == nil {
+		t.Error("expected error reading deleted profile, got nil")
+	}
+}
+
+func TestDeleteProfileIsIdempotent(t *testing.T) {
+	store := New(t.TempDir())
+
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "del-idem",
+		Labels:         []string{"sl"},
+		TemplateID:     "base",
+		MaxConcurrency: 1,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteProfile("del-idem"); err != nil {
+		t.Fatal(err)
+	}
+	// deleting again should not error
+	if err := store.DeleteProfile("del-idem"); err != nil {
+		t.Errorf("second DeleteProfile should not error, got: %v", err)
+	}
+}
+
+// ---------- ListProfiles / GetProfile ----------
+
+func TestListProfilesReturnsAllProfiles(t *testing.T) {
+	store := New(t.TempDir())
+
+	for _, name := range []string{"list-p1", "list-p2", "list-p3"} {
+		if _, err := store.UpsertProfile(RunnerProfile{
+			Name:           name,
+			Labels:         []string{"sl"},
+			TemplateID:     "base",
+			MaxConcurrency: 1,
+			Enabled:        true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	profiles, err := store.ListProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, p := range profiles {
+		found[p.Name] = true
+	}
+	for _, name := range []string{"list-p1", "list-p2", "list-p3"} {
+		if !found[name] {
+			t.Errorf("ListProfiles: expected profile %q not found in results", name)
+		}
+	}
+}
+
+func TestGetProfileReturnsCorrectProfile(t *testing.T) {
+	store := New(t.TempDir())
+
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "get-prof",
+		Labels:         []string{"self-hosted", "e2b"},
+		TemplateID:     "template-xyz",
+		MaxConcurrency: 7,
+		Priority:       5,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetProfile("get-prof")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "get-prof" || got.TemplateID != "template-xyz" || got.MaxConcurrency != 7 || got.Priority != 5 {
+		t.Errorf("GetProfile returned unexpected profile: %#v", got)
+	}
+}
+
+// ---------- RunnerGroups ----------
+
+func TestListRunnerGroupsAndGetRunnerGroup(t *testing.T) {
+	store := New(t.TempDir())
+
+	// Create the specs that the group will reference
+	for _, name := range []string{"grp-spec-a", "grp-spec-b"} {
+		if _, err := store.UpsertProfile(RunnerProfile{
+			Name:           name,
+			Labels:         []string{"sl"},
+			TemplateID:     "base",
+			MaxConcurrency: 1,
+			Enabled:        true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := store.UpsertRunnerGroup(RunnerGroup{
+		Name:      "test-group",
+		SpecNames: []string{"grp-spec-a", "grp-spec-b"},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// GetRunnerGroup
+	got, err := store.GetRunnerGroup("test-group")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "test-group" || len(got.SpecNames) != 2 {
+		t.Errorf("GetRunnerGroup: got %#v", got)
+	}
+
+	// ListRunnerGroups
+	groups, err := store.ListRunnerGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, g := range groups {
+		if g.Name == "test-group" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("ListRunnerGroups: expected test-group not found")
+	}
+}
+
+func TestDeleteRunnerGroupRemovesGroup(t *testing.T) {
+	store := New(t.TempDir())
+
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "del-grp-spec",
+		Labels:         []string{"sl"},
+		TemplateID:     "base",
+		MaxConcurrency: 1,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.UpsertRunnerGroup(RunnerGroup{
+		Name:      "del-group",
+		SpecNames: []string{"del-grp-spec"},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteRunnerGroup("del-group"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetRunnerGroup("del-group"); err == nil {
+		t.Error("expected error reading deleted runner group, got nil")
+	}
+}
+
+// ---------- RepositoryPolicies ----------
+
+func TestListRepositoryPoliciesReturnsInserted(t *testing.T) {
+	store := New(t.TempDir())
+
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "pol-profile",
+		Labels:         []string{"sl"},
+		TemplateID:     "base",
+		MaxConcurrency: 1,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.UpsertRepositoryPolicy(RepositoryPolicy{
+		RepositoryFullName: "org/repo-pol",
+		ProfileName:        "pol-profile",
+		Enabled:            true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	policies, err := store.ListRepositoryPolicies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range policies {
+		if p.RepositoryFullName == "org/repo-pol" && p.ProfileName == "pol-profile" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("ListRepositoryPolicies: expected policy not found")
+	}
+}
+
+func TestDeleteRepositoryPolicyRemovesPolicy(t *testing.T) {
+	store := New(t.TempDir())
+
+	if _, err := store.UpsertProfile(RunnerProfile{
+		Name:           "del-pol-profile",
+		Labels:         []string{"sl"},
+		TemplateID:     "base",
+		MaxConcurrency: 1,
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	policy, err := store.UpsertRepositoryPolicy(RepositoryPolicy{
+		RepositoryFullName: "org/del-repo",
+		ProfileName:        "del-pol-profile",
+		Enabled:            true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteRepositoryPolicy(policy.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	policies, err := store.ListRepositoryPolicies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range policies {
+		if p.ID == policy.ID {
+			t.Errorf("expected deleted policy to be gone, but found: %#v", p)
+		}
+	}
+}
+
+// ---------- sanitizeID / sanitizeRunnerName ----------
+
+func TestSanitizeIDReplacesPathSeparators(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple-id", "simple-id"},
+		{"with/slash", "with-slash"},
+		{`with\backslash`, "with-backslash"},
+		{"with/../traversal", "with-----traversal"},
+		{"  spaces  ", "spaces"},
+	}
+	for _, tt := range tests {
+		got := sanitizeID(tt.input)
+		// Just verify the dangerous characters are gone
+		if strings.Contains(got, "/") || strings.Contains(got, `\`) {
+			t.Errorf("sanitizeID(%q) = %q still contains path separators", tt.input, got)
+		}
+	}
+}
+
+func TestSanitizeRunnerNameReplacesPathSeparators(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantSafe bool
+	}{
+		{"e2b-runner-1", true},
+		{"runner/with/slash", true},
+		{`runner\with\backslash`, true},
+		{"  trimmed  ", true},
+	}
+	for _, tt := range tests {
+		got := sanitizeRunnerName(tt.input)
+		if strings.Contains(got, "/") || strings.Contains(got, `\`) {
+			t.Errorf("sanitizeRunnerName(%q) = %q still contains path separators", tt.input, got)
+		}
+	}
+}
+
+// ---------- ReadRequest ----------
+
+func TestReadRequestReturnsRequestAfterCreate(t *testing.T) {
+	store := New(t.TempDir())
+	req := RunnerRequest{
+		ID:                 "rr-read-1",
+		Source:             "manual",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-rr-read-1",
+		RepositoryFullName: "org/repo",
+		ProfileName:        "default",
+	}
+	if _, _, err := store.CreateRequest(req, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ReadRequest("rr-read-1")
+	if err != nil {
+		t.Fatalf("ReadRequest: %v", err)
+	}
+	if got.ID != req.ID {
+		t.Errorf("ReadRequest ID: got %q, want %q", got.ID, req.ID)
+	}
+	if got.RepositoryFullName != req.RepositoryFullName {
+		t.Errorf("ReadRequest RepositoryFullName: got %q, want %q", got.RepositoryFullName, req.RepositoryFullName)
+	}
+}
+
+func TestReadRequestReturnsErrorForMissingID(t *testing.T) {
+	store := New(t.TempDir())
+	if _, err := store.ReadRequest("nonexistent-id"); err == nil {
+		t.Error("ReadRequest: expected error for missing id, got nil")
+	}
+}
