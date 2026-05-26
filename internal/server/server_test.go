@@ -797,7 +797,7 @@ func TestSweeperMarksTimedOutRunningRunnerFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv.sweepOnce()
+	srv.sweepOnce(t.Context())
 
 	got, err := store.ReadState("timed-out")
 	if err != nil {
@@ -987,6 +987,47 @@ func TestPatchProfileRejectsInvalidTemplate(t *testing.T) {
 	}
 }
 
+func TestPatchProfilePreservesAndAllowsZeroSchedulingFields(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+
+	profileBody := bytes.NewBufferString(`{"name":"large","labels":["self-hosted","e2b","large"],"template_id":"valid-template","max_concurrency":5,"min_idle":2,"priority":10,"enabled":true}`)
+	req := adminRequest(http.MethodPost, "/runner_specs", profileBody)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("unexpected create profile status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = adminRequest(http.MethodPatch, "/runner_specs/large", bytes.NewBufferString(`{"runner_group":"gpu"}`))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected patch profile status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	profile, err := store.GetProfile("large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MinIdle != 2 || profile.Priority != 10 {
+		t.Fatalf("partial patch reset scheduling fields: %#v", profile)
+	}
+
+	req = adminRequest(http.MethodPatch, "/runner_specs/large", bytes.NewBufferString(`{"min_idle":0,"priority":0}`))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected zero patch profile status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	profile, err = store.GetProfile("large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MinIdle != 0 || profile.Priority != 0 {
+		t.Fatalf("explicit zero scheduling fields were not applied: %#v", profile)
+	}
+}
+
 func TestRunnerGroupAndRepositoryPolicyEndpoints(t *testing.T) {
 	store := state.New(t.TempDir())
 	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
@@ -1145,7 +1186,7 @@ func TestSweeperMarksTimedOutCreatesFailed(t *testing.T) {
 	}
 	srv := newTestServerWithLimit(t, store, "http://example.test", &fakeSandbox{}, 10)
 	srv.cfg.SandboxCreateTimeout = time.Second
-	srv.sweepOnce()
+	srv.sweepOnce(t.Context())
 	srv.Close()
 
 	got, err := store.ReadState("timed-out-create")
@@ -1182,7 +1223,7 @@ func TestSweeperRespectsStoppingRetryBackoff(t *testing.T) {
 	fake := &fakeSandbox{}
 	srv := newTestServerWithLimit(t, store, "http://example.test", fake, 10)
 	srv.cfg.SandboxStopTimeout = time.Second
-	srv.sweepOnce()
+	srv.sweepOnce(t.Context())
 	if fake.stoppedCount() != 0 {
 		t.Fatalf("expected sweeper to respect next_retry_at, got %d stops", fake.stoppedCount())
 	}
@@ -1212,7 +1253,7 @@ func TestSweeperStopsIdleRunnerThatNeverAcceptedJob(t *testing.T) {
 	fake := &fakeSandbox{}
 	srv := newTestServerWithLimit(t, store, "http://example.test", fake, 10)
 	srv.cfg.RunnerIdleTimeout = time.Minute
-	srv.sweepOnce()
+	srv.sweepOnce(t.Context())
 	if fake.stoppedCount() != 1 {
 		t.Fatalf("expected sweeper to stop idle runner, got %d stops", fake.stoppedCount())
 	}
@@ -1250,7 +1291,7 @@ func TestSweeperKeepsRunnerAfterJobStarted(t *testing.T) {
 	fake := &fakeSandbox{}
 	srv := newTestServerWithLimit(t, store, "http://example.test", fake, 10)
 	srv.cfg.RunnerIdleTimeout = time.Minute
-	srv.sweepOnce()
+	srv.sweepOnce(t.Context())
 	if fake.stoppedCount() != 0 {
 		t.Fatalf("expected sweeper to keep runner with started job, got %d stops", fake.stoppedCount())
 	}
@@ -1346,6 +1387,7 @@ func newTestServerWithLimit(t *testing.T, store state.Store, ghURL string, fake 
 	}
 	gh := github.NewClient(ghURL, http.DefaultClient)
 	srv := New(cfg, store, gh, fake, nil)
+	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv
 }

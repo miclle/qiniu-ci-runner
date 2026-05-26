@@ -245,6 +245,12 @@ github:
 	}
 }
 
+func TestGitHubAuthModeReturnsNoneWithoutAuthConfig(t *testing.T) {
+	if mode := (Config{}).GitHubAuthMode(); mode != "none" {
+		t.Fatalf("unexpected auth mode: %s", mode)
+	}
+}
+
 func TestLoadFileRejectsMissingGitHubAuth(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "runnerd.yaml")

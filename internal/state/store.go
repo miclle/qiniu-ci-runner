@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/jimyag/e2b-github-runner/internal/labelutil"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -35,6 +37,7 @@ const (
 
 var (
 	ErrConflict        = errors.New("state conflict")
+	ErrNotFound        = errors.New("state record not found")
 	ErrRetryNotAllowed = errors.New("retry not allowed for current state")
 )
 
@@ -162,6 +165,7 @@ type Store interface {
 	UpsertRunnerGroup(group RunnerGroup) (RunnerGroup, error)
 	DeleteRunnerGroup(name string) error
 	ListRepositoryPolicies() ([]RepositoryPolicy, error)
+	GetRepositoryPolicy(id int64) (RepositoryPolicy, error)
 	UpsertRepositoryPolicy(policy RepositoryPolicy) (RepositoryPolicy, error)
 	DeleteRepositoryPolicy(id int64) error
 	MatchProfile(repositoryFullName string, labels []string) (ProfileMatch, error)
@@ -473,9 +477,6 @@ func (s *DBStore) ListStates() ([]RunnerState, error) {
 	for _, record := range records {
 		states = append(states, recordToState(record))
 	}
-	sort.Slice(states, func(i, j int) bool {
-		return states[i].CreatedAt.After(states[j].CreatedAt)
-	})
 	return states, nil
 }
 
@@ -672,18 +673,22 @@ func (s *DBStore) AppendLog(id, name string, data []byte) {
 	}
 	db, err := s.dbOrEnsure()
 	if err != nil {
+		slog.Default().Warn("append runner log failed", "id", id, "name", name, "error", err)
 		return
 	}
 	eventType, err := logEventType(name)
 	if err != nil {
+		slog.Default().Warn("append runner log failed", "id", id, "name", name, "error", err)
 		return
 	}
-	_ = db.Create(&runnerEventRecord{
+	if err := db.Create(&runnerEventRecord{
 		RequestID: id,
 		EventType: eventType,
 		Message:   string(data),
 		CreatedAt: time.Now().UTC(),
-	}).Error
+	}).Error; err != nil {
+		slog.Default().Warn("append runner log failed", "id", id, "name", name, "error", err)
+	}
 }
 
 func (s *DBStore) ReadLog(id, name string, maxBytes int64) ([]byte, error) {
@@ -922,6 +927,21 @@ func (s *DBStore) ListRepositoryPolicies() ([]RepositoryPolicy, error) {
 		policies = append(policies, recordToRepositoryPolicy(record))
 	}
 	return policies, nil
+}
+
+func (s *DBStore) GetRepositoryPolicy(id int64) (RepositoryPolicy, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return RepositoryPolicy{}, err
+	}
+	var record repositoryPolicyRecord
+	if err := db.First(&record, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return RepositoryPolicy{}, ErrNotFound
+		}
+		return RepositoryPolicy{}, err
+	}
+	return recordToRepositoryPolicy(record), nil
 }
 
 func (s *DBStore) UpsertRepositoryPolicy(policy RepositoryPolicy) (RepositoryPolicy, error) {
@@ -1524,19 +1544,7 @@ func repositoryMatches(pattern, repository string) bool {
 }
 
 func labelsMatch(jobLabels, required []string) bool {
-	if len(jobLabels) == 0 {
-		return true
-	}
-	available := map[string]bool{}
-	for _, label := range required {
-		available[strings.ToLower(strings.TrimSpace(label))] = true
-	}
-	for _, label := range jobLabels {
-		if !available[strings.ToLower(strings.TrimSpace(label))] {
-			return false
-		}
-	}
-	return true
+	return labelutil.Match(jobLabels, required)
 }
 
 func logEventType(name string) (string, error) {

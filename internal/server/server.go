@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -61,8 +62,8 @@ type upsertProfileRequest struct {
 	TemplateID       string   `json:"template_id"`
 	RunnerGroup      string   `json:"runner_group"`
 	MaxConcurrency   int      `json:"max_concurrency"`
-	MinIdle          int      `json:"min_idle"`
-	Priority         int      `json:"priority"`
+	MinIdle          *int     `json:"min_idle"`
+	Priority         *int     `json:"priority"`
 	Enabled          *bool    `json:"enabled"`
 	DefaultAvailable *bool    `json:"default_available"`
 }
@@ -109,7 +110,6 @@ func New(cfg config.Config, store state.Store, gh *github.Client, sandbox sandbo
 	s.workerID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	s.loopCtx, s.loopCancel = context.WithCancel(context.Background())
 	s.routes()
-	s.startBackgroundLoops()
 	return s
 }
 
@@ -154,6 +154,10 @@ func (s *Server) Close() {
 	}
 	s.loopWG.Wait()
 	s.logger.Info("background loops stopped")
+}
+
+func (s *Server) Start() {
+	s.startBackgroundLoops()
 }
 
 func (s *Server) Recover(ctx context.Context) error {
@@ -236,7 +240,7 @@ func (s *Server) sweeperLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.sweepOnce()
+			s.sweepOnce(ctx)
 		}
 	}
 }
@@ -296,7 +300,7 @@ func (s *Server) refreshMetrics() {
 	metrics.Refresh(profiles, states)
 }
 
-func (s *Server) sweepOnce() {
+func (s *Server) sweepOnce(ctx context.Context) {
 	states, err := s.store.ListStates()
 	if err != nil {
 		s.logger.Error("list states for sweeper", "error", err)
@@ -314,12 +318,12 @@ func (s *Server) sweepOnce() {
 			if s.shouldStopIdleRunner(st, now) {
 				s.logger.Info("sweeper stopping idle runner", "id", st.ID, "sandbox_id", st.SandboxID, "running_at", st.RunningAt, "idle_timeout", s.cfg.RunnerIdleTimeout)
 				s.store.AppendLog(st.ID, "control.log", []byte("sweeper stopping idle runner that never accepted a job\n"))
-				s.stopIfExists(context.Background(), st.ID, github.WorkflowJob{})
+				s.stopIfExists(ctx, st.ID, github.WorkflowJob{})
 				continue
 			}
 			if !st.RunningAt.IsZero() && now.Sub(st.RunningAt) > s.cfg.SandboxTimeout {
 				s.logger.Info("sweeper stopping timed out runner", "id", st.ID, "sandbox_id", st.SandboxID, "running_at", st.RunningAt)
-				s.failAndStopRunner(context.Background(), st.ID, "sandbox_timeout", "timeout", "runner exceeded sandbox timeout")
+				s.failAndStopRunner(ctx, st.ID, "sandbox_timeout", "timeout", "runner exceeded sandbox timeout")
 			}
 		case state.StatusStopping:
 			if !st.NextRetryAt.IsZero() && now.Before(st.NextRetryAt) {
@@ -327,7 +331,7 @@ func (s *Server) sweepOnce() {
 			}
 			if !st.StoppingAt.IsZero() && now.Sub(st.StoppingAt) > s.cfg.SandboxStopTimeout {
 				s.logger.Info("sweeper retrying timed out stop", "id", st.ID, "sandbox_id", st.SandboxID, "stopping_at", st.StoppingAt)
-				s.stopIfExists(context.Background(), st.ID, github.WorkflowJob{})
+				s.stopIfExists(ctx, st.ID, github.WorkflowJob{})
 			}
 		}
 	}
@@ -360,7 +364,7 @@ func (s *Server) reconcileOnce(ctx context.Context) {
 			}
 			if !st.StoppingAt.IsZero() && time.Since(st.StoppingAt) > s.cfg.SandboxStopTimeout {
 				s.logger.Info("reconciler retrying timed out stop", "id", st.ID, "sandbox_id", st.SandboxID, "stopping_at", st.StoppingAt)
-				s.stopIfExists(context.Background(), st.ID, github.WorkflowJob{})
+				s.stopIfExists(ctx, st.ID, github.WorkflowJob{})
 			}
 		}
 	}
@@ -890,8 +894,8 @@ func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		TemplateID:       input.TemplateID,
 		RunnerGroup:      input.RunnerGroup,
 		MaxConcurrency:   input.MaxConcurrency,
-		MinIdle:          input.MinIdle,
-		Priority:         input.Priority,
+		MinIdle:          intValue(input.MinIdle),
+		Priority:         intValue(input.Priority),
 		Enabled:          enabled,
 		DefaultAvailable: input.DefaultAvailable != nil && *input.DefaultAvailable,
 	})
@@ -949,8 +953,12 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 	if input.MaxConcurrency > 0 {
 		current.MaxConcurrency = input.MaxConcurrency
 	}
-	current.MinIdle = input.MinIdle
-	current.Priority = input.Priority
+	if input.MinIdle != nil {
+		current.MinIdle = *input.MinIdle
+	}
+	if input.Priority != nil {
+		current.Priority = *input.Priority
+	}
 	if input.Enabled != nil {
 		current.Enabled = *input.Enabled
 	}
@@ -1152,25 +1160,18 @@ func (s *Server) handlePatchRepositoryPolicy(w http.ResponseWriter, r *http.Requ
 	if !s.requireAdminAuth(w, r) {
 		return
 	}
-	policies, err := s.store.ListRepositoryPolicies()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var existing *state.RepositoryPolicy
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid policy id")
 		return
 	}
-	for i := range policies {
-		if policies[i].ID == id {
-			existing = &policies[i]
-			break
-		}
-	}
-	if existing == nil {
+	existing, err := s.store.GetRepositoryPolicy(id)
+	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "repository policy not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var input upsertRepositoryPolicyRequest
@@ -1192,7 +1193,7 @@ func (s *Server) handlePatchRepositoryPolicy(w http.ResponseWriter, r *http.Requ
 	if input.Enabled != nil {
 		existing.Enabled = *input.Enabled
 	}
-	policy, err := s.store.UpsertRepositoryPolicy(*existing)
+	policy, err := s.store.UpsertRepositoryPolicy(existing)
 	if err != nil {
 		s.logger.Info("repository policy update rejected", "id", id, "repository", existing.RepositoryFullName, "profile", existing.ProfileName, "runner_group", existing.RunnerGroupName, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1279,7 +1280,7 @@ func (s *Server) handleDiagnosticsPprof(w http.ResponseWriter, r *http.Request) 
 		"pprof": out,
 		"state": map[string]any{
 			"backend":  s.cfg.StateBackend,
-			"database": s.cfg.StateDatabaseURL,
+			"database": redactDatabaseURL(s.cfg.StateDatabaseURL),
 		},
 		"github": map[string]any{
 			"auth_mode":       s.cfg.GitHubAuthMode(),
@@ -1291,6 +1292,24 @@ func (s *Server) handleDiagnosticsPprof(w http.ResponseWriter, r *http.Request) 
 		},
 		"recent_failures": failures,
 	})
+}
+
+func redactDatabaseURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" {
+		return raw
+	}
+	if u.User != nil {
+		u.User = url.User("xxxxx")
+	}
+	return u.String()
+}
+
+func intValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func (s *Server) handleDiagnosticsVars(w http.ResponseWriter, r *http.Request) {

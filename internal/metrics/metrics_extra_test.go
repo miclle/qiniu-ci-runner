@@ -94,11 +94,10 @@ func TestMetricJoinConcatenatesWithPipe(t *testing.T) {
 	}
 }
 
-func TestMetricKeyFormatsAsQuotedString(t *testing.T) {
+func TestMetricKeyReturnsUnquotedJoinedKey(t *testing.T) {
 	got := metricKey("a", "b", "c")
-	// metricKey wraps metricJoin result in Go %q formatting so expvar treats it as a quoted map key
-	if !strings.Contains(got, `"a|b|c"`) {
-		t.Errorf("metricKey(a,b,c) = %q, expected to contain %q", got, `"a|b|c"`)
+	if got != "a|b|c" {
+		t.Errorf("metricKey(a,b,c) = %q, want %q", got, "a|b|c")
 	}
 }
 

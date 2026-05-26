@@ -763,6 +763,16 @@ func TestDiagnosticsPprofEndpointReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestRedactDatabaseURLRemovesCredentials(t *testing.T) {
+	got := redactDatabaseURL("postgres://runner:secret@example.test/runnerd?sslmode=disable")
+	if strings.Contains(got, "runner:") || strings.Contains(got, "secret") {
+		t.Fatalf("database URL leaked credentials: %s", got)
+	}
+	if !strings.Contains(got, "example.test") || !strings.Contains(got, "runnerd") {
+		t.Fatalf("database URL lost non-secret location fields: %s", got)
+	}
+}
+
 // ---------- isSandboxGone ----------
 
 func TestIsSandboxGoneReturnsFalseForNilError(t *testing.T) {
@@ -827,213 +837,213 @@ func TestNewIDGeneratesUniqueValues(t *testing.T) {
 // ---------- handleDiagnosticsVars - no pprof endpoint discovered ----------
 
 func TestDiagnosticsVarsReturns404WhenNoPprofEndpoint(t *testing.T) {
-store := state.New(t.TempDir())
-srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
-req := adminRequest(http.MethodGet, "/diagnostics/vars", nil)
-rec := httptest.NewRecorder()
-srv.ServeHTTP(rec, req)
+	req := adminRequest(http.MethodGet, "/diagnostics/vars", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
 
-// Without a running pprof server, discoverPprofArtifacts() returns empty
-if rec.Code != http.StatusNotFound {
-t.Fatalf("GET /diagnostics/vars: expected 404 (no pprof), got %d body=%s", rec.Code, rec.Body.String())
-}
+	// Without a running pprof server, discoverPprofArtifacts() returns empty
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /diagnostics/vars: expected 404 (no pprof), got %d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 // ---------- scheduleStopRetry ----------
 
 func TestScheduleStopRetryReturnsTrueForRetryableError(t *testing.T) {
-s := &Server{cfg: config.Config{
-RetryMaxAttempts: 3,
-RetryBaseDelay:   10 * time.Millisecond,
-RetryMaxDelay:    time.Second,
-}}
-st := &state.RunnerState{RetryCount: 0}
-retryable := s.scheduleStopRetry(st, fmt.Errorf("http_retryable_status: status 429"))
-if !retryable {
-t.Error("scheduleStopRetry: expected true for retryable error")
-}
-if st.RetryCount != 1 {
-t.Errorf("scheduleStopRetry: expected RetryCount=1, got %d", st.RetryCount)
-}
-if st.Status != state.StatusStopping {
-t.Errorf("scheduleStopRetry: expected status=stopping, got %s", st.Status)
-}
+	s := &Server{cfg: config.Config{
+		RetryMaxAttempts: 3,
+		RetryBaseDelay:   10 * time.Millisecond,
+		RetryMaxDelay:    time.Second,
+	}}
+	st := &state.RunnerState{RetryCount: 0}
+	retryable := s.scheduleStopRetry(st, fmt.Errorf("http_retryable_status: status 429"))
+	if !retryable {
+		t.Error("scheduleStopRetry: expected true for retryable error")
+	}
+	if st.RetryCount != 1 {
+		t.Errorf("scheduleStopRetry: expected RetryCount=1, got %d", st.RetryCount)
+	}
+	if st.Status != state.StatusStopping {
+		t.Errorf("scheduleStopRetry: expected status=stopping, got %s", st.Status)
+	}
 }
 
 func TestScheduleStopRetryReturnsFalseWhenMaxAttemptsReached(t *testing.T) {
-s := &Server{cfg: config.Config{
-RetryMaxAttempts: 3,
-RetryBaseDelay:   10 * time.Millisecond,
-RetryMaxDelay:    time.Second,
-}}
-st := &state.RunnerState{RetryCount: 3}
-retryable := s.scheduleStopRetry(st, fmt.Errorf("status 429"))
-if retryable {
-t.Error("scheduleStopRetry: expected false when max attempts reached")
-}
+	s := &Server{cfg: config.Config{
+		RetryMaxAttempts: 3,
+		RetryBaseDelay:   10 * time.Millisecond,
+		RetryMaxDelay:    time.Second,
+	}}
+	st := &state.RunnerState{RetryCount: 3}
+	retryable := s.scheduleStopRetry(st, fmt.Errorf("status 429"))
+	if retryable {
+		t.Error("scheduleStopRetry: expected false when max attempts reached")
+	}
 }
 
 func TestScheduleStopRetryReturnsFalseForNonRetryableError(t *testing.T) {
-s := &Server{cfg: config.Config{
-RetryMaxAttempts: 5,
-RetryBaseDelay:   10 * time.Millisecond,
-RetryMaxDelay:    time.Second,
-}}
-st := &state.RunnerState{RetryCount: 0}
-retryable := s.scheduleStopRetry(st, fmt.Errorf("status 401 unauthorized"))
-if retryable {
-t.Error("scheduleStopRetry: expected false for auth error")
-}
+	s := &Server{cfg: config.Config{
+		RetryMaxAttempts: 5,
+		RetryBaseDelay:   10 * time.Millisecond,
+		RetryMaxDelay:    time.Second,
+	}}
+	st := &state.RunnerState{RetryCount: 0}
+	retryable := s.scheduleStopRetry(st, fmt.Errorf("status 401 unauthorized"))
+	if retryable {
+		t.Error("scheduleStopRetry: expected false for auth error")
+	}
 }
 
 // ---------- markRunnerJobStarted ----------
 
 func TestMarkRunnerJobStartedSetsMarkerOnRunningRunner(t *testing.T) {
-store := state.New(t.TempDir())
-srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
-// Create a runner and set it to Running
-_, st, err := store.CreateRequest(state.RunnerRequest{
-ID:                 "mark-job-1",
-Source:             "test",
-Labels:             []string{"self-hosted"},
-RunnerName:         "e2b-mark-job-1",
-RepositoryFullName: "o/r",
-ProfileName:        "default",
-}, nil)
-if err != nil {
-t.Fatal(err)
-}
-st.Status = state.StatusRunning
-if err := store.WriteState(st); err != nil {
-t.Fatal(err)
-}
+	// Create a runner and set it to Running
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "mark-job-1",
+		Source:             "test",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-mark-job-1",
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusRunning
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
 
-srv.markRunnerJobStarted("mark-job-1")
+	srv.markRunnerJobStarted("mark-job-1")
 
-got, err := store.ReadState("mark-job-1")
-if err != nil {
-t.Fatal(err)
-}
-if got.AssignedJobName != runnerJobStartedMarker {
-t.Errorf("markRunnerJobStarted: AssignedJobName = %q, want %q", got.AssignedJobName, runnerJobStartedMarker)
-}
+	got, err := store.ReadState("mark-job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AssignedJobName != runnerJobStartedMarker {
+		t.Errorf("markRunnerJobStarted: AssignedJobName = %q, want %q", got.AssignedJobName, runnerJobStartedMarker)
+	}
 }
 
 func TestMarkRunnerJobStartedIsIdempotent(t *testing.T) {
-store := state.New(t.TempDir())
-srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
-_, st, err := store.CreateRequest(state.RunnerRequest{
-ID:                 "mark-job-2",
-Source:             "test",
-Labels:             []string{"self-hosted"},
-RunnerName:         "e2b-mark-job-2",
-RepositoryFullName: "o/r",
-ProfileName:        "default",
-}, nil)
-if err != nil {
-t.Fatal(err)
-}
-st.Status = state.StatusRunning
-st.AssignedJobName = runnerJobStartedMarker
-if err := store.WriteState(st); err != nil {
-t.Fatal(err)
-}
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "mark-job-2",
+		Source:             "test",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-mark-job-2",
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusRunning
+	st.AssignedJobName = runnerJobStartedMarker
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
 
-// Calling twice is safe
-srv.markRunnerJobStarted("mark-job-2")
-srv.markRunnerJobStarted("mark-job-2")
+	// Calling twice is safe
+	srv.markRunnerJobStarted("mark-job-2")
+	srv.markRunnerJobStarted("mark-job-2")
 
-got, err := store.ReadState("mark-job-2")
-if err != nil {
-t.Fatal(err)
-}
-if got.AssignedJobName != runnerJobStartedMarker {
-t.Errorf("markRunnerJobStarted idempotent: AssignedJobName = %q", got.AssignedJobName)
-}
+	got, err := store.ReadState("mark-job-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AssignedJobName != runnerJobStartedMarker {
+		t.Errorf("markRunnerJobStarted idempotent: AssignedJobName = %q", got.AssignedJobName)
+	}
 }
 
 // ---------- cleanupSandboxAfterExit ----------
 
 func TestCleanupSandboxAfterExitNoopWhenNoSandboxID(t *testing.T) {
-store := state.New(t.TempDir())
-srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
-st := state.RunnerState{ID: "cleanup-no-sandbox", SandboxID: ""}
-if err := srv.cleanupSandboxAfterExit("cleanup-no-sandbox", st); err != nil {
-t.Errorf("cleanupSandboxAfterExit: expected nil for empty SandboxID, got %v", err)
-}
+	st := state.RunnerState{ID: "cleanup-no-sandbox", SandboxID: ""}
+	if err := srv.cleanupSandboxAfterExit("cleanup-no-sandbox", st); err != nil {
+		t.Errorf("cleanupSandboxAfterExit: expected nil for empty SandboxID, got %v", err)
+	}
 }
 
 // ---------- runnerExited (clean exit) ----------
 
 func TestRunnerExitedWithExitCode0TransitionsToCompleted(t *testing.T) {
-store := state.New(t.TempDir())
-srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
-_, st, err := store.CreateRequest(state.RunnerRequest{
-ID:                 "exited-clean",
-Source:             "test",
-Labels:             []string{"self-hosted"},
-RunnerName:         "e2b-exited-clean",
-RepositoryFullName: "o/r",
-ProfileName:        "default",
-}, nil)
-if err != nil {
-t.Fatal(err)
-}
-st.Status = state.StatusRunning
-st.SandboxID = "" // no sandbox to stop
-if err := store.WriteState(st); err != nil {
-t.Fatal(err)
-}
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "exited-clean",
+		Source:             "test",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-exited-clean",
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusRunning
+	st.SandboxID = "" // no sandbox to stop
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
 
-srv.runnerExited("exited-clean", sandboxrunner.ExitResult{ExitCode: 0}, nil)
+	srv.runnerExited("exited-clean", sandboxrunner.ExitResult{ExitCode: 0}, nil)
 
-got, err := store.ReadState("exited-clean")
-if err != nil {
-t.Fatal(err)
-}
-if got.Status != state.StatusCompleted {
-t.Errorf("runnerExited exit=0: expected status=completed, got %s", got.Status)
-}
+	got, err := store.ReadState("exited-clean")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusCompleted {
+		t.Errorf("runnerExited exit=0: expected status=completed, got %s", got.Status)
+	}
 }
 
 func TestRunnerExitedWithNonZeroExitCodeTransitionsToFailed(t *testing.T) {
-store := state.New(t.TempDir())
-srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
-_, st, err := store.CreateRequest(state.RunnerRequest{
-ID:                 "exited-nonzero",
-Source:             "test",
-Labels:             []string{"self-hosted"},
-RunnerName:         "e2b-exited-nonzero",
-RepositoryFullName: "o/r",
-ProfileName:        "default",
-}, nil)
-if err != nil {
-t.Fatal(err)
-}
-st.Status = state.StatusRunning
-st.SandboxID = ""
-if err := store.WriteState(st); err != nil {
-t.Fatal(err)
-}
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "exited-nonzero",
+		Source:             "test",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-exited-nonzero",
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusRunning
+	st.SandboxID = ""
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
 
-srv.runnerExited("exited-nonzero", sandboxrunner.ExitResult{ExitCode: 137, Stderr: "OOM killed"}, nil)
+	srv.runnerExited("exited-nonzero", sandboxrunner.ExitResult{ExitCode: 137, Stderr: "OOM killed"}, nil)
 
-got, err := store.ReadState("exited-nonzero")
-if err != nil {
-t.Fatal(err)
-}
-if got.Status != state.StatusFailed {
-t.Errorf("runnerExited nonzero: expected status=failed, got %s", got.Status)
-}
-if !strings.Contains(got.Error, "137") {
-t.Errorf("runnerExited nonzero: expected error to contain exit code, got %q", got.Error)
-}
+	got, err := store.ReadState("exited-nonzero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusFailed {
+		t.Errorf("runnerExited nonzero: expected status=failed, got %s", got.Status)
+	}
+	if !strings.Contains(got.Error, "137") {
+		t.Errorf("runnerExited nonzero: expected error to contain exit code, got %q", got.Error)
+	}
 }
 
 // ---------- reconcileOnce ----------

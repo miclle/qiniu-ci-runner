@@ -170,6 +170,9 @@ func (c Config) GitHubAuthMode() string {
 	if strings.TrimSpace(c.GitHubBasicAuthUsername) != "" || strings.TrimSpace(c.GitHubBasicAuthPassword) != "" {
 		return "basic"
 	}
+	if c.GitHubAppID == 0 && c.GitHubAppInstallationID == 0 && strings.TrimSpace(c.GitHubAppPrivateKeyFile) == "" {
+		return "none"
+	}
 	return "app"
 }
 

@@ -68,6 +68,7 @@ func main() {
 		if err := handler.Recover(recoveryCtx); err != nil {
 			logger.Error("recover runner state", "error", err)
 		}
+		handler.Start()
 	}()
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

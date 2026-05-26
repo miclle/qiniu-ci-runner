@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"expvar"
-	"fmt"
 	"time"
 
 	"github.com/jimyag/e2b-github-runner/internal/state"
@@ -176,7 +175,7 @@ func RecordWorkflowRunDuration(repository, workflow, job, profile, conclusion st
 }
 
 func metricKey(parts ...string) string {
-	return fmt.Sprintf("%q", metricJoin(parts...))
+	return metricJoin(parts...)
 }
 
 func metricJoin(parts ...string) string {
