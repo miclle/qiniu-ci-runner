@@ -149,6 +149,7 @@ type Store interface {
 	ListStates() ([]RunnerState, error)
 	ListActiveStates() ([]RunnerState, error)
 	ListMismatchedCompletedStates(limit int) ([]RunnerState, error)
+	ListFailedWorkflowJobStates(limit int) ([]RunnerState, error)
 	ListStatesPage(limit, offset int) ([]RunnerState, int64, error)
 	ActiveCount() (int, error)
 	InFlightCount() (int, error)
@@ -515,6 +516,31 @@ func (s *DBStore) ListMismatchedCompletedStates(limit int) ([]RunnerState, error
 		Where("status = ?", StatusCompleted).
 		Where("workflow_job_id IS NOT NULL AND workflow_job_id != 0").
 		Where("assigned_job_id != 0 AND assigned_job_id != workflow_job_id").
+		Order("updated_at DESC").
+		Limit(limit).
+		Find(&records).Error; err != nil {
+		return nil, err
+	}
+	states := make([]RunnerState, 0, len(records))
+	for _, record := range records {
+		states = append(states, recordToState(record))
+	}
+	return states, nil
+}
+
+func (s *DBStore) ListFailedWorkflowJobStates(limit int) ([]RunnerState, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	var records []runnerRequestRecord
+	if err := db.
+		Where("status = ?", StatusFailed).
+		Where("workflow_job_id IS NOT NULL AND workflow_job_id != 0").
+		Where("failure_stage IN ?", []string{"recovery", "cleanup"}).
 		Order("updated_at DESC").
 		Limit(limit).
 		Find(&records).Error; err != nil {

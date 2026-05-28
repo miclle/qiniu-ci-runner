@@ -374,6 +374,7 @@ func (s *Server) reconcileOnce(ctx context.Context) {
 		}
 	}
 	s.reconcileMismatchedCompletedJobs(ctx)
+	s.reconcileCompletedWorkflowJobs(ctx)
 }
 
 func (s *Server) reconcileMismatchedCompletedJobs(ctx context.Context) {
@@ -461,6 +462,62 @@ func (s *Server) originalWorkflowJobQueued(ctx context.Context, st state.RunnerS
 		return false, err
 	}
 	return strings.EqualFold(strings.TrimSpace(job.Status), "queued"), nil
+}
+
+func (s *Server) reconcileCompletedWorkflowJobs(ctx context.Context) {
+	states, err := s.store.ListFailedWorkflowJobStates(50)
+	if err != nil {
+		s.logger.Error("list failed workflow job states for reconciler", "error", err)
+		return
+	}
+	for _, st := range states {
+		if err := s.completeIfWorkflowJobCompleted(ctx, st.ID); err != nil {
+			s.logger.Error("reconcile completed workflow job", "id", st.ID, "workflow_job_id", st.WorkflowJobID, "error", err)
+		}
+	}
+}
+
+func (s *Server) completeIfWorkflowJobCompleted(ctx context.Context, id string) error {
+	unlock := s.lockRunner(id)
+	defer unlock()
+
+	st, err := s.store.ReadState(id)
+	if err != nil {
+		return err
+	}
+	if st.WorkflowJobID == 0 || st.RepositoryFullName == "" {
+		return nil
+	}
+	if st.Status != state.StatusFailed || (st.FailureStage != "recovery" && st.FailureStage != "cleanup") {
+		return nil
+	}
+	job, err := s.gh.GetWorkflowJob(ctx, st.RepositoryFullName, st.WorkflowJobID)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(job.Status), "completed") {
+		return nil
+	}
+	st.Status = state.StatusCompleted
+	st.AssignedJobID = 0
+	st.AssignedJobName = ""
+	st.Error = ""
+	st.FailureStage = ""
+	st.FailureReason = ""
+	st.LastErrorCode = ""
+	st.LastErrorMessage = ""
+	st.LastErrorRetryable = false
+	st.NextRetryAt = time.Time{}
+	st.LeaseOwner = ""
+	st.LeaseExpiresAt = time.Time{}
+	st.CompletedAt = time.Now().UTC()
+	if err := s.store.WriteState(st); err != nil {
+		return err
+	}
+	s.store.AppendLog(id, "control.log", []byte(fmt.Sprintf("workflow job %d is completed on GitHub; marked request completed\n", st.WorkflowJobID)))
+	s.logger.Info("marked failed request completed because workflow job is completed on GitHub", "id", id, "workflow_job_id", st.WorkflowJobID, "repository", st.RepositoryFullName, "conclusion", job.Conclusion)
+	s.refreshMetrics()
+	return nil
 }
 
 func (s *Server) handleAdminRedirect(w http.ResponseWriter, r *http.Request) {
@@ -2314,6 +2371,8 @@ func classifyRetryableError(stage string, err error) (string, bool) {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
+	case isGitHubRunnerBusyCleanup(err):
+		return "github_runner_busy", true
 	case strings.Contains(msg, "failed to place sandbox"):
 		return "sandbox_capacity", true
 	case strings.Contains(msg, "secondary rate limit"):
@@ -2416,10 +2475,19 @@ func (s *Server) scheduleStopRetry(st *state.RunnerState, err error) bool {
 
 func (s *Server) scheduleCleanupRetry(st *state.RunnerState, err error) bool {
 	code, retryable := classifyRetryableError("github_cleanup", err)
-	if !retryable || st.RetryCount >= s.cfg.RetryMaxAttempts {
+	if !retryable {
 		return false
 	}
-	st.RetryCount++
+	if isGitHubRunnerBusyCleanup(err) {
+		if st.RetryCount < s.cfg.RetryMaxAttempts {
+			st.RetryCount++
+		}
+	} else {
+		if st.RetryCount >= s.cfg.RetryMaxAttempts {
+			return false
+		}
+		st.RetryCount++
+	}
 	st.Status = state.StatusStopping
 	if st.FailureStage == "" {
 		st.FailureStage = "cleanup"
@@ -2431,6 +2499,16 @@ func (s *Server) scheduleCleanupRetry(st *state.RunnerState, err error) bool {
 	st.LastErrorRetryable = true
 	st.NextRetryAt = s.nextRetryAt(st.RetryCount, time.Now().UTC())
 	return true
+}
+
+func isGitHubRunnerBusyCleanup(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "github remove runner: status 422") &&
+		strings.Contains(msg, "currently running a job") &&
+		strings.Contains(msg, "cannot be deleted")
 }
 
 func appendError(current, extra string) string {

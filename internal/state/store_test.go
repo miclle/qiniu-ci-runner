@@ -111,6 +111,51 @@ func TestListMismatchedCompletedStates(t *testing.T) {
 	}
 }
 
+func TestListFailedWorkflowJobStates(t *testing.T) {
+	store := New(t.TempDir())
+	_, st, err := store.CreateRequest(RunnerRequest{
+		ID:                 "failed-recovery",
+		Source:             "test",
+		JobID:              1001,
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-failed-recovery",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = StatusFailed
+	st.FailureStage = "recovery"
+	st.FailureReason = "cleanup_failed"
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+	_, other, err := store.CreateRequest(RunnerRequest{
+		ID:                 "failed-start",
+		Source:             "test",
+		JobID:              2002,
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-failed-start",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Status = StatusFailed
+	other.FailureStage = "sandbox_start"
+	if err := store.WriteState(other); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := store.ListFailedWorkflowJobStates(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].ID != "failed-recovery" {
+		t.Fatalf("expected only failed recovery workflow job state, got %#v", states)
+	}
+}
+
 func TestWriteStateUsesVersionCAS(t *testing.T) {
 	store := New(t.TempDir())
 	_, st, err := store.CreateRequest(RunnerRequest{

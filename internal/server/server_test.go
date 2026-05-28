@@ -865,6 +865,53 @@ func TestRecoverStopsActiveRunnerState(t *testing.T) {
 	}
 }
 
+func TestRecoverSchedulesRetryWhenGitHubRunnerBusy(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/actions/runners":
+			w.Write([]byte(`{"runners":[{"id":99,"name":"e2b-recover-busy","status":"online","busy":true}]}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/repos/o/r/actions/runners/99":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write([]byte(`{"message":"Bad request - Runner e2b-recover-busy is currently running a job and cannot be deleted.","status":"422"}`))
+		default:
+			t.Fatalf("unexpected github request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "recover-busy",
+		Source:             "test",
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted"},
+		ProfileName:        "default",
+		RunnerName:         "e2b-recover-busy",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusRunning
+	st.SandboxID = "sb-recover-busy"
+	st.ProcessPID = 42
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTestServer(t, store, ghServer.URL, &fakeSandbox{})
+	if err := srv.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ReadState("recover-busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusStopping || got.FailureStage != "cleanup" || got.FailureReason != "github_runner_busy" || got.NextRetryAt.IsZero() {
+		t.Fatalf("expected busy runner cleanup retry, got %#v", got)
+	}
+}
+
 func TestStopRunnerSchedulesGitHubCleanupRetry(t *testing.T) {
 	var listCalls int
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

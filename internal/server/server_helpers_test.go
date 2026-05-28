@@ -1139,6 +1139,56 @@ func TestReconcileMismatchedCompletedJobsRequeuesOriginalJob(t *testing.T) {
 	}
 }
 
+func TestReconcileCompletedWorkflowJobsMarksFailedRecoveryCompleted(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/actions/jobs/1001":
+			w.Write([]byte(`{"id":1001,"name":"check","status":"completed","conclusion":"success","labels":["self-hosted","e2b"]}`))
+		default:
+			t.Fatalf("unexpected github request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, ghServer.URL, &fakeSandbox{})
+	srv.Close()
+
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "1001",
+		Source:             "test",
+		JobID:              1001,
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted", "e2b"},
+		ProfileName:        "default",
+		RunnerName:         "e2b-1001",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusFailed
+	st.FailureStage = "recovery"
+	st.FailureReason = "cleanup_failed"
+	st.Error = "recover cleanup github runner: busy"
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.reconcileCompletedWorkflowJobs(t.Context())
+
+	got, err := store.ReadState("1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusCompleted {
+		t.Fatalf("expected completed state, got %s", got.Status)
+	}
+	if got.FailureStage != "" || got.Error != "" || got.CompletedAt.IsZero() {
+		t.Fatalf("expected failure metadata cleared and completed_at set, got %#v", got)
+	}
+}
+
 // ---------- failStart ----------
 
 func TestFailStartTransitionsRunnerToFailed(t *testing.T) {
