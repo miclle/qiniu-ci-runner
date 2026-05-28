@@ -166,6 +166,48 @@ func TestListStatesPage(t *testing.T) {
 	}
 }
 
+func TestListActiveStatesExcludesTerminalStates(t *testing.T) {
+	store := New(t.TempDir())
+	for _, tc := range []struct {
+		id     string
+		status string
+	}{
+		{id: "queued", status: StatusQueued},
+		{id: "running", status: StatusRunning},
+		{id: "completed", status: StatusCompleted},
+		{id: "failed", status: StatusFailed},
+	} {
+		if _, st, err := store.CreateRequest(RunnerRequest{
+			ID:         tc.id,
+			Source:     "test",
+			Labels:     []string{"self-hosted"},
+			RunnerName: "e2b-" + tc.id,
+		}, nil); err != nil {
+			t.Fatal(err)
+		} else if tc.status != StatusQueued {
+			st.Status = tc.status
+			if err := store.WriteState(st); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	states, err := store.ListActiveStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, st := range states {
+		got[st.ID] = true
+	}
+	if !got["queued"] || !got["running"] {
+		t.Fatalf("active states missing expected rows: %#v", got)
+	}
+	if got["completed"] || got["failed"] {
+		t.Fatalf("active states included terminal rows: %#v", got)
+	}
+}
+
 func TestReadLogCanReturnTail(t *testing.T) {
 	store := New(t.TempDir())
 	if _, _, err := store.CreateRequest(RunnerRequest{

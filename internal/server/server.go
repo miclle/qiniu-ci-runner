@@ -166,7 +166,7 @@ func (s *Server) Start() {
 }
 
 func (s *Server) Recover(ctx context.Context) error {
-	states, err := s.store.ListStates()
+	states, err := s.store.ListActiveStates()
 	if err != nil {
 		return err
 	}
@@ -297,7 +297,7 @@ func (s *Server) refreshMetrics() {
 		s.logger.Error("refresh metrics list profiles", "error", err)
 		return
 	}
-	states, err := s.store.ListStates()
+	states, err := s.store.ListActiveStates()
 	if err != nil {
 		s.logger.Error("refresh metrics list states", "error", err)
 		return
@@ -306,7 +306,7 @@ func (s *Server) refreshMetrics() {
 }
 
 func (s *Server) sweepOnce(ctx context.Context) {
-	states, err := s.store.ListStates()
+	states, err := s.store.ListActiveStates()
 	if err != nil {
 		s.logger.Error("list states for sweeper", "error", err)
 		return
@@ -354,7 +354,7 @@ func (s *Server) shouldStopIdleRunner(st state.RunnerState, now time.Time) bool 
 
 func (s *Server) reconcileOnce(ctx context.Context) {
 	s.processQueuedRequests(ctx)
-	states, err := s.store.ListStates()
+	states, err := s.store.ListActiveStates()
 	if err != nil {
 		s.logger.Error("list states for reconciler", "error", err)
 		return
@@ -1398,6 +1398,7 @@ func (s *Server) enqueueRunnerRequest(req state.RunnerRequest, payload []byte) (
 	}
 	if created {
 		s.logger.Info("runner request created", "id", req.ID, "source", req.Source, "labels", req.Labels)
+		metrics.RecordRunnerRequest(req.RepositoryFullName, req.ProfileName, req.Source, "created")
 		s.store.AppendLog(req.ID, "control.log", []byte("runner request created\n"))
 		s.refreshMetrics()
 		s.signalQueue()
@@ -1414,6 +1415,7 @@ func (s *Server) rejectAdmission(req state.RunnerRequest, payload []byte, reason
 		s.logger.Info("runner admission rejection already exists", "id", req.ID, "status", st.Status, "reason", reason)
 		return st, nil
 	}
+	metrics.RecordRunnerRequest(req.RepositoryFullName, req.ProfileName, req.Source, "rejected")
 	st.Status = state.StatusFailed
 	st.FailureStage = "admission"
 	st.FailureReason = reason

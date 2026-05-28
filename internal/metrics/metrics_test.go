@@ -30,6 +30,7 @@ func TestRefreshTracksBusyAndIdleRunners(t *testing.T) {
 func TestRecordExpandedMetrics(t *testing.T) {
 	RecordRunnerRegistered("metrics-expanded", "success")
 	RecordRunnerCleanup("metrics-expanded", "removed")
+	RecordRunnerRequest("octo/repo", "metrics-expanded", "github_webhook", "created")
 	RecordGitHubAPI("metrics_api", "success", 5*time.Millisecond)
 	RecordWorkflowFailure("octo/repo", "ci", "test", "metrics-expanded", "runner_exit", "1")
 	RecordWorkflowQueueDuration("octo/repo", "ci", "test", "metrics-expanded", 10*time.Millisecond)
@@ -37,6 +38,7 @@ func TestRecordExpandedMetrics(t *testing.T) {
 
 	assertExpvarContains(t, runnerRegistered.String(), `metrics-expanded|success`)
 	assertExpvarContains(t, runnerCleanup.String(), `metrics-expanded|removed`)
+	assertExpvarContains(t, runnerRequestsTotal.String(), `octo/repo|metrics-expanded|github_webhook|created`)
 	assertExpvarContains(t, githubAPIOperations.String(), `metrics_api|success`)
 	assertExpvarContains(t, workflowFailures.String(), `octo/repo|ci|test|metrics-expanded|runner_exit|1`)
 	assertExpvarContains(t, workflowQueueCount.String(), `octo/repo|ci|test|metrics-expanded`)

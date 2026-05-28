@@ -36,6 +36,7 @@ var (
 	workflowQueueCount   = expvar.NewMap("github_workflow_job_queue_duration_count")
 	workflowRunTime      = expvar.NewMap("github_workflow_job_run_duration_ms_total")
 	workflowRunCount     = expvar.NewMap("github_workflow_job_run_duration_count")
+	runnerRequestsTotal  = expvar.NewMap("e2b_runner_requests_total")
 	lastReconcileUnix    = expvar.NewInt("e2b_runner_last_reconcile_unix")
 )
 
@@ -132,6 +133,10 @@ func RecordRunnerRegistered(profile, result string) {
 
 func RecordRunnerCleanup(profile, result string) {
 	runnerCleanup.Add(metricKey(profile, result), 1)
+}
+
+func RecordRunnerRequest(repository, profile, source, result string) {
+	runnerRequestsTotal.Add(metricKey(repository, profile, source, result), 1)
 }
 
 func RecordGitHubAPI(operation, result string, d time.Duration) {

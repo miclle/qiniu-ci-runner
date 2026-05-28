@@ -147,6 +147,7 @@ type Store interface {
 	ReadState(id string) (RunnerState, error)
 	WriteState(st RunnerState) error
 	ListStates() ([]RunnerState, error)
+	ListActiveStates() ([]RunnerState, error)
 	ListStatesPage(limit, offset int) ([]RunnerState, int64, error)
 	ActiveCount() (int, error)
 	InFlightCount() (int, error)
@@ -481,6 +482,25 @@ func (s *DBStore) ListStates() ([]RunnerState, error) {
 	return states, nil
 }
 
+func (s *DBStore) ListActiveStates() ([]RunnerState, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return nil, err
+	}
+	var records []runnerRequestRecord
+	if err := db.
+		Where("status IN ?", activeStatuses()).
+		Order("queued_at DESC").
+		Find(&records).Error; err != nil {
+		return nil, err
+	}
+	states := make([]RunnerState, 0, len(records))
+	for _, record := range records {
+		states = append(states, recordToState(record))
+	}
+	return states, nil
+}
+
 func (s *DBStore) ListStatesPage(limit, offset int) ([]RunnerState, int64, error) {
 	db, err := s.dbOrEnsure()
 	if err != nil {
@@ -507,6 +527,10 @@ func (s *DBStore) ListStatesPage(limit, offset int) ([]RunnerState, int64, error
 	return states, total, nil
 }
 
+func activeStatuses() []string {
+	return []string{StatusQueued, StatusCreating, StatusRunning, StatusStopping}
+}
+
 func (s *DBStore) ActiveCount() (int, error) {
 	db, err := s.dbOrEnsure()
 	if err != nil {
@@ -514,7 +538,7 @@ func (s *DBStore) ActiveCount() (int, error) {
 	}
 	var count int64
 	if err := db.Model(&runnerRequestRecord{}).
-		Where("status IN ?", []string{StatusQueued, StatusCreating, StatusRunning, StatusStopping}).
+		Where("status IN ?", activeStatuses()).
 		Count(&count).Error; err != nil {
 		return 0, err
 	}
