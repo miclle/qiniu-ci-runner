@@ -6,6 +6,44 @@ import (
 	"time"
 )
 
+func TestSQLiteStoreUsesWALAndBusyTimeout(t *testing.T) {
+	store := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseURL:    t.TempDir() + "/runnerd.db",
+		MigrateOnStart: true,
+	}).(*DBStore)
+	if err := store.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sqlDB.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1", got)
+	}
+
+	var journalMode string
+	if err := db.Raw("PRAGMA journal_mode").Scan(&journalMode).Error; err != nil {
+		t.Fatal(err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
+	}
+
+	var busyTimeout int
+	if err := db.Raw("PRAGMA busy_timeout").Scan(&busyTimeout).Error; err != nil {
+		t.Fatal(err)
+	}
+	if busyTimeout != 15000 {
+		t.Fatalf("busy_timeout = %d, want 15000", busyTimeout)
+	}
+}
+
 func TestCreateRequestIsIdempotent(t *testing.T) {
 	store := New(t.TempDir())
 	req := RunnerRequest{ID: "123", Source: "test", Labels: []string{"self-hosted"}, RunnerName: "e2b-123"}

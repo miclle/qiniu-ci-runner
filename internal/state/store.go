@@ -1192,12 +1192,39 @@ func (s *DBStore) open() (*gorm.DB, error) {
 				return nil, err
 			}
 		}
-		return gorm.Open(sqlite.Open(s.opts.DatabaseURL), cfg)
+		db, err := gorm.Open(sqlite.Open(s.opts.DatabaseURL), cfg)
+		if err != nil {
+			return nil, err
+		}
+		if err := configureSQLite(db); err != nil {
+			return nil, err
+		}
+		return db, nil
 	case BackendPostgres:
 		return gorm.Open(postgres.Open(s.opts.DatabaseURL), cfg)
 	default:
 		return nil, fmt.Errorf("unsupported state backend: %s", s.opts.Backend)
 	}
+}
+
+func configureSQLite(db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	pragmas := []string{
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA synchronous = NORMAL",
+		"PRAGMA busy_timeout = 15000",
+	}
+	for _, pragma := range pragmas {
+		if err := db.Exec(pragma).Error; err != nil {
+			return fmt.Errorf("%s: %w", pragma, err)
+		}
+	}
+	return nil
 }
 
 func (s *DBStore) migrate(db *gorm.DB) error {
