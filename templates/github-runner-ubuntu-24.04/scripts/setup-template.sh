@@ -28,6 +28,7 @@ apt-get install -y --no-install-recommends \
   xz-utils \
   zstd \
   rsync \
+  rclone \
   coreutils \
   findutils \
   file \
@@ -127,7 +128,7 @@ test -x /opt/actions-runner/config.sh
 test -x /opt/actions-runner/run.sh
 chown -R user:user /opt/actions-runner
 
-bash -lc 'command -v go task gofumpt goimports staticcheck node npm gh jq docker tofu terraform'
+bash -lc 'command -v go task gofumpt goimports staticcheck node npm gh jq docker rclone tofu terraform'
 go version
 task --version
 gofumpt --version
@@ -136,6 +137,7 @@ node --version
 npm --version
 gh --version
 docker --version
+rclone version
 tofu version
 terraform version
 
