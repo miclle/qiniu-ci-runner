@@ -34,11 +34,20 @@ registration_token="$(printf '%%s' "%[2]s" | base64 -d)"
 runner_name="$(printf '%%s' "%[3]s" | base64 -d)"
 runner_labels="$(printf '%%s' "%[4]s" | base64 -d)"
 runner_group="$(printf '%%s' "%[5]s" | base64 -d)"
+runner_request_id="$(printf '%%s' "%[6]s" | base64 -d)"
+sandbox_id="$(printf '%%s' "%[7]s" | base64 -d)"
 
 mkdir -p /tmp/runnerd-hooks
+export RUNNERD_SANDBOX_ID="$sandbox_id"
+export RUNNERD_REQUEST_ID="$runner_request_id"
+export RUNNERD_RUNNER_NAME="$runner_name"
 cat >/tmp/runnerd-hooks/job-started.sh <<'HOOK'
 #!/usr/bin/env bash
 echo "RUNNERD_JOB_STARTED"
+echo "::notice title=E2B sandbox::sandbox_id=${RUNNERD_SANDBOX_ID} runner_request_id=${RUNNERD_REQUEST_ID} runner_name=${RUNNERD_RUNNER_NAME}"
+echo "E2B sandbox id: ${RUNNERD_SANDBOX_ID}"
+echo "Runner request id: ${RUNNERD_REQUEST_ID}"
+echo "Runner name: ${RUNNERD_RUNNER_NAME}"
 HOOK
 cat >/tmp/runnerd-hooks/job-completed.sh <<'HOOK'
 #!/usr/bin/env bash

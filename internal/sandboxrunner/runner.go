@@ -113,7 +113,7 @@ func (s *E2BService) StartRunner(ctx context.Context, input StartInput) (StartRe
 		return StartResult{}, err
 	}
 
-	if _, err := sb.Files().Write(ctx, "/tmp/start-github-runner.sh", []byte(startScript(input))); err != nil {
+	if _, err := sb.Files().Write(ctx, "/tmp/start-github-runner.sh", []byte(startScript(input, sb.ID()))); err != nil {
 		_ = sb.Kill(ctx)
 		return StartResult{}, fmt.Errorf("write runner script: %w", err)
 	}
@@ -166,7 +166,7 @@ func (s *E2BService) StopRunner(ctx context.Context, sandboxID string, pid uint3
 	return sb.Kill(ctx)
 }
 
-func startScript(input StartInput) string {
+func startScript(input StartInput, sandboxID string) string {
 	labels := strings.Join(input.Labels, ",")
 	return fmt.Sprintf(
 		startRunnerScriptTemplate,
@@ -175,5 +175,7 @@ func startScript(input StartInput) string {
 		base64.StdEncoding.EncodeToString([]byte(input.RunnerName)),
 		base64.StdEncoding.EncodeToString([]byte(labels)),
 		base64.StdEncoding.EncodeToString([]byte(input.RunnerGroup)),
+		base64.StdEncoding.EncodeToString([]byte(input.RequestID)),
+		base64.StdEncoding.EncodeToString([]byte(sandboxID)),
 	)
 }
