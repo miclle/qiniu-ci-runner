@@ -2326,6 +2326,21 @@ func (s *Server) applyFailure(st *state.RunnerState, stage string, err error, al
 	st.SandboxID = ""
 	st.ProcessPID = 0
 	st.CompletedAt = time.Time{}
+	if allowRetry && retryable && isQueueDeferFailure(code) {
+		st.Status = state.StatusQueued
+		if st.RetryCount < s.cfg.RetryMaxAttempts {
+			st.RetryCount++
+		}
+		st.NextRetryAt = s.nextRetryAt(max(st.RetryCount, 1), now)
+		st.CreatingAt = time.Time{}
+		st.RunningAt = time.Time{}
+		st.StoppingAt = time.Time{}
+		st.FailedAt = time.Time{}
+		return failureResult{
+			metricResult: "retry",
+			logLine:      fmt.Sprintf("runner deferred at %s due to %s, next retry scheduled for %s: %s", stage, code, st.NextRetryAt.Format(time.RFC3339), err),
+		}
+	}
 	if allowRetry && retryable && st.RetryCount < s.cfg.RetryMaxAttempts {
 		st.Status = state.StatusQueued
 		st.RetryCount++
@@ -2362,6 +2377,15 @@ func (s *Server) nextRetryAt(retryCount int, now time.Time) time.Time {
 	return now.Add(delay)
 }
 
+func isQueueDeferFailure(code string) bool {
+	switch code {
+	case "sandbox_capacity", "http_rate_limited", "github_secondary_rate_limit":
+		return true
+	default:
+		return false
+	}
+}
+
 func classifyRetryableError(stage string, err error) (string, bool) {
 	if err == nil {
 		return "", false
@@ -2377,7 +2401,9 @@ func classifyRetryableError(stage string, err error) (string, bool) {
 		return "sandbox_capacity", true
 	case strings.Contains(msg, "secondary rate limit"):
 		return "github_secondary_rate_limit", true
-	case strings.Contains(msg, "status 408"), strings.Contains(msg, "status 409"), strings.Contains(msg, "status 425"), strings.Contains(msg, "status 429"):
+	case strings.Contains(msg, "status 429"):
+		return "http_rate_limited", true
+	case strings.Contains(msg, "status 408"), strings.Contains(msg, "status 409"), strings.Contains(msg, "status 425"):
 		return "http_retryable_status", true
 	case strings.Contains(msg, "status 5"):
 		if strings.Contains(stage, "github") {

@@ -1261,3 +1261,114 @@ func TestFailStartRequeuesRunnerWhenRetriesRemain(t *testing.T) {
 		t.Errorf("failStart retry: expected status=queued, got %s (error=%s)", got.Status, got.Error)
 	}
 }
+
+func TestFailStartDefersRateLimitEvenWhenMaxAttemptsReached(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "fail-start-rate-limit",
+		Source:             "test",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-fail-start-rate-limit",
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.RetryCount = srv.cfg.RetryMaxAttempts
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.failStart("fail-start-rate-limit", st, "sandbox_start", fmt.Errorf("api error: status 429"))
+
+	got, err := store.ReadState("fail-start-rate-limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusQueued {
+		t.Fatalf("expected rate-limited start to remain queued, got %#v", got)
+	}
+	if got.FailureReason != "http_rate_limited" {
+		t.Fatalf("expected http_rate_limited reason, got %q", got.FailureReason)
+	}
+	if got.NextRetryAt.IsZero() {
+		t.Fatal("expected next retry time for rate-limited start")
+	}
+	if got.RetryCount != srv.cfg.RetryMaxAttempts {
+		t.Fatalf("expected retry count capped at max attempts, got %d", got.RetryCount)
+	}
+}
+
+func TestFailStartDefersSandboxCapacityEvenWhenMaxAttemptsReached(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "fail-start-capacity",
+		Source:             "test",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-fail-start-capacity",
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.RetryCount = srv.cfg.RetryMaxAttempts
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.failStart("fail-start-capacity", st, "sandbox_start", fmt.Errorf("failed to place sandbox"))
+
+	got, err := store.ReadState("fail-start-capacity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusQueued {
+		t.Fatalf("expected capacity failure to remain queued, got %#v", got)
+	}
+	if got.FailureReason != "sandbox_capacity" {
+		t.Fatalf("expected sandbox_capacity reason, got %q", got.FailureReason)
+	}
+	if got.NextRetryAt.IsZero() {
+		t.Fatal("expected next retry time for capacity failure")
+	}
+}
+
+func TestFailStartFailsRetryableErrorWhenMaxAttemptsReached(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "fail-start-timeout-max",
+		Source:             "test",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-fail-start-timeout-max",
+		RepositoryFullName: "o/r",
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.RetryCount = srv.cfg.RetryMaxAttempts
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.failStart("fail-start-timeout-max", st, "sandbox_start", fmt.Errorf("api error: status 408"))
+
+	got, err := store.ReadState("fail-start-timeout-max")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusFailed {
+		t.Fatalf("expected generic retryable error to fail at max attempts, got %#v", got)
+	}
+	if got.FailureReason != "http_retryable_status" {
+		t.Fatalf("expected http_retryable_status reason, got %q", got.FailureReason)
+	}
+}
