@@ -20,10 +20,11 @@ func (s *Server) serveUIAsset(w http.ResponseWriter, r *http.Request, _ string) 
 	}
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			req.Header.Add("X-Forwarded-Host", req.Host)
-			req.Header.Add("X-Origin-Host", origin.Host)
+			req.Header.Set("X-Forwarded-Host", req.Host)
+			req.Header.Set("X-Origin-Host", origin.Host)
 			req.URL.Scheme = origin.Scheme
 			req.URL.Host = origin.Host
+			req.Host = origin.Host
 		},
 	}
 	proxy.ServeHTTP(w, r)

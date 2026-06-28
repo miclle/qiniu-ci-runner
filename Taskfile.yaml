@@ -127,6 +127,15 @@ tasks:
         export RUNNERD_VITE_PORT="${RUNNERD_VITE_PORT:-5173}"
         export RUNNERD_VITE_DEV_SERVER_URL="${RUNNERD_VITE_DEV_SERVER_URL:-http://127.0.0.1:${RUNNERD_VITE_PORT}}"
 
+        command -v curl >/dev/null 2>&1 || {
+          echo "curl is required for task dev startup checks." >&2
+          exit 1
+        }
+        if curl -fsS "${RUNNERD_VITE_DEV_SERVER_URL}" >/dev/null 2>&1; then
+          echo "UI dev server address is already in use: ${RUNNERD_VITE_DEV_SERVER_URL}" >&2
+          exit 1
+        fi
+
         echo "Starting UI on ${RUNNERD_VITE_DEV_SERVER_URL}"
         echo "Starting runnerd with ${RUNNERD_CONFIG}"
 
@@ -138,9 +147,20 @@ tasks:
         ./scripts/smee.sh &
         SMEE_PID="$!"
         trap 'kill "$UI_PID" "$SMEE_PID" 2>/dev/null || true' EXIT
-        sleep 1
-        if ! kill -0 "$UI_PID" 2>/dev/null; then
+        UI_READY=0
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -fsS "${RUNNERD_VITE_DEV_SERVER_URL}" >/dev/null 2>&1; then
+            UI_READY=1
+            break
+          fi
+          sleep 0.5
+        done
+        if [ "$UI_READY" != "1" ]; then
           echo "UI dev server failed to start on ${RUNNERD_VITE_DEV_SERVER_URL}" >&2
+          exit 1
+        fi
+        if [ -f .smee-url ] && ! kill -0 "$SMEE_PID" 2>/dev/null; then
+          echo "smee webhook forwarder failed to start" >&2
           exit 1
         fi
 
