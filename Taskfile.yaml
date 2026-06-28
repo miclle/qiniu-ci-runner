@@ -139,6 +139,10 @@ tasks:
         SMEE_PID="$!"
         trap 'kill "$UI_PID" "$SMEE_PID" 2>/dev/null || true' EXIT
         sleep 1
+        if ! kill -0 "$UI_PID" 2>/dev/null; then
+          echo "UI dev server failed to start on ${RUNNERD_VITE_DEV_SERVER_URL}" >&2
+          exit 1
+        fi
 
         reflex \
           -d none -s \
