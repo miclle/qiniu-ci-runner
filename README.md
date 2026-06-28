@@ -38,6 +38,26 @@ Runner state is persisted in a DB-backed store instead of per-request JSON direc
 go run ./cmd/runnerd --config ./runnerd.yaml
 ```
 
+## Development
+
+Install local tooling and UI dependencies once:
+
+```bash
+task deps
+task ui-deps
+```
+
+Use a local config file for development so secrets and local sqlite state stay out of git:
+
+```bash
+cp runnerd.yaml.example runnerd.local.yaml
+task dev
+```
+
+`task dev` starts the Vite UI dev server on `127.0.0.1:5173` by default and runs `runnerd` with the `development` build tag. The Go server still listens on the address from `runnerd.local.yaml`, commonly `:25500`, and proxies embedded UI assets to Vite. Open `http://127.0.0.1:25500/admin/` while developing.
+
+Set `RUNNERD_CONFIG` to use another config file, or `RUNNERD_VITE_PORT` when port `5173` is already in use.
+
 ## Docker
 
 The container image is file-config only. Mount `runnerd.yaml` and any referenced secret files into the container; environment variables such as `HTTP_ADDR` are not used for runtime config.
