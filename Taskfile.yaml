@@ -22,6 +22,7 @@ tasks:
       - go install honnef.co/go/tools/cmd/staticcheck@latest
       - go install mvdan.cc/gofumpt@latest
       - go install golang.org/x/tools/cmd/goimports@latest
+      - go install github.com/cespare/reflex@latest
       - go install github.com/go-task/task/v3/cmd/task@latest
       - go install github.com/goreleaser/goreleaser/v2@latest
 
@@ -32,20 +33,20 @@ tasks:
       - goimports -w cmd internal
 
   ui-deps:
-    desc: Install admin UI dependencies
+    desc: Install UI dependencies
     dir: ui
     cmds:
       - bun install --frozen-lockfile
 
   ui-build:
-    desc: Build the embedded admin UI
+    desc: Build the embedded UI
     dir: ui
     cmds:
       - bun install --frozen-lockfile
       - bun run build
 
   ui-lint:
-    desc: Lint and type-check the admin UI
+    desc: Lint and type-check the UI
     dir: ui
     cmds:
       - bun install --frozen-lockfile
@@ -103,6 +104,51 @@ tasks:
       - ui-build
     cmds:
       - go run ./cmd/{{.BINARY}} {{.CLI_ARGS}}
+
+  dev:
+    desc: Start the UI Vite dev server and runnerd with hot reload
+    cmds:
+      - |
+        command -v reflex >/dev/null 2>&1 || {
+          echo "reflex is required for task dev. Run: task deps" >&2
+          exit 1
+        }
+        test -x ui/node_modules/.bin/vite || {
+          echo "UI dependencies are missing. Run: task ui-deps" >&2
+          exit 1
+        }
+
+        export RUNNERD_CONFIG="${RUNNERD_CONFIG:-runnerd.local.yaml}"
+        test -f "${RUNNERD_CONFIG}" || {
+          echo "runnerd config not found: ${RUNNERD_CONFIG}" >&2
+          echo "Create one from runnerd.yaml.example, then update local secrets and OAuth settings." >&2
+          exit 1
+        }
+        export RUNNERD_VITE_PORT="${RUNNERD_VITE_PORT:-5173}"
+        export RUNNERD_VITE_DEV_SERVER_URL="${RUNNERD_VITE_DEV_SERVER_URL:-http://127.0.0.1:${RUNNERD_VITE_PORT}}"
+
+        echo "Starting UI on ${RUNNERD_VITE_DEV_SERVER_URL}"
+        echo "Starting runnerd with ${RUNNERD_CONFIG}"
+
+        (
+          cd ui
+          exec bun run dev --host 127.0.0.1 --port "${RUNNERD_VITE_PORT}"
+        ) &
+        UI_PID="$!"
+        trap 'kill "$UI_PID" 2>/dev/null || true' EXIT
+        sleep 1
+
+        reflex \
+          -d none -s \
+          -r '\.go$' \
+          -R '\.git/' \
+          -R 'bin/' \
+          -R 'dist/' \
+          -R 'docs/' \
+          -R 'templates/' \
+          -R 'ui/' \
+          -R 'var/' \
+          -- go run -trimpath -tags development ./cmd/{{.BINARY}} --config "${RUNNERD_CONFIG}" {{.CLI_ARGS}}
 
   docker-build:
     desc: Build the local Docker image

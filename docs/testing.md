@@ -147,7 +147,7 @@ go run ./cmd/runnerd --config ./runnerd.yaml --bootstrap-admin github:<your-gith
 export COOKIE_JAR=./runnerd.cookies
 ```
 
-后台页面源码在 `ui/`，使用和 `kubevirt-console` 相同的 React、Vite、Tailwind CSS、shadcn 风格组件和主题 CSS。`task build` 会先执行 `task ui-build`，把前端产物写入 `internal/server/admin/` 后再编译 `runnerd`。管理面现在包含 runners、runner specs、runner policies、retry、audit、label match test 和 diagnostics 页面。
+后台页面源码在 `ui/`，使用和 `kubevirt-console` 相同的 React、Vite、Tailwind CSS、shadcn 风格组件和主题 CSS。`task build` 会先执行 `task ui-build`，把前端产物写入 `internal/server/ui/` 后再编译 `runnerd`。管理面现在包含 runners、runner specs、runner policies、retry、audit、label match test 和 diagnostics 页面。
 
 先创建一个默认 runner spec：
 

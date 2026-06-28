@@ -541,6 +541,10 @@ func TestListRunnerRequestsIsPaginated(t *testing.T) {
 }
 
 func TestAdminUIIsServedWithoutAPIAccess(t *testing.T) {
+	if uiAssetsDevelopment {
+		t.Skip("embedded UI is served only in production asset mode")
+	}
+
 	store := state.New(t.TempDir())
 	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
