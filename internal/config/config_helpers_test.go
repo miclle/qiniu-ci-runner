@@ -203,12 +203,17 @@ func writeMinimalConfig(t *testing.T, dir, name string) string {
 	content := `
 admin:
   token: test-token
+auth:
+  session_secret: test-session-secret
 e2b:
   api_key: test-key
   api_url: https://api.e2b.dev
 github:
   webhook_secret: webhook-secret
   token: ghp_test
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)

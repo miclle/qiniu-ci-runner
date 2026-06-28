@@ -16,6 +16,8 @@ server:
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
@@ -29,6 +31,9 @@ github:
     id: 123
     installation_id: 456
     private_key_file: ./secrets/app.pem
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
 worker:
   max_concurrent_runners: 5
 `), 0o644); err != nil {
@@ -69,6 +74,8 @@ func TestLoadFileSupportsDynamicGitHubAppInstallation(t *testing.T) {
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
@@ -79,6 +86,9 @@ github:
   app:
     id: 123
     private_key_file: ./secrets/app.pem
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +105,111 @@ github:
 	}
 }
 
+func TestLoadFileSupportsGitHubOAuthLogin(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "runnerd.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+database:
+  backend: sqlite
+  url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
+admin:
+  token: admin-token
+e2b:
+  api_key: test-key
+  api_url: https://api.e2b.dev
+github:
+  webhook_secret: webhook-secret
+  app:
+    id: 123
+    private_key_file: ./secrets/app.pem
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
+    redirect_url: https://runner.example.com/auth/github/callback
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.GitHubOAuthEnabled() {
+		t.Fatal("expected github oauth to be enabled")
+	}
+	if cfg.GitHubOAuthRedirectURL != "https://runner.example.com/auth/github/callback" {
+		t.Fatalf("unexpected redirect url: %s", cfg.GitHubOAuthRedirectURL)
+	}
+}
+
+func TestLoadFileRejectsPartialGitHubOAuthLogin(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "runnerd.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+database:
+  backend: sqlite
+  url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
+admin:
+  token: admin-token
+e2b:
+  api_key: test-key
+  api_url: https://api.e2b.dev
+github:
+  webhook_secret: webhook-secret
+  app:
+    id: 123
+    private_key_file: ./secrets/app.pem
+  oauth:
+    client_id: Iv1.test
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFile(configPath)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "github.oauth.client_secret") {
+		t.Fatalf("expected oauth missing error, got %v", err)
+	}
+}
+
+func TestLoadFileRejectsMissingGitHubOAuthLogin(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "runnerd.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+database:
+  backend: sqlite
+  url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
+e2b:
+  api_key: test-key
+  api_url: https://api.e2b.dev
+github:
+  webhook_secret: webhook-secret
+  app:
+    id: 123
+    private_key_file: ./secrets/app.pem
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadFile(configPath)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	for _, want := range []string{"github.oauth.client_id", "github.oauth.client_secret"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected oauth missing error to mention %s, got %v", want, err)
+		}
+	}
+}
+
 func TestLoadFileRejectsDeprecatedGitHubDefaultRepository(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "runnerd.yaml")
@@ -102,6 +217,8 @@ func TestLoadFileRejectsDeprecatedGitHubDefaultRepository(t *testing.T) {
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
@@ -114,6 +231,9 @@ github:
   app:
     id: 123
     private_key_file: ./secrets/app.pem
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +254,8 @@ func TestLoadFileAllowsEmptyDeprecatedGitHubDefaultRepository(t *testing.T) {
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
@@ -146,6 +268,9 @@ github:
   app:
     id: 123
     private_key_file: ./secrets/app.pem
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +287,8 @@ func TestLoadFileRejectsUnsupportedGitHubAPIBaseURL(t *testing.T) {
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
@@ -194,6 +321,8 @@ func TestLoadFileSupportsGitHubTokenAuth(t *testing.T) {
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
@@ -202,6 +331,9 @@ e2b:
 github:
   webhook_secret: webhook-secret
   token: ghp_test
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +354,8 @@ func TestLoadFileSupportsGitHubBasicAuth(t *testing.T) {
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
@@ -232,6 +366,9 @@ github:
   basic_auth:
     username: octo
     password: secret
+  oauth:
+    client_id: Iv1.test
+    client_secret: secret
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -285,6 +422,8 @@ func TestLoadFileRejectsMultipleGitHubAuthModes(t *testing.T) {
 database:
   backend: sqlite
   url: ./runnerd.db
+auth:
+  session_secret: test-session-secret
 admin:
   token: admin-token
 e2b:
