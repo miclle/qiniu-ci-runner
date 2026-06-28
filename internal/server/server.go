@@ -168,6 +168,10 @@ func (w *loggingResponseWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
+func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (s *Server) Close() {
 	if s.loopCancel != nil {
 		s.logger.Info("stopping background loops")
