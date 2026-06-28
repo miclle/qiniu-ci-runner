@@ -17,6 +17,7 @@ Use this guide for future Codex or agent work in this repository.
 task deps
 task ui-deps
 task dev
+task smee
 task lint
 task test
 task build
@@ -24,13 +25,16 @@ task docker-check
 task release-check
 ```
 
-Use `task dev` for local development. It defaults to `RUNNERD_CONFIG=runnerd.local.yaml` and `RUNNERD_VITE_PORT=5173`.
+Use `task dev` for local development. It defaults to `RUNNERD_CONFIG=runnerd.local.yaml` and `RUNNERD_VITE_PORT=5173`, and starts smee forwarding when `.smee-url` exists.
+
+Use `task smee` for standalone GitHub webhook forwarding. It reads `.smee-url` and defaults to `SMEE_TARGET=http://127.0.0.1:25500/webhooks/github`.
 
 Use `task build` when verifying production embedded UI behavior because it rebuilds `internal/server/ui/` before compiling `bin/runnerd`.
 
 ## Editing Rules
 
 - Do not commit real secrets, local sqlite databases, or local config files.
+- Do not commit `.smee-url`; it is per-developer local webhook state.
 - Do not hand-edit generated files in `internal/server/ui/`; edit `ui/` and rebuild.
 - Keep `README.md`, `docs/testing.md`, and `TODO.md` aligned when changing config, build, development, or deployment workflows.
 - If adding non-admin UI, keep admin routes and role-gated APIs explicit instead of assuming everything under `ui/` is admin-only.

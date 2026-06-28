@@ -238,11 +238,27 @@ curl -fsS -b "$COOKIE_JAR" http://127.0.0.1:25500/diagnostics/pprof | jq
 
 GitHub webhook 必须能访问到本地服务。任选一种方式：
 
+使用 smee：
+
+```bash
+open https://smee.io/new
+echo 'https://smee.io/<your-channel>' > .smee-url
+task dev
+```
+
+把同一个 smee URL 填到 GitHub webhook 的 Payload URL。`.smee-url` 存在时，`task dev` 会自动启动 smee forwarder。也可以用 `task smee` 单独启动转发。默认转发到 `http://127.0.0.1:25500/webhooks/github`；如果 `runnerd.yaml` 使用了其他监听地址，可以设置 `SMEE_TARGET`：
+
+```bash
+SMEE_TARGET=http://127.0.0.1:25501/webhooks/github task smee
+```
+
+也可以使用 ngrok：
+
 ```bash
 ngrok http 25500
 ```
 
-或：
+或 cloudflared：
 
 ```bash
 cloudflared tunnel create e2b-local-runner

@@ -106,7 +106,7 @@ tasks:
       - go run ./cmd/{{.BINARY}} {{.CLI_ARGS}}
 
   dev:
-    desc: Start the UI Vite dev server and runnerd with hot reload
+    desc: Start the UI Vite dev server, smee webhook forwarder, and runnerd with hot reload
     cmds:
       - |
         command -v reflex >/dev/null 2>&1 || {
@@ -132,10 +132,12 @@ tasks:
 
         (
           cd ui
-          exec bun run dev --host 127.0.0.1 --port "${RUNNERD_VITE_PORT}"
+          exec bun run dev --host 127.0.0.1 --port "${RUNNERD_VITE_PORT}" --strictPort
         ) &
         UI_PID="$!"
-        trap 'kill "$UI_PID" 2>/dev/null || true' EXIT
+        ./scripts/smee.sh &
+        SMEE_PID="$!"
+        trap 'kill "$UI_PID" "$SMEE_PID" 2>/dev/null || true' EXIT
         sleep 1
 
         reflex \
@@ -149,6 +151,11 @@ tasks:
           -R 'ui/' \
           -R 'var/' \
           -- go run -trimpath -tags development ./cmd/{{.BINARY}} --config "${RUNNERD_CONFIG}" {{.CLI_ARGS}}
+
+  smee:
+    desc: Start the smee.io webhook forwarder standalone (reads .smee-url)
+    cmds:
+      - ./scripts/smee.sh
 
   docker-build:
     desc: Build the local Docker image
