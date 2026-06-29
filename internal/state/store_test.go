@@ -290,6 +290,66 @@ func TestOAuthIdentityRequiresExistingAccount(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyUsersToAccountsAndOAuthIdentities(t *testing.T) {
+	dir := t.TempDir()
+	databaseURL := dir + "/runnerd.db"
+	store := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseURL:    databaseURL,
+		MigrateOnStart: false,
+	}).(*DBStore)
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.Exec(`CREATE TABLE users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		oauth_provider TEXT NOT NULL,
+		oauth_subject TEXT NOT NULL,
+		oauth_login TEXT NOT NULL,
+		role TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	);`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO users (id, oauth_provider, oauth_subject, oauth_login, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		42, "github", "12345", "octocat", "admin", now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseURL:    databaseURL,
+		MigrateOnStart: true,
+	}).(*DBStore)
+	account, identity, err := migrated.GetAccountByOAuthIdentity("github", "12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.ID != 42 || account.Role != "admin" {
+		t.Fatalf("expected legacy admin account to migrate, got %#v", account)
+	}
+	if identity.AccountID != account.ID || identity.OAuthLogin != "octocat" {
+		t.Fatalf("expected legacy oauth identity to migrate, got account=%#v identity=%#v", account, identity)
+	}
+	db, err = migrated.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.Migrator().HasTable("users") {
+		t.Fatal("expected legacy users table to be removed after migration")
+	}
+}
+
 func TestEnsureAccountForOAuthIdentityConcurrentCreateIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	const workers = 12

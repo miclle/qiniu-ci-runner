@@ -1412,6 +1412,14 @@ func (s *DBStore) saveOAuthIdentityOnce(db *gorm.DB, provider, subject, login, r
 			}).Error; err != nil {
 				return err
 			}
+			if updateExisting {
+				if err := tx.Model(&accountRecord{}).Where("id = ?", identity.AccountID).Updates(map[string]any{
+					"role":       role,
+					"updated_at": now,
+				}).Error; err != nil {
+					return err
+				}
+			}
 			identity.OAuthLogin = login
 			identity.UpdatedAt = now
 		}
@@ -1430,7 +1438,11 @@ func isTransientStoreError(err error) bool {
 		return false
 	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "database is locked") || strings.Contains(message, "sqlite_busy")
+	return strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "serialization_failure") ||
+		strings.Contains(message, "deadlock_detected") ||
+		strings.Contains(message, "concurrent update")
 }
 
 func (s *DBStore) AppendAuditEvent(event AuditEvent) (AuditEvent, error) {
@@ -1610,7 +1622,43 @@ func (s *DBStore) migrate(db *gorm.DB) error {
 	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_policies_repository_group ON repository_policies(repository_full_name, runner_group_name) WHERE runner_group_name <> '';`).Error; err != nil {
 		return err
 	}
+	if err := s.migrateLegacyUsers(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *DBStore) migrateLegacyUsers(db *gorm.DB) error {
+	if !db.Migrator().HasTable("users") {
+		return nil
+	}
+	if !db.Migrator().HasColumn("users", "oauth_provider") {
+		if err := db.Exec(`ALTER TABLE users ADD COLUMN oauth_provider TEXT NOT NULL DEFAULT 'github'`).Error; err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasColumn("users", "oauth_subject") {
+		if err := db.Exec(`ALTER TABLE users ADD COLUMN oauth_subject TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+			return err
+		}
+		if err := db.Exec(`UPDATE users SET oauth_subject = oauth_login WHERE oauth_subject = ''`).Error; err != nil {
+			return err
+		}
+	}
+	if err := db.Exec(`INSERT INTO accounts (id, role, created_at, updated_at)
+		SELECT id, role, created_at, updated_at FROM users`).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`INSERT INTO oauth_identities (account_id, oauth_provider, oauth_subject, oauth_login, created_at, updated_at)
+		SELECT id, oauth_provider, oauth_subject, oauth_login, created_at, updated_at FROM users`).Error; err != nil {
+		return err
+	}
+	if s.opts.Backend == BackendPostgres {
+		if err := db.Exec(`SELECT setval(pg_get_serial_sequence('accounts', 'id'), COALESCE((SELECT MAX(id) FROM accounts), 1), true)`).Error; err != nil {
+			return err
+		}
+	}
+	return db.Migrator().DropTable("users")
 }
 
 func applyStateTimestamps(st *RunnerState, now time.Time) {
@@ -1718,20 +1766,7 @@ func (s *DBStore) accountFromIdentity(db *gorm.DB, identity oauthIdentityRecord)
 		}
 		return Account{}, OAuthIdentity{}, err
 	}
-	return Account{
-			ID:        account.ID,
-			Role:      account.Role,
-			CreatedAt: account.CreatedAt,
-			UpdatedAt: account.UpdatedAt,
-		}, OAuthIdentity{
-			ID:            identity.ID,
-			AccountID:     identity.AccountID,
-			OAuthProvider: identity.OAuthProvider,
-			OAuthSubject:  identity.OAuthSubject,
-			OAuthLogin:    identity.OAuthLogin,
-			CreatedAt:     identity.CreatedAt,
-			UpdatedAt:     identity.UpdatedAt,
-		}, nil
+	return Account(account), OAuthIdentity(identity), nil
 }
 
 type githubPayloadLinks struct {
