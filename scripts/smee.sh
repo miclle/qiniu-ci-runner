@@ -8,7 +8,16 @@ set -euo pipefail
 URL_FILE=".smee-url"
 TARGET="${SMEE_TARGET:-http://127.0.0.1:25500/webhooks/github}"
 
+CHECK_ONLY=0
+if [ "${1:-}" = "--check" ]; then
+  CHECK_ONLY=1
+fi
+
 if [ ! -f "$URL_FILE" ]; then
+  if [ "$CHECK_ONLY" = "1" ]; then
+    exit 0
+  fi
+
   cat <<'EOF'
 [smee] .smee-url not found; skipping webhook forwarder.
 
@@ -33,6 +42,11 @@ fi
 if ! command -v npx >/dev/null 2>&1; then
   echo "[smee] npx is required to run smee-client. Install Node.js/npm first." >&2
   exit 1
+fi
+
+if [ "$CHECK_ONLY" = "1" ]; then
+  npx --yes smee-client --help >/dev/null
+  exit 0
 fi
 
 echo "[smee] forwarding ${URL} -> ${TARGET}"

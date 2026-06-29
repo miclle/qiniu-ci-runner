@@ -139,6 +139,7 @@ tasks:
         echo "Starting UI on ${RUNNERD_VITE_DEV_SERVER_URL}"
         echo "Starting runnerd with ${RUNNERD_CONFIG}"
 
+        ./scripts/smee.sh --check
         (
           cd ui
           exec bun run dev --host 127.0.0.1 --port "${RUNNERD_VITE_PORT}" --strictPort
@@ -159,11 +160,6 @@ tasks:
           echo "UI dev server failed to start on ${RUNNERD_VITE_DEV_SERVER_URL}" >&2
           exit 1
         fi
-        if [ -f .smee-url ] && ! kill -0 "$SMEE_PID" 2>/dev/null; then
-          echo "smee webhook forwarder failed to start" >&2
-          exit 1
-        fi
-
         reflex \
           -d none -s \
           -r '\.go$' \
