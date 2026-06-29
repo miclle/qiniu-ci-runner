@@ -3,6 +3,7 @@ package state
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -156,75 +157,330 @@ func TestListFailedWorkflowJobStates(t *testing.T) {
 	}
 }
 
-func TestUpsertUserMaintainsRoleByOAuthIdentity(t *testing.T) {
+func TestUpsertAccountForOAuthIdentityMaintainsRoleByOAuthIdentity(t *testing.T) {
 	store := New(t.TempDir())
-	user, err := store.UpsertUser(User{OAuthProvider: "GitHub", OAuthSubject: "12345", OAuthLogin: "OctoCat", Role: "ADMIN"})
+	account, identity, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "GitHub", OAuthSubject: "12345", OAuthLogin: "OctoCat"}, "ADMIN")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.OAuthProvider != "github" || user.OAuthSubject != "12345" || user.OAuthLogin != "octocat" || user.Role != "admin" {
-		t.Fatalf("unexpected created user: %#v", user)
+	if identity.OAuthProvider != "github" || identity.OAuthSubject != "12345" || identity.OAuthLogin != "octocat" || account.Role != "admin" {
+		t.Fatalf("unexpected created account/identity: account=%#v identity=%#v", account, identity)
 	}
 
-	updated, err := store.UpsertUser(User{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "renamed", Role: "user"})
+	updatedAccount, updatedIdentity, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "renamed"}, "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.ID != user.ID || updated.OAuthLogin != "renamed" || updated.Role != "user" {
-		t.Fatalf("unexpected updated user: %#v first=%#v", updated, user)
+	if updatedIdentity.ID != identity.ID || updatedIdentity.OAuthLogin != "renamed" || updatedAccount.Role != "user" {
+		t.Fatalf("unexpected updated account/identity: account=%#v identity=%#v firstAccount=%#v firstIdentity=%#v", updatedAccount, updatedIdentity, account, identity)
 	}
 
-	got, err := store.GetUserByOAuthIdentity("GITHUB", "12345")
+	gotAccount, gotIdentity, err := store.GetAccountByOAuthIdentity("GITHUB", "12345")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ID != user.ID || got.Role != "user" {
-		t.Fatalf("unexpected fetched user: %#v", got)
+	if gotIdentity.ID != identity.ID || gotAccount.Role != "user" {
+		t.Fatalf("unexpected fetched account/identity: account=%#v identity=%#v", gotAccount, gotIdentity)
 	}
 
-	gitlab, err := store.UpsertUser(User{OAuthProvider: "gitlab", OAuthSubject: "12345", OAuthLogin: "octocat", Role: "admin"})
+	_, gitlabIdentity, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "gitlab", OAuthSubject: "12345", OAuthLogin: "octocat"}, "admin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gitlab.ID == user.ID {
-		t.Fatalf("expected provider to separate oauth identities: github=%#v gitlab=%#v", user, gitlab)
+	if gitlabIdentity.ID == identity.ID {
+		t.Fatalf("expected provider to separate oauth identities: github=%#v gitlab=%#v", identity, gitlabIdentity)
 	}
 
-	reusedLogin, err := store.UpsertUser(User{OAuthProvider: "github", OAuthSubject: "67890", OAuthLogin: "renamed", Role: "user"})
+	_, reusedLoginIdentity, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "67890", OAuthLogin: "renamed"}, "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reusedLogin.ID == user.ID {
-		t.Fatalf("expected stable subject to separate reused login identities: first=%#v reused=%#v", user, reusedLogin)
+	if reusedLoginIdentity.ID == identity.ID {
+		t.Fatalf("expected stable subject to separate reused login identities: first=%#v reused=%#v", identity, reusedLoginIdentity)
 	}
 }
 
-func TestEnsureUserCreatesDefaultWithoutOverwritingExistingRole(t *testing.T) {
+func TestEnsureAccountForOAuthIdentityCreatesDefaultWithoutOverwritingExistingRole(t *testing.T) {
 	store := New(t.TempDir())
-	created, err := store.EnsureUser(User{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat", Role: "user"})
+	createdAccount, createdIdentity, err := store.EnsureAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat"}, "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Role != "user" {
-		t.Fatalf("unexpected created role: %#v", created)
+	if createdAccount.Role != "user" {
+		t.Fatalf("unexpected created role: %#v", createdAccount)
 	}
 
-	if _, err := store.UpsertUser(User{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat", Role: "admin"}); err != nil {
+	if _, _, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat"}, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	ensured, err := store.EnsureUser(User{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "renamed", Role: "user"})
+	ensuredAccount, ensuredIdentity, err := store.EnsureAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "renamed"}, "user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ensured.ID != created.ID || ensured.OAuthLogin != "renamed" || ensured.Role != "admin" {
-		t.Fatalf("ensure should preserve existing admin role, got %#v created=%#v", ensured, created)
+	if ensuredIdentity.ID != createdIdentity.ID || ensuredIdentity.OAuthLogin != "renamed" || ensuredAccount.Role != "admin" {
+		t.Fatalf("ensure should preserve existing admin role, got account=%#v identity=%#v createdAccount=%#v createdIdentity=%#v", ensuredAccount, ensuredIdentity, createdAccount, createdIdentity)
 	}
 }
 
-func TestUpsertUserRejectsInvalidRole(t *testing.T) {
+func TestLinkOAuthIdentityToAccountSharesRoleAcrossProviders(t *testing.T) {
 	store := New(t.TempDir())
-	if _, err := store.UpsertUser(User{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat", Role: "owner"}); err == nil {
+	githubAccount, _, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat"}, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitlabAccount, gitlabIdentity, err := store.LinkOAuthIdentityToAccount(githubAccount.ID, OAuthIdentity{OAuthProvider: "gitlab", OAuthSubject: "abcde", OAuthLogin: "octocat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gitlabIdentity.AccountID != githubAccount.ID || gitlabAccount.Role != "admin" {
+		t.Fatalf("expected linked identity to share account role, github=%#v gitlabAccount=%#v gitlabIdentity=%#v", githubAccount, gitlabAccount, gitlabIdentity)
+	}
+
+	gotGitHubAccount, gotGitHubIdentity, err := store.GetAccountByOAuthIdentity("github", "12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotGitLabAccount, gotGitLabIdentity, err := store.GetAccountByOAuthIdentity("gitlab", "abcde")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotGitHubAccount.ID != gotGitLabAccount.ID || gotGitHubAccount.Role != gotGitLabAccount.Role || gotGitHubIdentity.AccountID != gotGitLabIdentity.AccountID {
+		t.Fatalf("expected provider identities to resolve to same account, githubAccount=%#v githubIdentity=%#v gitlabAccount=%#v gitlabIdentity=%#v", gotGitHubAccount, gotGitHubIdentity, gotGitLabAccount, gotGitLabIdentity)
+	}
+}
+
+func TestLinkOAuthIdentityToAccountRejectsIdentityOnDifferentAccount(t *testing.T) {
+	store := New(t.TempDir())
+	first, _, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat"}, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "gitlab", OAuthSubject: "abcde", OAuthLogin: "octocat"}, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("expected separate accounts before linking, first=%#v second=%#v", first, second)
+	}
+
+	_, _, err = store.LinkOAuthIdentityToAccount(first.ID, OAuthIdentity{OAuthProvider: "gitlab", OAuthSubject: "abcde", OAuthLogin: "octocat"})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected conflict linking identity from another account, got %v", err)
+	}
+}
+
+func TestOAuthIdentityRequiresExistingAccount(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	err = db.Create(&oauthIdentityRecord{
+		AccountID:     999,
+		OAuthProvider: "github",
+		OAuthSubject:  "12345",
+		OAuthLogin:    "octocat",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}).Error
+	if err == nil {
+		t.Fatal("expected foreign key error for missing account")
+	}
+}
+
+func TestMigrateLegacyUsersToAccountsAndOAuthIdentities(t *testing.T) {
+	dir := t.TempDir()
+	databaseURL := dir + "/runnerd.db"
+	store := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseURL:    databaseURL,
+		MigrateOnStart: false,
+	}).(*DBStore)
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.Exec(`CREATE TABLE users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		oauth_provider TEXT NOT NULL,
+		oauth_subject TEXT NOT NULL,
+		oauth_login TEXT NOT NULL,
+		role TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	);`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO users (id, oauth_provider, oauth_subject, oauth_login, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		42, "github", "12345", "octocat", "admin", now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseURL:    databaseURL,
+		MigrateOnStart: true,
+	}).(*DBStore)
+	account, identity, err := migrated.GetAccountByOAuthIdentity("github", "12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.ID != 42 || account.Role != "admin" {
+		t.Fatalf("expected legacy admin account to migrate, got %#v", account)
+	}
+	if identity.AccountID != account.ID || identity.OAuthLogin != "octocat" {
+		t.Fatalf("expected legacy oauth identity to migrate, got account=%#v identity=%#v", account, identity)
+	}
+	db, err = migrated.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.Migrator().HasTable("users") {
+		t.Fatal("expected legacy users table to be removed after migration")
+	}
+}
+
+func TestMigrateLegacyUsersIsIdempotentAfterPartialBackfill(t *testing.T) {
+	dir := t.TempDir()
+	databaseURL := dir + "/runnerd.db"
+	store := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseURL:    databaseURL,
+		MigrateOnStart: false,
+	}).(*DBStore)
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.Exec(`CREATE TABLE users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		oauth_provider TEXT NOT NULL,
+		oauth_subject TEXT NOT NULL,
+		oauth_login TEXT NOT NULL,
+		role TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	);`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO users (id, oauth_provider, oauth_subject, oauth_login, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		42, "github", "12345", "octocat", "admin", now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&accountRecord{}, &oauthIdentityRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO accounts (id, role, created_at, updated_at)
+		SELECT id, role, created_at, updated_at FROM users`).Error; err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseURL:    databaseURL,
+		MigrateOnStart: true,
+	}).(*DBStore)
+	account, identity, err := migrated.GetAccountByOAuthIdentity("github", "12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.ID != 42 || account.Role != "admin" || identity.AccountID != account.ID || identity.OAuthLogin != "octocat" {
+		t.Fatalf("expected partial legacy backfill to complete, got account=%#v identity=%#v", account, identity)
+	}
+	db, err = migrated.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.Migrator().HasTable("users") {
+		t.Fatal("expected legacy users table to be removed after idempotent migration")
+	}
+}
+
+func TestEnsureAccountForOAuthIdentityConcurrentCreateIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	const workers = 12
+	stores := make([]Store, 0, workers)
+	for i := 0; i < workers; i++ {
+		store := New(dir)
+		if err := store.Ensure(); err != nil {
+			t.Fatal(err)
+		}
+		stores = append(stores, store)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	type accountIdentity struct {
+		account  Account
+		identity OAuthIdentity
+	}
+	results := make(chan accountIdentity, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(store Store) {
+			defer wg.Done()
+			account, identity, err := store.EnsureAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat"}, "user")
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- accountIdentity{account: account, identity: identity}
+		}(stores[i])
+	}
+	wg.Wait()
+	close(errs)
+	close(results)
+
+	for err := range errs {
+		t.Fatalf("expected concurrent ensure to be idempotent, got %v", err)
+	}
+	var first accountIdentity
+	for result := range results {
+		if first.identity.ID == 0 {
+			first = result
+			continue
+		}
+		if result.identity.ID != first.identity.ID || result.account.ID != first.account.ID || result.account.Role != "user" {
+			t.Fatalf("expected same identity/account from concurrent ensure, first=%#v result=%#v", first, result)
+		}
+	}
+}
+
+func TestUpsertAccountForOAuthIdentityRejectsInvalidRole(t *testing.T) {
+	store := New(t.TempDir())
+	if _, _, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat"}, "owner"); err == nil {
 		t.Fatal("expected invalid role error")
+	}
+}
+
+func TestIsTransientStoreErrorRecognizesPostgresSQLSTATE(t *testing.T) {
+	for _, message := range []string{
+		"ERROR: transaction failed (SQLSTATE 40001)",
+		"ERROR: transaction failed (SQLSTATE 40P01)",
+	} {
+		t.Run(message, func(t *testing.T) {
+			if !isTransientStoreError(errors.New(message)) {
+				t.Fatalf("expected transient store error for %q", message)
+			}
+		})
 	}
 }
 

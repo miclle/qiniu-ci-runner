@@ -91,6 +91,7 @@ type profileMatchRequest struct {
 }
 
 type adminSession struct {
+	Provider  string `json:"provider,omitempty"`
 	Subject   string `json:"subject"`
 	Login     string `json:"login"`
 	Role      string `json:"role"`
@@ -638,21 +639,21 @@ func (s *Server) handleGitHubOAuthCallback(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusUnauthorized, "github oauth user fetch failed")
 		return
 	}
-	dbUser, err := s.store.EnsureUser(state.User{
+	account, _, err := s.store.EnsureAccountForOAuthIdentity(state.OAuthIdentity{
 		OAuthProvider: "github",
 		OAuthSubject:  user.Subject(),
 		OAuthLogin:    user.Login,
-		Role:          "user",
-	})
+	}, "user")
 	if err != nil {
-		s.logger.Warn("github oauth user save failed", "login", user.Login, "error", err)
-		writeError(w, http.StatusInternalServerError, "save github oauth user")
+		s.logger.Warn("github oauth account save failed", "login", user.Login, "error", err)
+		writeError(w, http.StatusInternalServerError, "save github oauth account")
 		return
 	}
 	session := adminSession{
+		Provider:  "github",
 		Subject:   user.Subject(),
 		Login:     user.Login,
-		Role:      dbUser.Role,
+		Role:      account.Role,
 		AvatarURL: user.AvatarURL,
 		ExpiresAt: time.Now().Add(s.cfg.AuthSessionTTL).Unix(),
 	}
@@ -2958,11 +2959,15 @@ func (s *Server) sessionFromRequest(r *http.Request) (adminSession, bool) {
 	if time.Now().Unix() > session.ExpiresAt {
 		return adminSession{}, false
 	}
-	user, err := s.store.GetUserByOAuthIdentity("github", session.Subject)
+	provider := strings.TrimSpace(session.Provider)
+	if provider == "" {
+		provider = "github"
+	}
+	account, _, err := s.store.GetAccountByOAuthIdentity(provider, session.Subject)
 	if err != nil {
 		return adminSession{}, false
 	}
-	session.Role = user.Role
+	session.Role = account.Role
 	return session, true
 }
 

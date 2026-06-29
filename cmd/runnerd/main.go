@@ -21,7 +21,7 @@ import (
 
 func main() {
 	configPath := flag.String("config", "runnerd.yaml", "path to runnerd config file")
-	bootstrapAdmin := flag.String("bootstrap-admin", "", "bootstrap an admin user as provider:subject, for example github:12345678")
+	bootstrapAdmin := flag.String("bootstrap-admin", "", "bootstrap an admin account as provider:subject, for example github:12345678")
 	flag.Parse()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg, err := config.Load(*configPath)
@@ -38,8 +38,8 @@ func main() {
 		logger.Error("ensure state store", "error", err)
 		os.Exit(1)
 	}
-	if err := bootstrapAdminUser(store, *bootstrapAdmin); err != nil {
-		logger.Error("bootstrap admin user", "error", err)
+	if err := bootstrapAdminAccount(store, *bootstrapAdmin); err != nil {
+		logger.Error("bootstrap admin account", "error", err)
 		os.Exit(1)
 	}
 	githubHTTPClient := &http.Client{Timeout: 30 * time.Second}
@@ -94,7 +94,7 @@ func main() {
 	}
 }
 
-func bootstrapAdminUser(store state.Store, identity string) error {
+func bootstrapAdminAccount(store state.Store, identity string) error {
 	identity = strings.TrimSpace(identity)
 	if identity == "" {
 		return nil
@@ -109,11 +109,10 @@ func bootstrapAdminUser(store state.Store, identity string) error {
 	if provider == "" || subject == "" {
 		return fmt.Errorf("expected provider:subject")
 	}
-	_, err := store.UpsertUser(state.User{
+	_, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{
 		OAuthProvider: provider,
 		OAuthSubject:  subject,
 		OAuthLogin:    subject,
-		Role:          "admin",
-	})
+	}, "admin")
 	return err
 }

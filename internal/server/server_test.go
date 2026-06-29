@@ -234,7 +234,7 @@ func TestManagementEndpointsRequireAdminAuth(t *testing.T) {
 		t.Fatalf("expected non-admin session to be rejected, got %d", rec.Code)
 	}
 
-	if _, err := store.UpsertUser(state.User{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot", Role: "admin"}); err != nil {
+	if _, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot"}, "admin"); err != nil {
 		t.Fatal(err)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/runner_requests", nil)
@@ -364,7 +364,7 @@ func TestGitHubOAuthLoginCreatesAdminSession(t *testing.T) {
 	}
 }
 
-func TestGitHubOAuthLoginCreatesNonAdminUser(t *testing.T) {
+func TestGitHubOAuthLoginCreatesNonAdminAccount(t *testing.T) {
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -433,14 +433,14 @@ func TestGitHubOAuthLoginCreatesNonAdminUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	if session.Role != "user" {
-		t.Fatalf("expected default user role, got %q", session.Role)
+		t.Fatalf("expected default account role, got %q", session.Role)
 	}
-	dbUser, err := store.GetUserByOAuthIdentity("github", "67890")
+	account, _, err := store.GetAccountByOAuthIdentity("github", "67890")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dbUser.Role != "user" {
-		t.Fatalf("expected stored user role, got %#v", dbUser)
+	if account.Role != "user" {
+		t.Fatalf("expected stored account role, got %#v", account)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/runner_requests", nil)
@@ -1955,10 +1955,10 @@ func newTestServerWithLimit(t *testing.T, store state.Store, ghURL string, fake 
 	}); err != nil {
 		panic(err)
 	}
-	if _, err := store.UpsertUser(state.User{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat", Role: "admin"}); err != nil {
+	if _, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{OAuthProvider: "github", OAuthSubject: "12345", OAuthLogin: "octocat"}, "admin"); err != nil {
 		panic(err)
 	}
-	if _, err := store.UpsertUser(state.User{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot", Role: "user"}); err != nil {
+	if _, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot"}, "user"); err != nil {
 		panic(err)
 	}
 	gh := github.NewClient(ghURL, http.DefaultClient)
