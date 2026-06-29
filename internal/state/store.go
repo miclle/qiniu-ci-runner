@@ -140,13 +140,21 @@ type AuditEvent struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// User represents a platform user authenticated through an OAuth provider.
-type User struct {
+// Account represents a local user account.
+type Account struct {
+	ID        int64     `json:"id"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// OAuthIdentity represents an external OAuth identity linked to an account.
+type OAuthIdentity struct {
 	ID            int64     `json:"id"`
+	AccountID     int64     `json:"account_id"`
 	OAuthProvider string    `json:"oauth_provider"`
 	OAuthSubject  string    `json:"oauth_subject"`
 	OAuthLogin    string    `json:"oauth_login"`
-	Role          string    `json:"role"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -184,9 +192,10 @@ type Store interface {
 	UpsertRepositoryPolicy(policy RepositoryPolicy) (RepositoryPolicy, error)
 	DeleteRepositoryPolicy(id int64) error
 	MatchProfile(repositoryFullName string, labels []string) (ProfileMatch, error)
-	GetUserByOAuthIdentity(provider, subject string) (User, error)
-	EnsureUser(user User) (User, error)
-	UpsertUser(user User) (User, error)
+	GetAccountByOAuthIdentity(provider, subject string) (Account, OAuthIdentity, error)
+	EnsureAccountForOAuthIdentity(identity OAuthIdentity, role string) (Account, OAuthIdentity, error)
+	UpsertAccountForOAuthIdentity(identity OAuthIdentity, role string) (Account, OAuthIdentity, error)
+	LinkOAuthIdentityToAccount(accountID int64, identity OAuthIdentity) (Account, OAuthIdentity, error)
 	AppendAuditEvent(event AuditEvent) (AuditEvent, error)
 	ListAuditEvents(limit int) ([]AuditEvent, error)
 }
@@ -312,17 +321,26 @@ type auditEventRecord struct {
 
 func (auditEventRecord) TableName() string { return "audit_events" }
 
-type userRecord struct {
+type accountRecord struct {
+	ID        int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	Role      string    `gorm:"column:role"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
+}
+
+func (accountRecord) TableName() string { return "accounts" }
+
+type oauthIdentityRecord struct {
 	ID            int64     `gorm:"column:id;primaryKey;autoIncrement"`
+	AccountID     int64     `gorm:"column:account_id"`
 	OAuthProvider string    `gorm:"column:oauth_provider"`
 	OAuthSubject  string    `gorm:"column:oauth_subject"`
 	OAuthLogin    string    `gorm:"column:oauth_login"`
-	Role          string    `gorm:"column:role"`
 	CreatedAt     time.Time `gorm:"column:created_at"`
 	UpdatedAt     time.Time `gorm:"column:updated_at"`
 }
 
-func (userRecord) TableName() string { return "users" }
+func (oauthIdentityRecord) TableName() string { return "oauth_identities" }
 
 func New(dir string) Store {
 	return NewWithOptions(Options{
@@ -1234,86 +1252,185 @@ func (s *DBStore) MatchProfile(repositoryFullName string, labels []string) (Prof
 	return match, nil
 }
 
-func (s *DBStore) GetUserByOAuthIdentity(provider, subject string) (User, error) {
+func (s *DBStore) GetAccountByOAuthIdentity(provider, subject string) (Account, OAuthIdentity, error) {
 	db, err := s.dbOrEnsure()
 	if err != nil {
-		return User{}, err
+		return Account{}, OAuthIdentity{}, err
 	}
 	provider = normalizeOAuthProvider(provider)
 	subject = normalizeOAuthSubject(subject)
 	if provider == "" || subject == "" {
-		return User{}, ErrNotFound
+		return Account{}, OAuthIdentity{}, ErrNotFound
 	}
-	var record userRecord
-	if err := db.First(&record, "oauth_provider = ? AND oauth_subject = ?", provider, subject).Error; err != nil {
+	var identity oauthIdentityRecord
+	if err := db.First(&identity, "oauth_provider = ? AND oauth_subject = ?", provider, subject).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return User{}, ErrNotFound
+			return Account{}, OAuthIdentity{}, ErrNotFound
 		}
-		return User{}, err
+		return Account{}, OAuthIdentity{}, err
 	}
-	return recordToUser(record), nil
+	return s.accountFromIdentity(db, identity)
 }
 
-func (s *DBStore) UpsertUser(user User) (User, error) {
-	return s.saveUser(user, true)
+func (s *DBStore) UpsertAccountForOAuthIdentity(identity OAuthIdentity, role string) (Account, OAuthIdentity, error) {
+	return s.saveOAuthIdentity(identity, role, true, 0)
 }
 
-func (s *DBStore) EnsureUser(user User) (User, error) {
-	return s.saveUser(user, false)
+func (s *DBStore) EnsureAccountForOAuthIdentity(identity OAuthIdentity, role string) (Account, OAuthIdentity, error) {
+	return s.saveOAuthIdentity(identity, role, false, 0)
 }
 
-func (s *DBStore) saveUser(user User, updateExisting bool) (User, error) {
+func (s *DBStore) LinkOAuthIdentityToAccount(accountID int64, identity OAuthIdentity) (Account, OAuthIdentity, error) {
+	return s.saveOAuthIdentity(identity, "", false, accountID)
+}
+
+func (s *DBStore) saveOAuthIdentity(identity OAuthIdentity, role string, updateExisting bool, accountID int64) (Account, OAuthIdentity, error) {
 	db, err := s.dbOrEnsure()
 	if err != nil {
-		return User{}, err
+		return Account{}, OAuthIdentity{}, err
 	}
-	provider := normalizeOAuthProvider(user.OAuthProvider)
-	subject := normalizeOAuthSubject(user.OAuthSubject)
-	login := normalizeOAuthLogin(user.OAuthLogin)
+	provider := normalizeOAuthProvider(identity.OAuthProvider)
+	subject := normalizeOAuthSubject(identity.OAuthSubject)
+	login := normalizeOAuthLogin(identity.OAuthLogin)
 	if provider == "" {
-		return User{}, fmt.Errorf("oauth_provider is required")
+		return Account{}, OAuthIdentity{}, fmt.Errorf("oauth_provider is required")
 	}
 	if subject == "" {
-		return User{}, fmt.Errorf("oauth_subject is required")
+		return Account{}, OAuthIdentity{}, fmt.Errorf("oauth_subject is required")
 	}
 	if login == "" {
-		return User{}, fmt.Errorf("oauth_login is required")
+		return Account{}, OAuthIdentity{}, fmt.Errorf("oauth_login is required")
 	}
-	role := normalizePlatformRole(user.Role)
-	if role == "" {
-		return User{}, fmt.Errorf("role must be admin or user")
+	role = normalizePlatformRole(role)
+	if accountID == 0 && role == "" {
+		return Account{}, OAuthIdentity{}, fmt.Errorf("role must be admin or user")
 	}
+	var savedAccount Account
+	var savedIdentity OAuthIdentity
+	var lastErr error
+	for attempt := 0; attempt < 20; attempt++ {
+		savedAccount, savedIdentity, lastErr = s.saveOAuthIdentityOnce(db, provider, subject, login, role, identity.CreatedAt, updateExisting, accountID)
+		if lastErr == nil {
+			return savedAccount, savedIdentity, nil
+		}
+		if !isTransientStoreError(lastErr) {
+			return Account{}, OAuthIdentity{}, lastErr
+		}
+		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+	}
+	return Account{}, OAuthIdentity{}, lastErr
+}
+
+func (s *DBStore) saveOAuthIdentityOnce(db *gorm.DB, provider, subject, login, role string, createdAt time.Time, updateExisting bool, accountID int64) (Account, OAuthIdentity, error) {
 	now := time.Now().UTC()
-	record := userRecord{
-		OAuthProvider: provider,
-		OAuthSubject:  subject,
-		OAuthLogin:    login,
-		Role:          role,
-		CreatedAt:     user.CreatedAt,
-		UpdatedAt:     now,
+	var savedAccount Account
+	var savedIdentity OAuthIdentity
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var identity oauthIdentityRecord
+		err := tx.First(&identity, "oauth_provider = ? AND oauth_subject = ?", provider, subject).Error
+		if err == nil {
+			if accountID != 0 && identity.AccountID != accountID {
+				return ErrConflict
+			}
+			updates := map[string]any{
+				"oauth_login": login,
+				"updated_at":  now,
+			}
+			if err := tx.Model(&identity).Updates(updates).Error; err != nil {
+				return err
+			}
+			if updateExisting {
+				if err := tx.Model(&accountRecord{}).Where("id = ?", identity.AccountID).Updates(map[string]any{
+					"role":       role,
+					"updated_at": now,
+				}).Error; err != nil {
+					return err
+				}
+			}
+			identity.OAuthLogin = login
+			identity.UpdatedAt = now
+			var identityErr error
+			savedAccount, savedIdentity, identityErr = s.accountFromIdentity(tx, identity)
+			return identityErr
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		targetAccountID := accountID
+		createdAccountID := int64(0)
+		if targetAccountID == 0 {
+			account := accountRecord{
+				Role:      role,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if err := tx.Create(&account).Error; err != nil {
+				return err
+			}
+			targetAccountID = account.ID
+			createdAccountID = account.ID
+		} else {
+			var account accountRecord
+			if err := tx.First(&account, "id = ?", targetAccountID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrNotFound
+				}
+				return err
+			}
+		}
+		identity = oauthIdentityRecord{
+			AccountID:     targetAccountID,
+			OAuthProvider: provider,
+			OAuthSubject:  subject,
+			OAuthLogin:    login,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		}
+		if !createdAt.IsZero() {
+			identity.CreatedAt = createdAt
+		}
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&identity)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			if createdAccountID != 0 {
+				if err := tx.Delete(&accountRecord{}, "id = ?", createdAccountID).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.First(&identity, "oauth_provider = ? AND oauth_subject = ?", provider, subject).Error; err != nil {
+				return err
+			}
+			if accountID != 0 && identity.AccountID != accountID {
+				return ErrConflict
+			}
+			if err := tx.Model(&identity).Updates(map[string]any{
+				"oauth_login": login,
+				"updated_at":  now,
+			}).Error; err != nil {
+				return err
+			}
+			identity.OAuthLogin = login
+			identity.UpdatedAt = now
+		}
+		var identityErr error
+		savedAccount, savedIdentity, identityErr = s.accountFromIdentity(tx, identity)
+		return identityErr
+	})
+	if err != nil {
+		return Account{}, OAuthIdentity{}, err
 	}
-	if record.CreatedAt.IsZero() {
-		record.CreatedAt = now
+	return savedAccount, savedIdentity, nil
+}
+
+func isTransientStoreError(err error) bool {
+	if err == nil {
+		return false
 	}
-	onConflict := clause.OnConflict{
-		Columns: []clause.Column{{Name: "oauth_provider"}, {Name: "oauth_subject"}},
-	}
-	if updateExisting {
-		onConflict.DoUpdates = clause.Assignments(map[string]any{
-			"oauth_login": record.OAuthLogin,
-			"role":        record.Role,
-			"updated_at":  record.UpdatedAt,
-		})
-	} else {
-		onConflict.DoUpdates = clause.Assignments(map[string]any{
-			"oauth_login": record.OAuthLogin,
-			"updated_at":  record.UpdatedAt,
-		})
-	}
-	if err := db.Clauses(onConflict).Create(&record).Error; err != nil {
-		return User{}, err
-	}
-	return s.GetUserByOAuthIdentity(provider, subject)
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "sqlite_busy")
 }
 
 func (s *DBStore) AppendAuditEvent(event AuditEvent) (AuditEvent, error) {
@@ -1426,6 +1543,7 @@ func configureSQLite(db *gorm.DB) error {
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
 	pragmas := []string{
+		"PRAGMA foreign_keys = ON",
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA synchronous = NORMAL",
 		"PRAGMA busy_timeout = 15000",
@@ -1490,28 +1608,6 @@ func (s *DBStore) migrate(db *gorm.DB) error {
 		}
 	}
 	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_policies_repository_group ON repository_policies(repository_full_name, runner_group_name) WHERE runner_group_name <> '';`).Error; err != nil {
-		return err
-	}
-	if db.Migrator().HasTable(&userRecord{}) && !db.Migrator().HasColumn(&userRecord{}, "oauth_provider") {
-		if err := db.Exec(`ALTER TABLE users ADD COLUMN oauth_provider TEXT NOT NULL DEFAULT 'github'`).Error; err != nil {
-			return err
-		}
-	}
-	if db.Migrator().HasTable(&userRecord{}) && !db.Migrator().HasColumn(&userRecord{}, "oauth_subject") {
-		if err := db.Exec(`ALTER TABLE users ADD COLUMN oauth_subject TEXT NOT NULL DEFAULT ''`).Error; err != nil {
-			return err
-		}
-		if err := db.Exec(`UPDATE users SET oauth_subject = oauth_login WHERE oauth_subject = ''`).Error; err != nil {
-			return err
-		}
-	}
-	if err := db.Exec(`DROP INDEX IF EXISTS idx_users_oauth_login;`).Error; err != nil {
-		return err
-	}
-	if err := db.Exec(`DROP INDEX IF EXISTS idx_users_oauth_identity;`).Error; err != nil {
-		return err
-	}
-	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth_identity ON users(oauth_provider, oauth_subject);`).Error; err != nil {
 		return err
 	}
 	return nil
@@ -1614,8 +1710,28 @@ func recordToState(record runnerRequestRecord) RunnerState {
 	}
 }
 
-func recordToUser(record userRecord) User {
-	return User(record)
+func (s *DBStore) accountFromIdentity(db *gorm.DB, identity oauthIdentityRecord) (Account, OAuthIdentity, error) {
+	var account accountRecord
+	if err := db.First(&account, "id = ?", identity.AccountID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return Account{}, OAuthIdentity{}, ErrNotFound
+		}
+		return Account{}, OAuthIdentity{}, err
+	}
+	return Account{
+			ID:        account.ID,
+			Role:      account.Role,
+			CreatedAt: account.CreatedAt,
+			UpdatedAt: account.UpdatedAt,
+		}, OAuthIdentity{
+			ID:            identity.ID,
+			AccountID:     identity.AccountID,
+			OAuthProvider: identity.OAuthProvider,
+			OAuthSubject:  identity.OAuthSubject,
+			OAuthLogin:    identity.OAuthLogin,
+			CreatedAt:     identity.CreatedAt,
+			UpdatedAt:     identity.UpdatedAt,
+		}, nil
 }
 
 type githubPayloadLinks struct {
@@ -1950,14 +2066,21 @@ var sqliteMigrations = []string{
 		payload_json TEXT,
 		created_at TIMESTAMP NOT NULL
 	);`,
-	`CREATE TABLE IF NOT EXISTS users (
+	`CREATE TABLE IF NOT EXISTS accounts (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		oauth_provider TEXT NOT NULL,
-		oauth_subject TEXT NOT NULL,
-		oauth_login TEXT NOT NULL,
 		role TEXT NOT NULL,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL
+	);`,
+	`CREATE TABLE IF NOT EXISTS oauth_identities (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL,
+		oauth_provider TEXT NOT NULL,
+		oauth_subject TEXT NOT NULL,
+		oauth_login TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 	);`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_requests_workflow_job_id ON runner_requests(workflow_job_id);`,
 	`CREATE INDEX IF NOT EXISTS idx_runner_requests_status_updated ON runner_requests(status, updated_at, queued_at);`,
@@ -1967,7 +2090,8 @@ var sqliteMigrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_runner_group_specs_spec ON runner_group_specs(spec_name);`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_policies_repository_profile ON repository_policies(repository_full_name, profile_name) WHERE profile_name <> '';`,
 	`CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at);`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth_identity ON users(oauth_provider, oauth_subject);`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_identities_provider_subject ON oauth_identities(oauth_provider, oauth_subject);`,
+	`CREATE INDEX IF NOT EXISTS idx_oauth_identities_account ON oauth_identities(account_id);`,
 }
 
 var postgresMigrations = []string{
@@ -2059,14 +2183,21 @@ var postgresMigrations = []string{
 		payload_json TEXT,
 		created_at TIMESTAMP NOT NULL
 	);`,
-	`CREATE TABLE IF NOT EXISTS users (
+	`CREATE TABLE IF NOT EXISTS accounts (
 		id BIGSERIAL PRIMARY KEY,
-		oauth_provider TEXT NOT NULL,
-		oauth_subject TEXT NOT NULL,
-		oauth_login TEXT NOT NULL,
 		role TEXT NOT NULL,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL
+	);`,
+	`CREATE TABLE IF NOT EXISTS oauth_identities (
+		id BIGSERIAL PRIMARY KEY,
+		account_id BIGINT NOT NULL,
+		oauth_provider TEXT NOT NULL,
+		oauth_subject TEXT NOT NULL,
+		oauth_login TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 	);`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_requests_workflow_job_id ON runner_requests(workflow_job_id);`,
 	`CREATE INDEX IF NOT EXISTS idx_runner_requests_status_updated ON runner_requests(status, updated_at, queued_at);`,
@@ -2076,5 +2207,6 @@ var postgresMigrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_runner_group_specs_spec ON runner_group_specs(spec_name);`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_policies_repository_profile ON repository_policies(repository_full_name, profile_name) WHERE profile_name <> '';`,
 	`CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at);`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth_identity ON users(oauth_provider, oauth_subject);`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_identities_provider_subject ON oauth_identities(oauth_provider, oauth_subject);`,
+	`CREATE INDEX IF NOT EXISTS idx_oauth_identities_account ON oauth_identities(account_id);`,
 }

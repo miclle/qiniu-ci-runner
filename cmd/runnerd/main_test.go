@@ -6,26 +6,26 @@ import (
 	"github.com/qiniu/ci-runner/internal/state"
 )
 
-func TestBootstrapAdminUser(t *testing.T) {
+func TestBootstrapAdminAccount(t *testing.T) {
 	store := state.New(t.TempDir())
-	if err := bootstrapAdminUser(store, "github:12345"); err != nil {
+	if err := bootstrapAdminAccount(store, "github:12345"); err != nil {
 		t.Fatal(err)
 	}
-	user, err := store.GetUserByOAuthIdentity("github", "12345")
+	account, _, err := store.GetAccountByOAuthIdentity("github", "12345")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Role != "admin" {
-		t.Fatalf("expected admin role, got %#v", user)
+	if account.Role != "admin" {
+		t.Fatalf("expected admin role, got %#v", account)
 	}
 }
 
-func TestBootstrapAdminUserDefaultsToGitHub(t *testing.T) {
+func TestBootstrapAdminAccountDefaultsToGitHub(t *testing.T) {
 	store := state.New(t.TempDir())
-	if err := bootstrapAdminUser(store, "12345"); err != nil {
+	if err := bootstrapAdminAccount(store, "12345"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.GetUserByOAuthIdentity("github", "12345"); err != nil {
+	if _, _, err := store.GetAccountByOAuthIdentity("github", "12345"); err != nil {
 		t.Fatal(err)
 	}
 }
