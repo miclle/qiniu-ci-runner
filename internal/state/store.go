@@ -1647,20 +1647,27 @@ func (s *DBStore) migrateLegacyUsers(db *gorm.DB) error {
 			return err
 		}
 	}
-	if err := db.Exec(`INSERT INTO accounts (id, role, created_at, updated_at)
-		SELECT id, role, created_at, updated_at FROM users`).Error; err != nil {
-		return err
-	}
-	if err := db.Exec(`INSERT INTO oauth_identities (account_id, oauth_provider, oauth_subject, oauth_login, created_at, updated_at)
-		SELECT id, oauth_provider, oauth_subject, oauth_login, created_at, updated_at FROM users`).Error; err != nil {
-		return err
-	}
-	if s.opts.Backend == BackendPostgres {
-		if err := db.Exec(`SELECT setval(pg_get_serial_sequence('accounts', 'id'), COALESCE((SELECT MAX(id) FROM accounts), 1), true)`).Error; err != nil {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`INSERT INTO accounts (id, role, created_at, updated_at)
+			SELECT id, role, created_at, updated_at FROM users WHERE TRUE
+			ON CONFLICT(id) DO UPDATE SET role = excluded.role, updated_at = excluded.updated_at`).Error; err != nil {
 			return err
 		}
-	}
-	return db.Migrator().DropTable("users")
+		if err := tx.Exec(`INSERT INTO oauth_identities (account_id, oauth_provider, oauth_subject, oauth_login, created_at, updated_at)
+			SELECT id, oauth_provider, oauth_subject, oauth_login, created_at, updated_at FROM users WHERE TRUE
+			ON CONFLICT(oauth_provider, oauth_subject) DO UPDATE SET
+				account_id = excluded.account_id,
+				oauth_login = excluded.oauth_login,
+				updated_at = excluded.updated_at`).Error; err != nil {
+			return err
+		}
+		if s.opts.Backend == BackendPostgres {
+			if err := tx.Exec(`SELECT setval(pg_get_serial_sequence('accounts', 'id'), COALESCE((SELECT MAX(id) FROM accounts), 1), true)`).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Migrator().DropTable("users")
+	})
 }
 
 func applyStateTimestamps(st *RunnerState, now time.Time) {
