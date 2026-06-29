@@ -1440,6 +1440,8 @@ func isTransientStoreError(err error) bool {
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "database is locked") ||
 		strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "sqlstate 40001") ||
+		strings.Contains(message, "sqlstate 40p01") ||
 		strings.Contains(message, "serialization_failure") ||
 		strings.Contains(message, "deadlock_detected") ||
 		strings.Contains(message, "concurrent update")

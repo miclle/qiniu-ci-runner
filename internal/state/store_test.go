@@ -407,6 +407,19 @@ func TestUpsertAccountForOAuthIdentityRejectsInvalidRole(t *testing.T) {
 	}
 }
 
+func TestIsTransientStoreErrorRecognizesPostgresSQLSTATE(t *testing.T) {
+	for _, message := range []string{
+		"ERROR: transaction failed (SQLSTATE 40001)",
+		"ERROR: transaction failed (SQLSTATE 40P01)",
+	} {
+		t.Run(message, func(t *testing.T) {
+			if !isTransientStoreError(errors.New(message)) {
+				t.Fatalf("expected transient store error for %q", message)
+			}
+		})
+	}
+}
+
 func TestWriteStateUsesVersionCAS(t *testing.T) {
 	store := New(t.TempDir())
 	_, st, err := store.CreateRequest(RunnerRequest{
