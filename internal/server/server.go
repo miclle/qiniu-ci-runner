@@ -91,6 +91,7 @@ const (
 	defaultRunnerRequestListLimit = 100
 	maxRunnerRequestListLimit     = 500
 	oauthStateCookieName          = "runnerd_oauth_state"
+	githubAppSetupStateCookieName = "runnerd_github_app_setup_state"
 	adminSessionCookieName        = "runnerd_admin_session"
 )
 
@@ -191,13 +192,23 @@ func (s *Server) Recover(ctx context.Context) error {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /", s.handleRoot)
 	s.mux.HandleFunc("GET /admin", s.handleAdminRedirect)
 	s.mux.HandleFunc("GET /admin/", s.handleAdmin)
+	s.mux.HandleFunc("GET /user", s.handleUserRedirect)
+	s.mux.HandleFunc("GET /user/", s.handleUserRedirect)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /auth/session", s.handleAuthSession)
 	s.mux.HandleFunc("GET /auth/github/login", s.handleGitHubOAuthLogin)
 	s.mux.HandleFunc("GET /auth/github/callback", s.handleGitHubOAuthCallback)
 	s.mux.HandleFunc("POST /auth/logout", s.handleAuthLogout)
+	s.mux.HandleFunc("GET /github-app/install", s.handleGitHubAppInstallRedirect)
+	s.mux.HandleFunc("GET /github-app/setup", s.handleGitHubAppSetupRedirect)
+	s.mux.HandleFunc("GET /user/github-app", s.handleUserGitHubApp)
+	s.mux.HandleFunc("POST /user/github-app/installations", s.handleUserSaveGitHubInstallation)
+	s.mux.HandleFunc("GET /user/github-app/installations/{id}/repositories", s.handleUserListGitHubInstallationRepositories)
+	s.mux.HandleFunc("DELETE /user/github-app/installations/{id}", s.handleUserDeleteGitHubInstallation)
+	s.mux.HandleFunc("GET /user/runner_requests", s.handleUserListRunners)
 	s.mux.HandleFunc("POST /webhooks/github", s.handleGitHubWebhook)
 	s.mux.HandleFunc("POST /runner_requests", s.handleCreateRunner)
 	s.mux.HandleFunc("GET /runner_requests", s.handleListRunners)
@@ -231,6 +242,23 @@ func (s *Server) handleAdminRedirect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/admin/")
+	s.handleUI(w, r, name)
+}
+
+func (s *Server) handleUserRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/", http.StatusMovedPermanently)
+}
+
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/")
+	if name == "accounts" || name == "repositories" || name == "settings" ||
+		strings.HasPrefix(name, "account/") || strings.HasPrefix(name, "organizations/") {
+		name = "index.html"
+	}
+	s.handleUI(w, r, name)
+}
+
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, name string) {
 	if name == "" {
 		name = "index.html"
 	}

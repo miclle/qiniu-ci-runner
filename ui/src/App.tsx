@@ -9,6 +9,7 @@ import { RunnerPoliciesSection } from "@/components/runner-policies-section"
 import { RunnerRequestsSection } from "@/components/runner-requests-section"
 import { RunnerSpecsSection } from "@/components/runner-specs-section"
 import { SiteHeader } from "@/components/site-header"
+import { UserDashboard } from "@/components/user-dashboard"
 import {
   Card,
   CardContent,
@@ -26,7 +27,10 @@ import {
   type AdminSection,
   type AuditEvent,
   type AuthSession,
+  type AuthorizedRepositories,
   type DiagnosticsSummary,
+  type GitHubAppConfig,
+  type GitHubInstallation,
   type Metric,
   type RunnerGroup,
   type RunnerPolicy,
@@ -37,8 +41,15 @@ import {
 } from "@/admin-types"
 import { useRunnerCatalog } from "@/hooks/use-runner-catalog"
 
+type AccountSettingsTab = "repositories" | "preferences"
+type AccountSettingsRoute = {
+  accountLogin?: string
+  tab: AccountSettingsTab
+}
+
 function App() {
   const [authSession, setAuthSession] = useState<AuthSession>({ authenticated: false, oauth_enabled: false })
+  const [locationPath, setLocationPath] = useState(() => window.location.pathname)
   const [section, setSectionState] = useState<AdminSection>(() => sectionFromPath())
   const [runners, setRunners] = useState<RunnerState[]>([])
   const [runnerSpecs, setRunnerSpecs] = useState<RunnerSpec[]>([])
@@ -63,6 +74,11 @@ function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSummary | null>(null)
   const [diagnosticsVars, setDiagnosticsVars] = useState("")
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
+  const [userRunners, setUserRunners] = useState<RunnerState[]>([])
+  const [githubApp, setGitHubApp] = useState<GitHubAppConfig | null>(null)
+  const [authorizedRepositories, setAuthorizedRepositories] = useState<Record<number, string[]>>({})
+  const [loadingRepositoriesFor, setLoadingRepositoriesFor] = useState<number | null>(null)
+  const [userSelectedKey, setUserSelectedKey] = useState("")
 
   const setSection = useCallback((next: string) => {
     const section = adminSections.includes(next as AdminSection) ? (next as AdminSection) : "overview"
@@ -70,8 +86,28 @@ function App() {
     const nextPath = section === "overview" ? "/admin/" : `/admin/${section}`
     if (window.location.pathname !== nextPath) {
       window.history.pushState(null, "", nextPath)
+      setLocationPath(nextPath)
     }
   }, [])
+
+  const setUserPage = useCallback((next: "home" | "repositories" | "settings") => {
+    const nextPath = next === "settings" ? "/account/repositories" : next === "repositories" ? "/repositories" : "/"
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState(null, "", nextPath)
+    }
+    setLocationPath(nextPath)
+  }, [])
+
+  const setAccountSettingsRoute = useCallback(
+    (accountLogin: string | undefined, tab: AccountSettingsTab) => {
+      const nextPath = accountSettingsPath(accountLogin, authSession.login, tab)
+      if (window.location.pathname !== nextPath) {
+        window.history.pushState(null, "", nextPath)
+      }
+      setLocationPath(nextPath)
+    },
+    [authSession.login]
+  )
 
   const selected = useMemo(
     () => runners.find((runner) => runner.id === selectedID),
@@ -109,6 +145,9 @@ function App() {
   )
 
   const hasAccess = authSession.authenticated && authSession.role === "admin"
+  const isAdminRoute = locationPath === "/admin" || locationPath.startsWith("/admin/")
+  const accountSettingsRoute = parseAccountSettingsRoute(locationPath, authSession.login)
+  const userPage = accountSettingsRoute ? "settings" : locationPath === "/repositories" ? "repositories" : "home"
 
   const metrics = useMemo<Metric[]>(() => {
     const count = (status: RunnerStatus) => runners.filter((runner) => runner.status === status).length
@@ -138,7 +177,7 @@ function App() {
           setAuthSession((current) => ({ ...current, authenticated: false, login: undefined, role: undefined, avatar_url: undefined, expires_at: undefined }))
         }
         setConnected(false)
-        throw new Error("You do not have admin access")
+        throw new Error("Session expired or access is not allowed")
       }
       if (!response.ok) {
         const text = await response.text()
@@ -209,6 +248,65 @@ function App() {
     }
   }, [hasAccess, request, selectedID])
 
+  const loadUserAll = useCallback(async () => {
+    if (!authSession.authenticated || (hasAccess && isAdminRoute)) return
+    setLoading(true)
+    try {
+      const [appData, runnerData] = await Promise.all([
+        request("/user/github-app"),
+        request("/user/runner_requests"),
+      ])
+      const nextApp = appData as GitHubAppConfig
+      const nextRunners = Array.isArray(runnerData) ? (runnerData as RunnerState[]) : []
+      setGitHubApp(nextApp)
+      setUserRunners(nextRunners)
+      if (nextRunners.length === 0) setUserSelectedKey("")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load workspace data")
+    } finally {
+      setLoading(false)
+    }
+  }, [authSession.authenticated, hasAccess, isAdminRoute, request])
+
+  const syncGitHubAppSetupFromURL = useCallback(async () => {
+    if (!authSession.authenticated || (hasAccess && isAdminRoute) || !isAccountSettingsPath(locationPath)) return
+    const params = new URLSearchParams(window.location.search)
+    const installationID = Number(params.get("installation_id") || "")
+    if (!Number.isSafeInteger(installationID) || installationID <= 0) return
+    const setupState = params.get("state") || ""
+    setLoading(true)
+    try {
+      const installation = (await request("/user/github-app/installations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ installation_id: installationID, setup_state: setupState }),
+      })) as GitHubInstallation
+      toast.success("GitHub App account connected")
+      const nextPath = accountSettingsPathForInstallation(installation, authSession.login, "repositories")
+      window.history.replaceState(null, "", nextPath)
+      setLocationPath(nextPath)
+      await loadUserAll()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to sync GitHub App repositories")
+    } finally {
+      setLoading(false)
+    }
+  }, [authSession.authenticated, authSession.login, hasAccess, isAdminRoute, loadUserAll, locationPath, request])
+
+  const loadAuthorizedRepositories = useCallback(async (id: number) => {
+    setLoadingRepositoriesFor(id)
+    try {
+      const data = (await request(
+        `/user/github-app/installations/${encodeURIComponent(String(id))}/repositories`
+      )) as AuthorizedRepositories
+      setAuthorizedRepositories((current) => ({ ...current, [id]: data.repositories || [] }))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to load GitHub repositories")
+    } finally {
+      setLoadingRepositoriesFor(null)
+    }
+  }, [request])
+
   const {
     runnerSpecOpen,
     runnerGroupOpen,
@@ -261,16 +359,36 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const handlePopState = () => setSectionState(sectionFromPath())
+    const handlePopState = () => {
+      setLocationPath(window.location.pathname)
+      setSectionState(sectionFromPath())
+    }
     window.addEventListener("popstate", handlePopState)
     return () => window.removeEventListener("popstate", handlePopState)
   }, [])
+
+  useEffect(() => {
+    if (locationPath !== "/accounts" && locationPath !== "/settings") return
+    const nextPath = `/account/repositories${window.location.search}`
+    window.history.replaceState(null, "", nextPath)
+    setLocationPath("/account/repositories")
+  }, [locationPath])
 
   useEffect(() => {
     void loadAll()
     const timer = window.setInterval(() => void loadAll(), 5000)
     return () => window.clearInterval(timer)
   }, [loadAll])
+
+  useEffect(() => {
+    void loadUserAll()
+    const timer = window.setInterval(() => void loadUserAll(), 5000)
+    return () => window.clearInterval(timer)
+  }, [loadUserAll])
+
+  useEffect(() => {
+    void syncGitHubAppSetupFromURL()
+  }, [syncGitHubAppSetupFromURL])
 
   useEffect(() => {
     if (selectedID) void loadLog(selectedID, selectedLog)
@@ -301,6 +419,11 @@ function App() {
     setRunnerGroups([])
     setRunnerPolicies([])
     setAuditEvents([])
+    setUserRunners([])
+    setGitHubApp(null)
+    setAuthorizedRepositories({})
+    setLoadingRepositoriesFor(null)
+    setUserSelectedKey("")
     setSelectedID("")
     setLogText("No runner selected")
   }
@@ -399,13 +522,36 @@ function App() {
     toast.success("Runner ID copied")
   }
 
-  if (!hasAccess) {
+  if (!authSession.authenticated || !authSession.oauth_enabled) {
     return (
       <>
         <LoginPage
           oauthEnabled={authSession.oauth_enabled}
           currentLogin={authSession.login}
           currentRole={authSession.role}
+          onSignOut={signOut}
+        />
+        <Toaster richColors />
+      </>
+    )
+  }
+
+  if (!hasAccess || !isAdminRoute) {
+    return (
+      <>
+        <UserDashboard
+          authSession={authSession}
+          githubApp={githubApp}
+          runners={userRunners}
+          selectedKey={userSelectedKey}
+          page={userPage}
+          accountSettingsRoute={accountSettingsRoute || defaultAccountSettingsRoute(authSession.login)}
+          authorizedRepositories={authorizedRepositories}
+          loadingRepositoriesFor={loadingRepositoriesFor}
+          onLoadAuthorizedRepositories={(id) => void loadAuthorizedRepositories(id)}
+          onNavigate={setUserPage}
+          onNavigateAccountSettings={setAccountSettingsRoute}
+          onSelectKey={setUserSelectedKey}
           onSignOut={signOut}
         />
         <Toaster richColors />
@@ -564,6 +710,63 @@ function App() {
       <Toaster richColors />
     </SidebarProvider>
   )
+}
+
+function defaultAccountSettingsRoute(currentLogin?: string): AccountSettingsRoute {
+  return { accountLogin: currentLogin, tab: "repositories" }
+}
+
+function isAccountSettingsPath(path: string): boolean {
+  return (
+    path === "/settings" ||
+    path === "/accounts" ||
+    path === "/account/repositories" ||
+    path === "/account/preferences" ||
+    /^\/organizations\/[^/]+\/(repositories|preferences)$/.test(path)
+  )
+}
+
+function parseAccountSettingsRoute(path: string, currentLogin?: string): AccountSettingsRoute | null {
+  if (path === "/settings" || path === "/accounts") return defaultAccountSettingsRoute(currentLogin)
+  if (path === "/account/repositories") return { accountLogin: currentLogin, tab: "repositories" }
+  if (path === "/account/preferences") return { accountLogin: currentLogin, tab: "preferences" }
+
+  const organizationMatch = path.match(/^\/organizations\/([^/]+)\/(repositories|preferences)$/)
+  if (!organizationMatch) return null
+  const accountLogin = safeDecodePathSegment(organizationMatch[1])
+  if (!accountLogin) return null
+
+  return {
+    accountLogin,
+    tab: organizationMatch[2] as AccountSettingsTab,
+  }
+}
+
+function safeDecodePathSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return null
+  }
+}
+
+function accountSettingsPathForInstallation(
+  installation: Pick<GitHubInstallation, "account_login">,
+  currentLogin: string | undefined,
+  tab: AccountSettingsTab
+): string {
+  return accountSettingsPath(installation.account_login, currentLogin, tab)
+}
+
+function accountSettingsPath(
+  accountLogin: string | undefined,
+  currentLogin: string | undefined,
+  tab: AccountSettingsTab
+): string {
+  const segment = tab === "preferences" ? "preferences" : "repositories"
+  const login = accountLogin?.trim()
+  if (!login || login === currentLogin) return `/account/${segment}`
+  return `/organizations/${encodeURIComponent(login)}/${segment}`
 }
 
 export default App
