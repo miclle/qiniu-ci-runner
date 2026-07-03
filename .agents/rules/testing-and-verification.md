@@ -43,7 +43,8 @@ Old-schema upgrade coverage is required when adding required columns, changing u
 - Edit source under `ui/`, not generated files under `internal/server/ui/`.
 - For UI source changes, run `task ui-lint` or `task build` depending on scope.
 - Use `task build` when verifying production embedded UI behavior.
-- Use the real admin entry `/admin/`; do not assume the `ui/` tree is all admin-only if adding non-admin screens.
+- Use the real ordinary-user entries `/`, `/repositories`, `/account/repositories`, and `/account/preferences` when changing user UI.
+- Use the real admin entry `/admin/`; do not assume the `ui/` tree is all admin-only.
 
 ## Development Startup
 
@@ -67,4 +68,4 @@ Keep `SMEE_TARGET` aligned with the runnerd port when testing webhook forwarding
 
 ## Deployment Smoke
 
-Real deployment readiness still requires `docs/deployment-smoke.md` with a GitHub.com App, webhook delivery, a usable E2B template, runner pickup, cleanup, and diagnostics. Do not claim production readiness from local tests alone.
+Real deployment readiness still requires `docs/deployment-smoke.md` with a GitHub.com App, webhook delivery, a usable Qiniu sandbox template, runner pickup, cleanup, and diagnostics. Do not claim production readiness from local tests alone.

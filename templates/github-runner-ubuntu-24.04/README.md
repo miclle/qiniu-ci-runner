@@ -1,6 +1,6 @@
-# GitHub Runner Ubuntu 24.04 E2B Template
+# GitHub Runner Ubuntu 24.04 Qiniu Sandbox Template
 
-This template is a lightweight GitHub Actions self-hosted runner image for E2B sandboxes.
+This template is a lightweight GitHub Actions self-hosted runner image for Qiniu sandboxes.
 
 It intentionally does not copy the full GitHub-hosted Ubuntu 24.04 image. The official image includes many heavy stacks, browsers, SDKs, Android tooling, databases, and cloud CLIs. For this runner service, the template focuses on the pieces needed for stable Go CI jobs:
 
@@ -16,23 +16,21 @@ It intentionally does not copy the full GitHub-hosted Ubuntu 24.04 image. The of
 Reference:
 
 - GitHub hosted runner software list: https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md
-- E2B template CLI: https://e2b.dev/docs/sdk-reference/cli/v2.7.3/template
+- Qiniu sandbox qshell reference: https://developer.qiniu.com/las/13442/sandbox-qshell
 
-## Build with E2B template build v2
+## Build with qshell
 
 ```bash
-cd templates/github-runner-ubuntu-24.04
-npm install
-npm run build:prod
+task template-build-prod
 ```
 
 For an isolated development tag:
 
 ```bash
-npm run build:dev
+task template-build-dev
 ```
 
-Both production and development template builds request `8` vCPUs and `8192` MiB of memory. New sandboxes inherit those resources from the rebuilt template.
+The Taskfile copies `qshell.sandbox.toml` to a temporary file before calling `qshell sandbox template build`, so any generated `template_id` is not written back into the tracked config. Both production and development template builds request `8` vCPUs and `8192` MiB of memory. New sandboxes inherit those resources from the rebuilt template.
 
 The build prints a template ID and template name. Use the production template name or ID as:
 
@@ -40,7 +38,7 @@ The build prints a template ID and template name. Use the production template na
 export SANDBOX_TEMPLATE_ID="<template-id>"
 ```
 
-Do not use `e2b template build -d e2b.Dockerfile` for this template; that command uses E2B's deprecated v1 build system.
+Use a configured qshell account or set `QINIU_API_KEY` for template builds. Do not use the old E2B SDK build scripts for this template.
 
 The Dockerfile defaults the base image platform with:
 
@@ -54,8 +52,8 @@ and installs the `actions-runner-linux-x64` package plus its Linux runtime depen
 ## Smoke Test
 
 ```bash
-e2b sbx create --detach <template-id>
-e2b sbx list
+qshell sandbox create <template-id-or-name> --detach
+qshell sandbox list
 ```
 
 Then run a workflow using:
