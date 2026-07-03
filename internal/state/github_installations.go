@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -33,6 +34,53 @@ func (s *DBStore) ListGitHubInstallations(accountID int64) ([]GitHubInstallation
 		installations = append(installations, recordToGitHubInstallation(record, repositories[record.ID]))
 	}
 	return installations, nil
+}
+
+func (s *DBStore) AccountScopeForPersonalGitHubInstallation(installationID int64) (int64, bool, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return 0, false, err
+	}
+	if installationID <= 0 {
+		return 0, false, ErrNotFound
+	}
+	var rows []struct {
+		AccountID int64 `gorm:"column:account_id"`
+	}
+	if err := db.Table("github_installations AS gi").
+		Select("gi.account_id").
+		Joins("JOIN oauth_identities AS oi ON oi.account_id = gi.account_id AND oi.oauth_provider = ? AND LOWER(oi.oauth_login) = LOWER(gi.account_login)", "github").
+		Where("gi.installation_id = ? AND gi.account_login != ''", installationID).
+		Limit(1).
+		Scan(&rows).Error; err != nil {
+		return 0, false, err
+	}
+	if len(rows) == 0 || rows[0].AccountID <= 0 {
+		return 0, false, nil
+	}
+	return rows[0].AccountID, true, nil
+}
+
+func (s *DBStore) GitHubInstallationScopeForAccountLogin(accountLogin string) (int64, bool, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return 0, false, err
+	}
+	accountLogin = strings.TrimSpace(accountLogin)
+	if accountLogin == "" {
+		return 0, false, ErrNotFound
+	}
+	var record githubInstallationRecord
+	if err := db.
+		Where("LOWER(account_login) = LOWER(?)", accountLogin).
+		Order("updated_at DESC, installation_id ASC").
+		First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return record.InstallationID, true, nil
 }
 
 func (s *DBStore) UpsertGitHubInstallation(installation GitHubInstallation) (GitHubInstallation, error) {
