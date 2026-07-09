@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -38,11 +39,13 @@ type fakeSandbox struct {
 	mu             sync.Mutex
 	started        int
 	stopped        int
+	terminals      int
 	startBlock     chan struct{}
 	stopErr        error
 	commandContext context.Context
 	repositoryURL  string
 	runnerGroup    string
+	terminal       *fakeTerminalSession
 }
 
 func (f *fakeSandbox) ValidateTemplate(ctx context.Context, templateID string) error {
@@ -73,6 +76,86 @@ func (f *fakeSandbox) StopRunner(ctx context.Context, sandboxID string, pid uint
 	defer f.mu.Unlock()
 	f.stopped++
 	return f.stopErr
+}
+
+func (f *fakeSandbox) StartTerminal(ctx context.Context, sandboxID string, size sandboxrunner.PtySize, onData func([]byte)) (sandboxrunner.TerminalSession, error) {
+	f.mu.Lock()
+	f.terminals++
+	terminal := &fakeTerminalSession{pid: 99}
+	f.terminal = terminal
+	f.mu.Unlock()
+	if onData != nil {
+		onData([]byte("terminal ready\n"))
+	}
+	return terminal, nil
+}
+
+type fakeTerminalSession struct {
+	mu      sync.Mutex
+	pid     uint32
+	input   string
+	closed  bool
+	resized sandboxrunner.PtySize
+}
+
+func (f *fakeTerminalSession) PID() uint32 {
+	return f.pid
+}
+
+func (f *fakeTerminalSession) SendInput(ctx context.Context, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.input += string(data)
+	return nil
+}
+
+func (f *fakeTerminalSession) Resize(ctx context.Context, size sandboxrunner.PtySize) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resized = size
+	return nil
+}
+
+func (f *fakeTerminalSession) Close(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+func (f *fakeTerminalSession) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+func TestTerminalHubClosesIdleSessionAfterDisconnect(t *testing.T) {
+	hub := newTerminalHub(nil)
+	terminal := &fakeTerminalSession{pid: 99}
+	session := hub.Add("request-1", "sandbox-1", terminal)
+	_, _, cancel := session.Subscribe()
+
+	hub.CloseSessionWhenIdle(session.id, 10*time.Millisecond)
+	time.Sleep(25 * time.Millisecond)
+	if terminal.isClosed() {
+		t.Fatal("expected terminal to stay open while a watcher is subscribed")
+	}
+	if _, ok := hub.Get(session.id); !ok {
+		t.Fatal("expected terminal session to stay in the hub while a watcher is subscribed")
+	}
+
+	cancel()
+	hub.CloseSessionWhenIdle(session.id, 0)
+	deadline := time.Now().Add(time.Second)
+	for !terminal.isClosed() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !terminal.isClosed() {
+		t.Fatal("expected idle terminal session to close")
+	}
+	if _, ok := hub.Get(session.id); ok {
+		t.Fatal("expected idle terminal session to be removed from the hub")
+	}
 }
 
 func (f *fakeSandbox) startedCount() int {
@@ -438,6 +521,373 @@ func TestUserGitHubAppConfigurationAndRunnerList(t *testing.T) {
 	}
 	if len(runners) != 1 || runners[0].ID != "visible" {
 		t.Fatalf("unexpected user runners: %#v", runners)
+	}
+}
+
+func TestUserRunnerDetailLogAndTerminal(t *testing.T) {
+	store := state.New(t.TempDir())
+	account, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot"}, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertGitHubInstallation(state.GitHubInstallation{
+		AccountID:      account.ID,
+		InstallationID: 987,
+		AccountLogin:   "o",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                   "job-detail-1",
+		Source:               "github_webhook",
+		GitHubInstallationID: 987,
+		RepositoryFullName:   "o/r",
+		RunnerName:           "e2b-job-detail-1",
+		Labels:               []string{"self-hosted", "e2b"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusRunning
+	st.SandboxID = "sb-job-detail-1"
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+	store.AppendLog(st.ID, "control.log", []byte("runner request created\n"))
+	fake := &fakeSandbox{}
+	srv := newTestServer(t, store, "http://example.test", fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/user/runner_requests/job-detail-1", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected user runner detail, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got state.RunnerState
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != st.ID || got.SandboxID != st.SandboxID {
+		t.Fatalf("unexpected runner detail: %#v", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/user/runner_requests/job-detail-1/logs/control.log", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "runner request created") {
+		t.Fatalf("expected user runner log, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/user/runner_requests/job-detail-1/terminal", strings.NewReader(`{"cols":120,"rows":32}`))
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected terminal session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var terminal struct {
+		SessionID string `json:"session_id"`
+		PID       uint32 `json:"pid"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &terminal); err != nil {
+		t.Fatal(err)
+	}
+	if terminal.SessionID == "" || terminal.PID != 99 {
+		t.Fatalf("unexpected terminal response: %#v", terminal)
+	}
+	if fake.terminals != 1 {
+		t.Fatalf("expected one terminal start, got %d", fake.terminals)
+	}
+
+	latest, err := store.ReadState(st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest.Status = state.StatusCompleted
+	if err := store.WriteState(latest); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/user/runner_requests/job-detail-1/terminal/"+terminal.SessionID+"/input", strings.NewReader(`{"data":"ls\n"}`))
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected inactive terminal to be rejected, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.terminal == nil || !fake.terminal.isClosed() {
+		t.Fatalf("expected inactive terminal session to be closed")
+	}
+}
+
+func TestUserRunnerSiblings(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/1":
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/issues/1":
+			w.Write([]byte(`{"number":1,"title":"Add runner smoke coverage"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/pulls/2":
+			w.Write([]byte(`{"number":2,"title":"Other pull request"}`))
+		default:
+			t.Fatalf("unexpected github request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	account, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot"}, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertGitHubInstallation(state.GitHubInstallation{
+		AccountID:      account.ID,
+		InstallationID: 987,
+		AccountLogin:   "o",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	requests := []struct {
+		id             string
+		jobID          int64
+		installationID int64
+		repository     string
+		runID          int64
+		prNumber       int
+	}{
+		{id: "current", jobID: 1001, installationID: 987, repository: "o/r", runID: 28582191510, prNumber: 1},
+		{id: "same-run", jobID: 1002, installationID: 987, repository: "o/r", runID: 28582191510, prNumber: 1},
+		{id: "same-pr-other-run", jobID: 1003, installationID: 987, repository: "o/r", runID: 1, prNumber: 1},
+		{id: "other-pr", jobID: 1004, installationID: 987, repository: "o/r", runID: 2, prNumber: 2},
+		{id: "hidden", jobID: 1005, installationID: 456, repository: "o/r", runID: 28582191510, prNumber: 1},
+	}
+	for _, item := range requests {
+		payload := []byte(fmt.Sprintf(`{"workflow_job":{"id":%d,"run_id":%d,"workflow_name":"CI","run_attempt":1,"pull_requests":[{"number":%d}]}}`, item.jobID, item.runID, item.prNumber))
+		if _, _, err := store.CreateRequest(state.RunnerRequest{
+			ID:                   item.id,
+			Source:               "github_webhook",
+			JobID:                item.jobID,
+			GitHubInstallationID: item.installationID,
+			RepositoryFullName:   item.repository,
+			Labels:               []string{"self-hosted"},
+		}, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	branchPayload := []byte(`{"workflow_job":{"id":2001,"run_id":3,"workflow_name":"CI","run_attempt":1,"head_branch":"feature/job-detail-page","head_sha":"def","pull_requests":[]}}`)
+	if _, _, err := store.CreateRequest(state.RunnerRequest{
+		ID:                   "slash-branch",
+		Source:               "github_webhook",
+		JobID:                2001,
+		GitHubInstallationID: 987,
+		RepositoryFullName:   "o/r",
+		Labels:               []string{"self-hosted"},
+	}, branchPayload); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(t, store, ghServer.URL, &fakeSandbox{})
+
+	req := httptest.NewRequest(http.MethodGet, "/user/runner_requests/current/siblings", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected runner siblings, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got userRunnerSiblingsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Group != "pull_request" {
+		t.Fatalf("unexpected siblings group: %q", got.Group)
+	}
+	var ids []string
+	for _, job := range got.Jobs {
+		ids = append(ids, job.ID)
+	}
+	if !reflect.DeepEqual(ids, []string{"current", "same-run", "same-pr-other-run"}) {
+		t.Fatalf("unexpected sibling ids: %#v", ids)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/user/runner_requests/current/group", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected runner job group, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var group userRunnerJobGroupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &group); err != nil {
+		t.Fatal(err)
+	}
+	if group.Key != "pr:o/r:1" || group.Group != "pull_request" {
+		t.Fatalf("unexpected job group key=%q group=%q", group.Key, group.Group)
+	}
+	if group.PullRequestTitle != "Add runner smoke coverage" {
+		t.Fatalf("unexpected pull request title: %q", group.PullRequestTitle)
+	}
+	if ids := runnerStateIDs(group.CurrentJobs); !reflect.DeepEqual(ids, []string{"same-run", "current"}) {
+		t.Fatalf("unexpected current job ids: %#v", ids)
+	}
+	if ids := runnerStateIDs(group.PreviousJobs); !reflect.DeepEqual(ids, []string{"same-pr-other-run"}) {
+		t.Fatalf("unexpected previous job ids: %#v", ids)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/user/github/pulls/o/r/1/jobs", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected github pull job group, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var pullGroup userRunnerJobGroupResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &pullGroup); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(runnerStateIDs(pullGroup.Jobs), runnerStateIDs(group.Jobs)) {
+		t.Fatalf("pull route jobs differ: route=%#v runner=%#v", runnerStateIDs(pullGroup.Jobs), runnerStateIDs(group.Jobs))
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/user/github/branches/o/r/def/jobs?branch=feature%2Fjob-detail-page", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected github slash branch job group, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func runnerStateIDs(states []state.RunnerState) []string {
+	ids := make([]string, 0, len(states))
+	for _, st := range states {
+		ids = append(ids, st.ID)
+	}
+	return ids
+}
+
+func TestUserRunnerGitHubLog(t *testing.T) {
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	file, err := zw.Create("0_Qiniu runner smoke.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("Run tests\nAll green\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/o/r/actions/jobs/1001/logs" {
+			t.Fatalf("unexpected github log request: %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Write(archive.Bytes())
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	account, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot"}, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertGitHubInstallation(state.GitHubInstallation{
+		AccountID:      account.ID,
+		InstallationID: 987,
+		AccountLogin:   "o",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                   "github-log-1",
+		Source:               "github_webhook",
+		JobID:                1001,
+		GitHubInstallationID: 987,
+		RepositoryFullName:   "o/r",
+		Labels:               []string{"self-hosted", "e2b"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusCompleted
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+	srv := newTestServer(t, store, ghServer.URL, &fakeSandbox{})
+
+	req := httptest.NewRequest(http.MethodGet, "/user/runner_requests/github-log-1/github-log", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected github log, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "===== 0_Qiniu runner smoke.txt =====") || !strings.Contains(body, "All green") {
+		t.Fatalf("unexpected github log body: %s", body)
+	}
+}
+
+func TestFormatGitHubActionsLogMarksTruncatedFiles(t *testing.T) {
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	file, err := zw.Create("0_large.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(bytes.Repeat([]byte("x"), (8<<20)+1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	text, err := formatGitHubActionsLog(archive.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "[runnerd] GitHub log file truncated after 8388608 bytes.") {
+		t.Fatalf("expected truncation marker, got suffix %q", text[len(text)-128:])
+	}
+}
+
+func TestFormatGitHubActionsLogCapsTotalOutput(t *testing.T) {
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	for i := 0; i < 3; i++ {
+		file, err := zw.Create(fmt.Sprintf("%d_large.txt", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(bytes.Repeat([]byte("x"), 9<<20)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	text, err := formatGitHubActionsLog(archive.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "[runnerd] GitHub log output truncated after 16777216 bytes.") {
+		t.Fatalf("expected total truncation marker, got suffix %q", text[len(text)-128:])
+	}
+	if strings.Contains(text, "===== 2_large.txt =====") {
+		t.Fatal("expected formatter to stop before appending every log file")
+	}
+}
+
+func TestFormatGitHubActionsLogCapsPlainTextOutput(t *testing.T) {
+	text, err := formatGitHubActionsLog(bytes.Repeat([]byte("x"), maxGitHubLogOutputBytes+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "[runnerd] GitHub log output truncated after 16777216 bytes.") {
+		t.Fatalf("expected total truncation marker, got suffix %q", text[len(text)-128:])
 	}
 }
 
@@ -1108,7 +1558,20 @@ func TestAdminUIIsServedWithoutAPIAccess(t *testing.T) {
 		t.Fatalf("root user ui did not serve vite shell")
 	}
 
-	for _, path := range []string{"/repositories", "/account/repositories", "/account/preferences", "/organizations/qiniu/repositories", "/organizations/qiniu/preferences", "/settings", "/accounts"} {
+	for _, path := range []string{
+		"/repositories",
+		"/account/repositories",
+		"/account/preferences",
+		"/organizations/qiniu/repositories",
+		"/organizations/qiniu/preferences",
+		"/jobs/runner-123",
+		"/github/pulls/qiniu/ci-runner/22/jobs",
+		"/github/runs/qiniu/ci-runner/123/jobs",
+		"/github/branches/qiniu/ci-runner/abc123/jobs?branch=feature%2Fjob-detail-page",
+		"/github/branches/qiniu/ci-runner/main/abc123/jobs",
+		"/settings",
+		"/accounts",
+	} {
 		req = httptest.NewRequest(http.MethodGet, path, nil)
 		rec = httptest.NewRecorder()
 		srv.ServeHTTP(rec, req)

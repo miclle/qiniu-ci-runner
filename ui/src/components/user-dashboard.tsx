@@ -2,30 +2,32 @@ import {
   AlertCircle,
   BookOpen,
   CalendarDays,
-  ChevronDown,
   Check,
   ExternalLink,
   Github,
   KeyRound,
+  Loader2,
   LogOut,
   Monitor,
   Moon,
   Play,
+  RefreshCw,
   Settings,
   ShieldCheck,
+  SquareTerminal,
   Sun,
   Workflow,
   X,
 } from "lucide-react"
 import { useTheme } from "next-themes"
-import { type FormEvent, type MouseEvent, type ReactNode, useEffect, useMemo, useState } from "react"
+import { type CSSProperties, type FormEvent, type MouseEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 
-import type { AuthSession, GitHubAppConfig, RunnerState, UserPreferences } from "@/admin-types"
-import { formatTime } from "@/admin-format"
+import type { AuthSession, GitHubAppConfig, RunnerJobGroup, RunnerState, UserPreferences } from "@/admin-types"
+import { logNames } from "@/admin-types"
+import { formatRunnerDuration, formatTime } from "@/admin-format"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -39,6 +41,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useSandboxTerminal } from "@/hooks/use-sandbox-terminal"
 import { cn } from "@/lib/utils"
 
 type BuildGroupKind = "pull_request" | "branch" | "workflow_run" | "manual"
@@ -65,12 +68,20 @@ type AccountSettingsRoute = {
   tab: AccountSettingsTab
 }
 
+type GitHubLogState =
+  | { kind: "log"; text: string }
+  | { kind: "unavailable"; detail: string }
+
+const jobLogTabsListClassName = "h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent p-0 text-muted-foreground"
+const jobLogTabsTriggerClassName = "h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent"
+
 export function UserDashboard({
   authSession,
   githubApp,
   userPreferences,
   runners,
   selectedKey,
+  selectedJobID,
   page,
   accountSettingsRoute,
   authorizedRepositories,
@@ -80,6 +91,9 @@ export function UserDashboard({
   onDeleteSandboxAPIKey,
   onNavigate,
   onNavigateAccountSettings,
+  onOpenJob,
+  onLoadJobGroup,
+  request,
   onSelectKey,
   onSignOut,
 }: {
@@ -88,6 +102,7 @@ export function UserDashboard({
   userPreferences: UserPreferences | null
   runners: RunnerState[]
   selectedKey: string
+  selectedJobID: string
   page: UserPage
   accountSettingsRoute: AccountSettingsRoute
   authorizedRepositories: Record<number, string[]>
@@ -97,11 +112,16 @@ export function UserDashboard({
   onDeleteSandboxAPIKey: (installationID?: number) => Promise<void>
   onNavigate: (page: UserPage) => void
   onNavigateAccountSettings: (accountLogin: string | undefined, tab: AccountSettingsTab) => void
+  onOpenJob: (id: string) => void
+  onLoadJobGroup: (key: string) => Promise<unknown>
+  request: (url: string, options?: RequestInit) => Promise<unknown>
   onSelectKey: (key: string) => void
   onSignOut: () => void
 }) {
   const groups = useMemo(() => groupRunnersByBuildContext(runners), [runners])
-  const selected = groups.find((group) => group.key === selectedKey) || groups[0]
+  const selected = groups.find((group) => group.key === selectedKey) || (selectedKey ? undefined : groups[0])
+  const [loadedJobGroup, setLoadedJobGroup] = useState<{ key: string; group: RunnerJobGroup } | null>(null)
+  const selectedJobGroup = loadedJobGroup && selected && loadedJobGroup.key === selected.key ? loadedJobGroup.group : null
   const installations = useMemo(
     () => orderInstallationsByCurrentAccount(githubApp?.installations ?? [], authSession.login),
     [authSession.login, githubApp?.installations]
@@ -117,14 +137,31 @@ export function UserDashboard({
     onNavigate(next)
   }
 
+  useEffect(() => {
+    let cancelled = false
+    if (!selected?.key) return
+    void onLoadJobGroup(selected.key)
+      .then((group) => {
+        if (!cancelled) {
+          setLoadedJobGroup(isRunnerJobGroup(group) ? { key: selected.key, group } : null)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLoadedJobGroup(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [onLoadJobGroup, selected?.jobs.length, selected?.key, selected?.updatedAt])
+
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b px-4 lg:px-6">
         <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-foreground text-background">
-          <Github className="h-4 w-4" />
+          <Play className="h-5 w-5" />
         </div>
         <div>
-          <div className="text-sm font-semibold">Qiniu Runner</div>
+          <div className="text-sm font-semibold tracking-wide">Qiniu Runner</div>
         </div>
         <nav className="ml-3 hidden items-center gap-1 md:flex" aria-label="Workspace">
           <a href="/" className={navItemClass(page === "home")} onClick={(event) => goToPage(event, "home")}>
@@ -183,8 +220,12 @@ export function UserDashboard({
           groups={groups}
           hasInstallations={hasInstallations}
           selected={selected}
+          selectedJobGroup={selectedJobGroup}
+          selectedJobID={selectedJobID}
           onSelectKey={onSelectKey}
           onNavigate={onNavigate}
+          onOpenJob={onOpenJob}
+          request={request}
         />
       )}
     </main>
@@ -632,19 +673,30 @@ function PullRequestsPage({
   groups,
   hasInstallations,
   selected,
+  selectedJobGroup,
+  selectedJobID,
   onSelectKey,
   onNavigate,
+  onOpenJob,
+  request,
 }: {
   groups: BuildGroup[]
   hasInstallations: boolean
   selected: BuildGroup | undefined
+  selectedJobGroup: RunnerJobGroup | null
+  selectedJobID: string
   onSelectKey: (key: string) => void
   onNavigate: (page: UserPage) => void
+  onOpenJob: (id: string) => void
+  request: (url: string, options?: RequestInit) => Promise<unknown>
 }) {
-  const currentJobs = selected ? currentBuildJobs(selected) : []
-  const previousJobs = selected ? previousBuildJobs(selected, currentJobs) : []
-  const selectedTitleClass = selected ? userBuildGroupTitleClass(selected) : ""
-  const shouldCollapsePreviousJobs = previousJobs.length > 2
+  const currentJobs = selectedJobGroup?.current_jobs || (selected ? currentBuildJobs(selected) : [])
+  const previousJobs = selectedJobGroup?.previous_jobs || (selected ? previousBuildJobs(selected, currentJobs) : [])
+  const allJobs = [...currentJobs, ...previousJobs]
+  const selectedJob = allJobs.find((job) => job.id === selectedJobID) || allJobs[0] || null
+  const effectiveSelectedJobID = selectedJob?.id || ""
+  const workflows = workflowGroups(allJobs)
+  const selectedStatus = selected ? buildGroupStatus(selected) : null
 
   return (
     <>
@@ -662,14 +714,28 @@ function PullRequestsPage({
           <div className="flex h-full flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto">
               {groups.length ? (
-                groups.map((group) => (
-                  <BuildGroupListItem
-                    key={group.key}
-                    group={group}
-                    selected={selected?.key === group.key}
-                    onSelect={() => onSelectKey(group.key)}
-                  />
-                ))
+                groups.map((group) => {
+                  const isSelected = selected?.key === group.key
+                  const showSubmenu = isSelected && allJobs.length > 1
+                  return (
+                    <div key={group.key} className="border-b">
+                      <BuildGroupListItem
+                        group={group}
+                        selected={isSelected}
+                        onSelect={() => onSelectKey(group.key)}
+                      />
+                      {showSubmenu ? (
+                        <div className="border-t border-border/40 bg-background/70 py-1">
+                          <WorkflowJobExplorer
+                            workflows={workflows}
+                            selectedJobID={effectiveSelectedJobID}
+                            onOpenJob={onOpenJob}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })
               ) : (
                 <div className="p-4 text-sm text-muted-foreground">
                   {hasInstallations ? (
@@ -689,55 +755,71 @@ function PullRequestsPage({
           </div>
         </aside>
 
-        <section className="min-h-0 overflow-y-auto p-4 lg:p-6">
+        <section className="min-h-0 overflow-y-auto">
           {selected ? (
-            <div className="space-y-4">
-              <div>
-                <h2 className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-2xl font-semibold">
-                  <span className={selectedTitleClass}>{selected.repository}</span>
-                  <span className={selectedTitleClass}>{selected.title}</span>
-                </h2>
-                <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
-                  <JobField label="Branch" value={selected.headBranch || selected.subtitle || "unknown"} />
-                  <JobField label="Commit" value={shortSHA(selected.headSHA) || "unknown"} />
-                  <JobField label="Workflow runs" value={String(selected.workflowRunIDs.length || 1)} />
-                  <JobField label="Last updated" value={formatTime(selected.updatedAt)} />
-                </div>
+            <div className="flex min-h-full flex-col">
+              <div className="border-b px-4 py-4 lg:px-6">
+                <h2 className="truncate text-2xl font-semibold">{selected.repository}</h2>
               </div>
-              <div className="grid gap-3">
-                {currentJobs.map((job) => (
-                  <RunnerJobCard key={job.id} job={job} />
-                ))}
-                {shouldCollapsePreviousJobs ? (
-                  <Collapsible>
-                    <CollapsibleTrigger asChild>
-                      <Button type="button" variant="outline" className="w-full justify-between">
-                        Previous jobs
-                        <span className="inline-flex items-center gap-2 text-muted-foreground">
-                          {previousJobs.length} jobs
-                          <ChevronDown className="h-4 w-4" />
-                        </span>
-                      </Button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="mt-3 grid gap-3">
-                      {previousJobs.map((job) => (
-                        <RunnerJobCard key={job.id} job={job} />
-                      ))}
-                    </CollapsibleContent>
-                  </Collapsible>
-                ) : previousJobs.length ? (
-                  <div className="grid gap-3">
-                    <div className="text-sm font-medium text-muted-foreground">Previous jobs</div>
-                    {previousJobs.map((job) => (
-                      <RunnerJobCard key={job.id} job={job} />
-                    ))}
+              <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 lg:p-6">
+                <div className="shrink-0 border-b pb-4">
+                  <h3 className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xl font-semibold">
+                    <span>{pullRequestHeading(selected, selectedJobGroup)}</span>
+                    {selectedStatus ? <BuildGroupStatusBadge group={selected} status={selectedStatus} /> : null}
+                  </h3>
+                  <div className="mt-3 space-y-4 text-sm">
+                    <section>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <JobField label="Branch" value={selectedJobGroup?.head_branch || selected.headBranch || selected.subtitle || "unknown"} />
+                        <JobField label="Commit" value={shortSHA(selectedJobGroup?.head_sha || selected.headSHA) || "unknown"} />
+                        <JobField label="Last updated" value={formatTime(selectedJobGroup?.updated_at || selected.updatedAt)} />
+                      </div>
+                    </section>
+                    <section>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        {selectedJob ? (
+                          <>
+                            <JobField
+                              label="Job Name"
+                              value={selectedJob.github_job_url ? (
+                                <a className={cn("inline-flex min-w-0 items-center gap-1 hover:underline", jobStatusTextClass(selectedJob.status))} href={selectedJob.github_job_url} target="_blank" rel="noreferrer">
+                                  <span className="truncate">{runnerJobTitle(selectedJob)}</span>
+                                  <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                                </a>
+                              ) : (
+                                <span className={jobStatusTextClass(selectedJob.status)}>{runnerJobTitle(selectedJob)}</span>
+                              )}
+                            />
+                            <JobField
+                              label="Workflow"
+                              value={workflowRunURL(selectedJob) ? (
+                                <a className="inline-flex min-w-0 items-center gap-1 text-primary hover:underline" href={workflowRunURL(selectedJob)} target="_blank" rel="noreferrer">
+                                  <span className="truncate">{selectedJob.workflow_name || "Workflow"}</span>
+                                  <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                                </a>
+                              ) : selectedJob.workflow_name || "Workflow"}
+                            />
+                            <JobField label="Duration" value={formatRunnerDuration(selectedJob) || "-"} />
+                          </>
+                        ) : (
+                          <div className="text-muted-foreground">Select a job to inspect its logs.</div>
+                        )}
+                      </div>
+                    </section>
                   </div>
-                ) : null}
+                </div>
+                {selectedJob ? <RunnerJobLogPanel job={selectedJob} request={request} /> : (
+                  <div className="rounded-lg border bg-muted/30 p-6 text-sm text-muted-foreground">
+                    Select a job to inspect its logs.
+                  </div>
+                )}
               </div>
             </div>
           ) : (
             <div className="rounded-lg border bg-muted/30 p-6 text-sm text-muted-foreground">
-              {hasInstallations ? (
+              {groups.length ? (
+                "This job group was not found. It may have aged out of the local runner history or belongs to an account that is not connected."
+              ) : hasInstallations ? (
                 "No runner jobs are available yet. Trigger a workflow in an installed repository to see jobs here."
               ) : (
                 <button
@@ -825,36 +907,541 @@ function UserMenu({ authSession, onSignOut }: { authSession: AuthSession; onSign
   )
 }
 
-function JobField({ label, value }: { label: string; value: ReactNode }) {
+function JobField({ label, value, onOpen }: { label: string; value: ReactNode; onOpen?: () => void }) {
   return (
-    <div>
+    <div className="grid grid-cols-[88px_minmax(0,1fr)] items-baseline gap-2">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 break-words font-medium">{value}</div>
+      {onOpen ? (
+        <button type="button" className="min-w-0 break-words text-left font-medium hover:text-primary hover:underline" onClick={onOpen}>
+          {value}
+        </button>
+      ) : (
+        <div className="min-w-0 break-words font-medium">{value}</div>
+      )}
     </div>
   )
 }
 
-function RunnerJobCard({ job }: { job: RunnerState }) {
+function WorkflowJobExplorer({
+  workflows,
+  selectedJobID,
+  onOpenJob,
+}: {
+  workflows: ReturnType<typeof workflowGroups>
+  selectedJobID: string
+  onOpenJob: (id: string) => void
+}) {
   return (
-    <Card className="rounded-lg">
-      <CardHeader className="gap-1 pb-0">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="text-base">{runnerJobTitle(job)}</CardTitle>
-          </div>
-          <Badge className={userStatusClass(job.status)}>{job.status}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="grid gap-3 pt-0 text-sm md:grid-cols-3">
-        <JobField label="Runner spec" value={job.runner_spec_name || "matched by labels"} />
-        <JobField label="Workflow" value={job.workflow_name || "unknown"} />
-        <JobField label="Workflow run" value={workflowRunValue(job)} />
-        <JobField label="Queued" value={formatTime(job.created_at)} />
-        <JobField label="Started" value={job.running_at ? formatTime(job.running_at) : "-"} />
-        <JobField label="Finished" value={job.completed_at || job.failed_at ? formatTime(job.completed_at || job.failed_at) : "-"} />
-      </CardContent>
-    </Card>
+    <div className="grid gap-0">
+      {workflows.map((workflow) => (
+        workflow.jobs.length === 1 ? (
+          <WorkflowRunListItem
+            key={workflow.id}
+            workflow={workflow}
+            selectedJobID={selectedJobID}
+            onOpenJob={onOpenJob}
+          />
+        ) : (
+          <section key={workflow.id} className="grid gap-0">
+            <div className="grid gap-0">
+              {workflow.jobs.map((job) => (
+                <RunnerJobListItem key={job.id} job={job} selected={job.id === selectedJobID} onOpen={() => onOpenJob(job.id)} />
+              ))}
+            </div>
+          </section>
+        )
+      ))}
+    </div>
   )
+}
+
+function WorkflowRunListItem({
+  workflow,
+  selectedJobID,
+  onOpenJob,
+}: {
+  workflow: ReturnType<typeof workflowGroups>[number]
+  selectedJobID: string
+  onOpenJob: (id: string) => void
+}) {
+  const job = workflow.jobs[0]
+  const selected = job.id === selectedJobID
+  const status = workflowStatus(workflow.jobs)
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenJob(job.id)}
+      className={cn(
+        "grid w-full grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-2 px-4 py-1.5 text-left text-sm transition-colors",
+        selected ? "bg-primary/10 text-primary shadow-[inset_3px_0_0_hsl(var(--primary))]" : "hover:bg-muted/80"
+      )}
+    >
+      <span className={cn("flex justify-center", buildGroupStatusClasses(status).icon)}>{jobStatusMark(job.status)}</span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium">{workflow.name}</span>
+      </span>
+      <span className="shrink-0 text-xs text-muted-foreground">{formatRunnerDuration(job)}</span>
+    </button>
+  )
+}
+
+function RunnerJobListItem({ job, selected, onOpen }: { job: RunnerState; selected: boolean; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "grid w-full grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-2 px-4 py-1.5 text-left text-sm transition-colors",
+        selected ? "bg-primary/10 text-primary shadow-[inset_3px_0_0_hsl(var(--primary))]" : "hover:bg-muted/80"
+      )}
+    >
+      <span className={cn("flex justify-center", buildGroupStatusClasses(jobStatusSummary(job.status)).icon)}>{jobStatusMark(job.status)}</span>
+      <span className="min-w-0">
+        <span className="block truncate font-medium">{runnerJobTitle(job)}</span>
+      </span>
+      <span className="shrink-0 text-xs text-muted-foreground">{formatRunnerDuration(job)}</span>
+    </button>
+  )
+}
+
+function RunnerJobLogPanel({
+  job,
+  request,
+}: {
+  job: RunnerState
+  request: (url: string, options?: RequestInit) => Promise<unknown>
+}) {
+  const [selectedLog, setSelectedLog] = useState<(typeof logNames)[number]>("control.log")
+  const [runnerLogText, setRunnerLogText] = useState("Loading runner log...")
+  const [githubLog, setGithubLog] = useState<GitHubLogState>({ kind: "log", text: "Loading GitHub log..." })
+  const [githubLogLoading, setGithubLogLoading] = useState(false)
+  const endpoint = `/user/runner_requests/${encodeURIComponent(job.id)}`
+  const endpointRef = useRef(endpoint)
+  const terminalAvailable = isTerminalAvailable(job)
+  const { terminalEl, terminalSession, terminalError, terminalConnecting, connectTerminal } = useSandboxTerminal({
+    endpoint,
+    available: terminalAvailable,
+    request,
+    connectingMessage: "Connecting to sandbox web console...",
+    streamDisconnectedMessage: "Web console stream disconnected",
+    connectErrorMessage: "Failed to connect web console",
+  })
+
+  useEffect(() => {
+    endpointRef.current = endpoint
+  }, [endpoint])
+
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => {
+      if (active) {
+        setRunnerLogText("Loading runner log...")
+      }
+    })
+    void request(`${endpoint}/logs/${encodeURIComponent(selectedLog)}`)
+      .then((text) => {
+        if (active) {
+          setRunnerLogText(logResponseText(text, "Log is empty"))
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setRunnerLogText(error instanceof Error ? error.message : "Failed to load runner log")
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [endpoint, request, selectedLog])
+
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => {
+      if (active) {
+        setGithubLogLoading(true)
+        setGithubLog({ kind: "log", text: "Loading GitHub log..." })
+      }
+    })
+    void request(`${endpoint}/github-log`)
+      .then((text) => {
+        if (active) {
+          setGithubLog(githubLogResponseState(text, "GitHub log is empty"))
+        }
+      })
+      .catch((error) => {
+        if (active) {
+          setGithubLog(githubLogErrorState(error))
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setGithubLogLoading(false)
+        }
+      })
+    return () => {
+      active = false
+    }
+  }, [endpoint, request])
+
+  const refreshGithubLog = () => {
+    const refreshEndpoint = endpoint
+    setGithubLogLoading(true)
+    setGithubLog({ kind: "log", text: "Loading GitHub log..." })
+    void request(`${refreshEndpoint}/github-log`)
+      .then((text) => {
+        if (endpointRef.current === refreshEndpoint) {
+          setGithubLog(githubLogResponseState(text, "GitHub log is empty"))
+        }
+      })
+      .catch((error) => {
+        if (endpointRef.current === refreshEndpoint) {
+          setGithubLog(githubLogErrorState(error))
+        }
+      })
+      .finally(() => {
+        if (endpointRef.current === refreshEndpoint) {
+          setGithubLogLoading(false)
+        }
+      })
+  }
+
+  const githubLogActions = (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="border-white/15 bg-white/5 text-slate-100 hover:bg-white/10 hover:text-white"
+      onClick={refreshGithubLog}
+      disabled={githubLogLoading}
+    >
+      <RefreshCw className={cn(githubLogLoading && "animate-spin")} />
+      Refresh
+    </Button>
+  )
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Tabs defaultValue="github-logs" className="flex min-h-0 flex-1 flex-col gap-0">
+        <TabsList className={jobLogTabsListClassName}>
+          <TabsTrigger className={jobLogTabsTriggerClassName} value="github-logs">GitHub logs</TabsTrigger>
+          <TabsTrigger className={jobLogTabsTriggerClassName} value="runner-logs">Runner logs</TabsTrigger>
+          <TabsTrigger className={jobLogTabsTriggerClassName} value="web-console">Web Console</TabsTrigger>
+          <TabsTrigger className={jobLogTabsTriggerClassName} value="details">Details</TabsTrigger>
+        </TabsList>
+        <TabsContent value="github-logs" className="m-0 pt-2">
+          {githubLog.kind === "unavailable" ? (
+            <GitHubLogsUnavailable detail={githubLog.detail} actions={githubLogActions} />
+          ) : (
+            <LogOutput
+              text={githubLog.text}
+              description="Workflow job output downloaded from GitHub Actions."
+              actions={githubLogActions}
+            />
+          )}
+        </TabsContent>
+        <TabsContent value="runner-logs" className="m-0 pt-2">
+          <LogOutput
+            text={runnerLogText}
+            description={`Runner ${selectedLog.replace(".log", "")} output captured by runnerd.`}
+            leading={(
+              <div className="flex items-center gap-1 rounded-md border border-white/10 bg-white/5 p-1" aria-label="Runner log stream">
+                {logNames.map((name) => {
+                  const value = name.replace(".log", "")
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      className={cn(
+                        "rounded px-2 py-1 text-xs font-medium text-slate-300 transition-colors hover:bg-white/10 hover:text-white",
+                        selectedLog === name && "bg-emerald-400/15 text-emerald-100"
+                      )}
+                      aria-pressed={selectedLog === name}
+                      onClick={() => setSelectedLog(name)}
+                    >
+                      {value}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          />
+        </TabsContent>
+        <TabsContent value="web-console" className="m-0 flex min-h-0 flex-1 flex-col overflow-hidden pt-2">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-y border-emerald-500/15 bg-[#111318] text-slate-100 shadow-[inset_3px_0_0_theme(colors.emerald.500/0.35)]">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-slate-900/95 px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-xs text-slate-400">{job.sandbox_id || "No active sandbox"}</div>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="border-white/15 bg-white/5 text-slate-100 hover:bg-white/10 hover:text-white disabled:opacity-60"
+                variant="outline"
+                onClick={() => void connectTerminal()}
+                disabled={!terminalAvailable || terminalConnecting || Boolean(terminalSession)}
+              >
+                <SquareTerminal />
+                {terminalSession ? "Connected" : terminalConnecting ? "Connecting" : "Connect"}
+              </Button>
+            </div>
+            {terminalError ? <WebConsoleError message={terminalError} /> : null}
+            {terminalAvailable ? (
+              <div className="relative min-h-0 flex-1 p-2">
+                <div ref={terminalEl} className="h-full min-h-0 overflow-hidden rounded-md" />
+                {!terminalSession ? (
+                  <div className="absolute inset-2 flex items-center justify-center rounded-md bg-[#111318] text-sm text-slate-300">
+                    Connect when you need an interactive shell.
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <WebConsoleUnavailable job={job} />
+            )}
+          </div>
+        </TabsContent>
+        <TabsContent value="details" className="m-0 py-5">
+          <div className="grid gap-2 text-sm">
+            <JobField label="Status" value={job.status} />
+            <JobField label="Runner spec" value={job.runner_spec_name || "matched by labels"} />
+            <JobField label="Workflow run" value={workflowRunValue(job)} />
+            <JobField label="Queued" value={formatTime(job.created_at)} />
+            <JobField label="Started" value={job.running_at ? formatTime(job.running_at) : "-"} />
+            <JobField label="Finished" value={job.completed_at || job.failed_at ? formatTime(job.completed_at || job.failed_at) : "-"} />
+            <JobField label="Commit" value={job.head_sha || "-"} />
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+
+function logResponseText(text: unknown, emptyMessage: string) {
+  return typeof text === "string" ? text || emptyMessage : JSON.stringify(text, null, 2)
+}
+
+function githubLogResponseState(text: unknown, emptyMessage: string): GitHubLogState {
+  const raw = logResponseText(text, emptyMessage)
+  return { kind: "log", text: raw }
+}
+
+function githubLogErrorState(error: unknown): GitHubLogState {
+  const raw = error instanceof Error ? error.message : "Failed to load GitHub log"
+  return isGitHubLogUnavailable(raw) ? { kind: "unavailable", detail: raw } : { kind: "log", text: raw }
+}
+
+function isGitHubLogUnavailable(text: string) {
+  const value = text.toLowerCase()
+  return (
+    value.includes("status 404") ||
+    value.includes("blobnotfound") ||
+    value.includes("the specified blob does not exist")
+  )
+}
+
+function GitHubLogsUnavailable({ detail, actions }: { detail: string; actions: ReactNode }) {
+  return (
+    <div className="overflow-hidden border-y border-emerald-500/15 bg-slate-950 text-slate-100 shadow-[inset_3px_0_0_theme(colors.emerald.500/0.35)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-slate-900/95 px-4 py-3">
+        <div className="text-xs text-slate-400">Workflow job output downloaded from GitHub Actions.</div>
+        <div className="flex items-center gap-2">{actions}</div>
+      </div>
+      <div className="flex min-h-[260px] items-center justify-center px-4 py-12">
+        <div className="max-w-xl text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md border border-white/10 bg-white/5 text-amber-200">
+            <AlertCircle className="h-5 w-5" />
+          </div>
+          <h3 className="mt-4 text-sm font-semibold text-slate-100">GitHub logs are not available yet</h3>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            GitHub may not have generated downloadable logs for this job. This can happen when a job never reached a runner, was cancelled before producing logs, or GitHub has not published the log archive yet.
+          </p>
+          <details className="mt-5 rounded-md border border-white/10 bg-white/[0.03] text-left">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-300 hover:text-slate-100">
+              Show technical details
+            </summary>
+            <pre className="max-h-48 overflow-auto border-t border-white/10 px-3 py-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-slate-400">
+              {detail}
+            </pre>
+          </details>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WebConsoleError({ message }: { message: string }) {
+  return (
+    <div className="border-b border-red-400/15 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+      <div className="flex min-w-0 items-start gap-2">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-200" />
+        <div className="min-w-0">
+          <div className="font-medium">Web Console connection failed</div>
+          <div className="mt-1 break-words font-mono text-xs leading-relaxed text-red-100/80">{message}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WebConsoleUnavailable({ job }: { job: RunnerState }) {
+  const reason = job.sandbox_id
+    ? "The sandbox is no longer accepting web console sessions for this job state."
+    : "The sandbox has already been cleaned up, so a web console session cannot be opened."
+  return (
+    <div className="flex min-h-[320px] items-center justify-center px-4 py-12">
+      <div className="max-w-md text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-md border border-white/10 bg-white/5 text-emerald-200">
+          <SquareTerminal className="h-5 w-5" />
+        </div>
+        <h3 className="mt-4 text-sm font-semibold text-slate-100">Web Console unavailable</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-400">
+          Web Console is available while a sandbox job is creating, running, or stopping. {reason}
+        </p>
+        <div className="mt-4 inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300">
+          <span className="text-slate-500">Status</span>
+          <span className="font-medium text-slate-100">{job.status}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function LogOutput({
+  text,
+  description,
+  actions,
+  leading,
+}: {
+  text: string
+  description: string
+  actions?: ReactNode
+  leading?: ReactNode
+}) {
+  const logRef = useRef<HTMLDivElement | null>(null)
+  const [collapseState, setCollapseState] = useState<{ text: string; groups: Set<number> }>(() => ({ text, groups: new Set() }))
+  const collapsedGroups = useMemo(() => (collapseState.text === text ? collapseState.groups : new Set<number>()), [collapseState, text])
+  const lines = useMemo(() => text.split(/\r?\n/), [text])
+  const largeLog = lines.length > 20000
+  const logLines = useMemo(() => (largeLog ? [] : parseLogLines(lines, collapsedGroups)), [lines, collapsedGroups, largeLog])
+  const numberWidth = `${Math.max(2, String(lines.length).length)}ch`
+
+  const scrollToBottom = () => {
+    logRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+  }
+
+  const toggleGroup = (groupID: number) => {
+    setCollapseState((current) => {
+      const next = new Set(current.text === text ? current.groups : [])
+      if (next.has(groupID)) {
+        next.delete(groupID)
+      } else {
+        next.add(groupID)
+      }
+      return { text, groups: next }
+    })
+  }
+
+  return (
+    <div className="overflow-hidden border-y border-emerald-500/15 bg-slate-950 text-slate-100 shadow-[inset_3px_0_0_theme(colors.emerald.500/0.35)]">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-slate-900/95 px-4 py-3 backdrop-blur">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          {leading}
+          <div className="min-w-0 text-xs text-slate-400">{description}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="border-white/15 bg-white/5 text-slate-100 hover:bg-white/10 hover:text-white"
+            onClick={scrollToBottom}
+          >
+            Scroll to Bottom
+          </Button>
+          {actions}
+        </div>
+      </div>
+      <div ref={logRef} className="py-3 font-mono text-xs leading-relaxed">
+        {largeLog ? (
+          <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words px-4 text-slate-200">{text}</pre>
+        ) : logLines.map((logLine) => {
+          const rowStyle = { "--line-number-width": numberWidth } as CSSProperties
+          const rowClassName = "grid grid-cols-[12px_var(--line-number-width)_minmax(0,1fr)] gap-1 px-4"
+          if (logLine.groupID !== undefined && logLine.kind === "group-start") {
+            return (
+              <button
+                key={`${logLine.index}-${logLine.text.slice(0, 16)}`}
+                type="button"
+                className={cn(rowClassName, "group text-left")}
+                style={rowStyle}
+                onClick={() => toggleGroup(logLine.groupID ?? logLine.index)}
+                aria-expanded={!collapsedGroups.has(logLine.groupID ?? logLine.index)}
+              >
+                <span className="flex h-[1.625em] select-none items-center justify-center text-slate-300 group-hover:text-emerald-200">
+                  <Play
+                    className={cn(
+                      "h-3 w-3 max-w-none fill-current stroke-current",
+                      !collapsedGroups.has(logLine.groupID ?? logLine.index) && "rotate-90"
+                    )}
+                  />
+                </span>
+                <span className="select-none text-right text-slate-500">{logLine.index + 1}</span>
+                <span className={cn("min-w-0 whitespace-pre-wrap break-words text-left text-slate-200 group-hover:text-emerald-200", logLineClass(logLine.text))}>{logLine.displayText || " "}</span>
+              </button>
+            )}
+          return (
+            <div key={`${logLine.index}-${logLine.text.slice(0, 16)}`} className={rowClassName} style={rowStyle}>
+              <span />
+              <span className="select-none text-right text-slate-500">{logLine.index + 1}</span>
+              <span className={cn("min-w-0 whitespace-pre-wrap break-words text-slate-200", logLineClass(logLine.text))}>{logLine.displayText || " "}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function logLineClass(line: string) {
+  if (line.includes("##[group]") || line.includes("##[endgroup]")) return "font-semibold text-emerald-300"
+  if (line.trimStart().startsWith("$ ")) return "font-semibold text-cyan-200"
+  return ""
+}
+
+type ParsedLogLine = {
+  index: number
+  text: string
+  displayText: string
+  kind: "line" | "group-start" | "group-end"
+  groupID?: number
+}
+
+function parseLogLines(lines: string[], collapsedGroups: Set<number>): ParsedLogLine[] {
+  const visible: ParsedLogLine[] = []
+  const stack: number[] = []
+
+  lines.forEach((text, index) => {
+    const hiddenByParent = stack.some((groupID) => collapsedGroups.has(groupID))
+
+    if (text.includes("##[group]")) {
+      if (!hiddenByParent) {
+        visible.push({ index, text, displayText: text.replace("##[group]", ""), kind: "group-start", groupID: index })
+      }
+      stack.push(index)
+      return
+    }
+
+    if (text.includes("##[endgroup]")) {
+      stack.pop()
+      return
+    }
+
+    if (!hiddenByParent) {
+      visible.push({ index, text, displayText: text, kind: "line" })
+    }
+  })
+
+  return visible
 }
 
 function workflowRunValue(job: RunnerState) {
@@ -889,6 +1476,36 @@ function workflowRunURL(job: RunnerState) {
   return job.github_job_url.slice(0, index + marker.length)
 }
 
+function pullRequestHeading(group: BuildGroup, jobGroup: RunnerJobGroup | null) {
+  const title = jobGroup?.pull_request_title?.trim()
+  const label = jobGroup?.title || group.title
+  return title ? `${label}: ${title}` : label
+}
+
+function workflowGroups(jobs: RunnerState[]) {
+  const groups = new Map<number | string, { id: number | string; name: string; jobs: RunnerState[] }>()
+  for (const job of jobs) {
+    const id = job.workflow_run_id || job.id
+    const group = groups.get(id)
+    if (group) {
+      group.jobs.push(job)
+      continue
+    }
+    groups.set(id, {
+      id,
+      name: job.workflow_name || "Workflow run",
+      jobs: [job],
+    })
+  }
+  return Array.from(groups.values())
+}
+
+function workflowStatus(jobs: RunnerState[]) {
+  if (jobs.some((job) => job.status === "failed")) return "failed"
+  if (jobs.some((job) => ["queued", "creating", "running", "stopping"].includes(job.status))) return "active"
+  return "completed"
+}
+
 function BuildGroupListItem({
   group,
   selected,
@@ -907,7 +1524,7 @@ function BuildGroupListItem({
       type="button"
       onClick={onSelect}
       className={cn(
-        "group relative flex w-full gap-2 border-b bg-background/60 py-4 pl-3 pr-4 text-left transition-colors hover:bg-accent/70",
+        "group relative flex w-full gap-2 bg-background/60 py-4 pl-3 pr-4 text-left transition-colors hover:bg-accent/70",
         selected ? "bg-accent" : ""
       )}
     >
@@ -946,15 +1563,49 @@ function BuildGroupListItem({
   )
 }
 
-function userBuildGroupTitleClass(group: BuildGroup) {
-  return buildGroupStatusClasses(buildGroupStatus(group)).title
-}
-
 function BuildGroupStatusIcon({ status }: { status: RunnerStatusSummary }) {
   const className = "h-4 w-4"
   if (status === "failed") return <X className={className} />
-  if (status === "active") return <AlertCircle className={className} />
+  if (status === "active") return <Loader2 className={cn(className, "animate-spin")} />
   return <Check className={className} />
+}
+
+function BuildGroupStatusBadge({ group, status }: { group: BuildGroup; status: RunnerStatusSummary }) {
+  if (status === "failed") {
+    return (
+      <Badge variant="danger" className="self-center">
+        <X />
+        {buildGroupStatusLabel(group, "failed")}
+      </Badge>
+    )
+  }
+  if (status === "active") {
+    return (
+      <Badge variant="warning" className="self-center">
+        <Loader2 className="animate-spin" />
+        {buildGroupStatusLabel(group, "running")}
+      </Badge>
+    )
+  }
+  return (
+    <Badge variant="success" className="self-center">
+      <Check />
+      {buildGroupStatusLabel(group, "passed")}
+    </Badge>
+  )
+}
+
+function buildGroupStatusLabel(group: BuildGroup, statusText: "failed" | "running" | "passed") {
+  switch (group.kind) {
+    case "pull_request":
+      return `PR ${statusText}`
+    case "workflow_run":
+      return `run ${statusText}`
+    case "branch":
+      return `branch ${statusText}`
+    default:
+      return `job ${statusText}`
+  }
 }
 
 function buildGroupStatus(group: BuildGroup): RunnerStatusSummary {
@@ -964,6 +1615,31 @@ function buildGroupStatus(group: BuildGroup): RunnerStatusSummary {
     return "active"
   }
   return "completed"
+}
+
+function jobStatusSummary(status: RunnerState["status"]): RunnerStatusSummary {
+  if (status === "failed") return "failed"
+  if (status === "queued" || status === "creating" || status === "running" || status === "stopping") return "active"
+  return "completed"
+}
+
+function jobStatusTextClass(status: RunnerState["status"]) {
+  return buildGroupStatusClasses(jobStatusSummary(status)).title
+}
+
+function jobStatusMark(status: RunnerState["status"]) {
+  const className = "h-4 w-4"
+  switch (status) {
+    case "failed":
+      return <X className={className} />
+    case "queued":
+    case "creating":
+    case "running":
+    case "stopping":
+      return <Loader2 className={cn(className, "animate-spin")} />
+    default:
+      return <Check className={className} />
+  }
 }
 
 function buildGroupStatusClasses(status: RunnerStatusSummary) {
@@ -976,9 +1652,9 @@ function buildGroupStatusClasses(status: RunnerStatusSummary) {
       }
     case "active":
       return {
-        bar: "bg-blue-500",
-        icon: "text-blue-500",
-        title: "text-blue-500",
+        bar: "bg-yellow-500",
+        icon: "text-yellow-700 dark:text-yellow-400",
+        title: "text-yellow-700 dark:text-yellow-400",
       }
     default:
       return {
@@ -1001,6 +1677,10 @@ function runnerJobTitle(job: RunnerState) {
     return job.assigned_job_name
   }
   return job.workflow_name || job.runner_name
+}
+
+function isTerminalAvailable(job: RunnerState) {
+  return Boolean(job.sandbox_id && ["creating", "running", "stopping"].includes(job.status))
 }
 
 function groupRunnersByBuildContext(runners: RunnerState[]): BuildGroup[] {
@@ -1044,6 +1724,12 @@ function groupRunnersByBuildContext(runners: RunnerState[]): BuildGroup[] {
 
 function isUserVisibleRunnerJob(job: RunnerState) {
   return !(job.failure_stage === "admission" && job.failure_reason === "profile_labels_not_matched")
+}
+
+function isRunnerJobGroup(value: unknown): value is RunnerJobGroup {
+  if (!value || typeof value !== "object") return false
+  const candidate = value as Partial<RunnerJobGroup>
+  return Array.isArray(candidate.jobs) && Array.isArray(candidate.current_jobs) && Array.isArray(candidate.previous_jobs)
 }
 
 function buildGroupSeed(runner: RunnerState, repository: string, pullRequestNumber?: number): BuildGroup {
@@ -1202,21 +1888,4 @@ function userInitials(login: string) {
       .map((part) => part[0]?.toUpperCase())
       .join("") || "GH"
   )
-}
-
-function userStatusClass(status: RunnerState["status"]) {
-  switch (status) {
-    case "running":
-      return "bg-emerald-500 text-white"
-    case "queued":
-    case "creating":
-    case "stopping":
-      return "bg-blue-500 text-white"
-    case "completed":
-      return "bg-muted text-foreground"
-    case "failed":
-      return "bg-destructive text-white"
-    default:
-      return ""
-  }
 }

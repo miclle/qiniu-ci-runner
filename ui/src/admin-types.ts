@@ -35,6 +35,24 @@ export type RunnerState = {
   failed_at?: string
 }
 
+export type RunnerJobGroup = {
+  key: string
+  group: "pull_request" | "branch" | "workflow_run" | "manual" | "repository"
+  repository: string
+  title: string
+  subtitle: string
+  updated_at: string
+  jobs: RunnerState[]
+  current_jobs: RunnerState[]
+  previous_jobs: RunnerState[]
+  workflow_run_ids: number[]
+  head_sha?: string
+  head_branch?: string
+  pull_request_number?: number
+  pull_request_title?: string
+  pull_request_title_error?: string
+}
+
 export type RunnerSpec = {
   name: string
   labels: string[]

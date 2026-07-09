@@ -22,11 +22,12 @@ import (
 )
 
 type Client struct {
-	baseURL   string
-	http      *http.Client
-	appAuth   *appAuthenticator
-	tokensMu  sync.Mutex
-	regTokens map[string]RegistrationToken
+	baseURL      string
+	http         *http.Client
+	downloadHTTP *http.Client
+	appAuth      *appAuthenticator
+	tokensMu     sync.Mutex
+	regTokens    map[string]RegistrationToken
 }
 
 type AppAuth struct {
@@ -91,7 +92,10 @@ func (c *Client) GetInstallation(ctx context.Context, installationID int64) (Ins
 		return Installation{}, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return Installation{}, fmt.Errorf("read github installation response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Installation{}, fmt.Errorf("github installation: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -140,8 +144,11 @@ func (c *Client) ListInstallationRepositories(ctx context.Context, installationI
 		if err != nil {
 			return nil, err
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read github installation repositories response: %w", readErr)
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("github installation repositories: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}
@@ -167,10 +174,21 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	return newClient(baseURL, httpClient, httpClient)
+}
+
+func newClient(baseURL string, httpClient, downloadHTTP *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if downloadHTTP == nil {
+		downloadHTTP = httpClient
+	}
 	return &Client{
-		baseURL:   strings.TrimRight(baseURL, "/"),
-		http:      httpClient,
-		regTokens: map[string]RegistrationToken{},
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		http:         httpClient,
+		downloadHTTP: downloadHTTP,
+		regTokens:    map[string]RegistrationToken{},
 	}
 }
 
@@ -195,7 +213,7 @@ func NewAppClient(baseURL string, auth AppAuth, httpClient *http.Client) (*Clien
 	appHTTP.Transport = appTransport
 	cloned := *httpClient
 	cloned.Transport = baseTransport
-	client := NewClient(baseURL, &cloned)
+	client := newClient(baseURL, &cloned, &cloned)
 	client.appAuth = &appAuthenticator{
 		baseURL:              strings.TrimRight(baseURL, "/"),
 		staticInstallationID: auth.InstallationID,
@@ -209,16 +227,18 @@ func NewAppClient(baseURL string, auth AppAuth, httpClient *http.Client) (*Clien
 }
 
 func NewTokenClient(baseURL, token string, httpClient *http.Client) *Client {
-	return NewClient(baseURL, clientWithTransport(httpClient, bearerTransport{
+	downloadHTTP := cloneHTTPClient(httpClient)
+	return newClient(baseURL, clientWithTransport(downloadHTTP, bearerTransport{
 		token: strings.TrimSpace(token),
-	}))
+	}), downloadHTTP)
 }
 
 func NewBasicAuthClient(baseURL, username, password string, httpClient *http.Client) *Client {
-	return NewClient(baseURL, clientWithTransport(httpClient, basicAuthTransport{
+	downloadHTTP := cloneHTTPClient(httpClient)
+	return newClient(baseURL, clientWithTransport(downloadHTTP, basicAuthTransport{
 		username: username,
 		password: password,
-	}))
+	}), downloadHTTP)
 }
 
 func (c *Client) RunnerURL(repositoryFullName, runnerGroup string) (string, error) {
@@ -254,7 +274,10 @@ func (c *Client) CreateRegistrationToken(ctx context.Context, repositoryFullName
 		return RegistrationToken{}, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return RegistrationToken{}, fmt.Errorf("read github registration token response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return RegistrationToken{}, fmt.Errorf("github registration token: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -290,8 +313,11 @@ func (c *Client) ListRunners(ctx context.Context, repositoryFullName, runnerGrou
 		if err != nil {
 			return nil, err
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read github list runners response: %w", readErr)
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("github list runners: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}
@@ -334,7 +360,10 @@ func (c *Client) RemoveRunner(ctx context.Context, repositoryFullName, runnerGro
 		result = "not_found"
 		return nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read github remove runner response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("github remove runner: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -381,8 +410,11 @@ func (c *Client) ListWorkflowRunJobs(ctx context.Context, repositoryFullName str
 		if err != nil {
 			return nil, err
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read github workflow run jobs response: %w", readErr)
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("github workflow run jobs: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}
@@ -419,7 +451,10 @@ func (c *Client) GetWorkflowJob(ctx context.Context, repositoryFullName string, 
 		return WorkflowJob{}, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return WorkflowJob{}, fmt.Errorf("read github workflow job response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return WorkflowJob{}, fmt.Errorf("github workflow job: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -431,6 +466,166 @@ func (c *Client) GetWorkflowJob(ctx context.Context, repositoryFullName string, 
 	return job, nil
 }
 
+func (c *Client) GetPullRequest(ctx context.Context, repositoryFullName string, number int64) (PullRequest, error) {
+	startedAt := time.Now()
+	result := "error"
+	defer func() { metrics.RecordGitHubAPI("get_pull_request", result, time.Since(startedAt)) }()
+	repositoryFullName = c.repositoryFullName(repositoryFullName)
+	if repositoryFullName == "" {
+		return PullRequest{}, fmt.Errorf("repository full name is required")
+	}
+	if number <= 0 {
+		return PullRequest{}, fmt.Errorf("pull request number is required")
+	}
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d", c.baseURL, repositoryFullName, number)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return PullRequest{}, err
+	}
+	setGitHubHeaders(req)
+
+	resp, err := c.do(req, repositoryFullName)
+	if err != nil {
+		return PullRequest{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("read github pull request response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return PullRequest{}, fmt.Errorf("github pull request: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var pull PullRequest
+	if err := json.Unmarshal(body, &pull); err != nil {
+		return PullRequest{}, err
+	}
+	result = "success"
+	return pull, nil
+}
+
+func (c *Client) GetIssue(ctx context.Context, repositoryFullName string, number int64) (Issue, error) {
+	startedAt := time.Now()
+	result := "error"
+	defer func() { metrics.RecordGitHubAPI("get_issue", result, time.Since(startedAt)) }()
+	repositoryFullName = c.repositoryFullName(repositoryFullName)
+	if repositoryFullName == "" {
+		return Issue{}, fmt.Errorf("repository full name is required")
+	}
+	if number <= 0 {
+		return Issue{}, fmt.Errorf("issue number is required")
+	}
+	url := fmt.Sprintf("%s/repos/%s/issues/%d", c.baseURL, repositoryFullName, number)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return Issue{}, err
+	}
+	setGitHubHeaders(req)
+
+	resp, err := c.do(req, repositoryFullName)
+	if err != nil {
+		return Issue{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return Issue{}, fmt.Errorf("read github issue response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Issue{}, fmt.Errorf("github issue: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var issue Issue
+	if err := json.Unmarshal(body, &issue); err != nil {
+		return Issue{}, err
+	}
+	result = "success"
+	return issue, nil
+}
+
+func (c *Client) DownloadWorkflowJobLogs(ctx context.Context, repositoryFullName string, jobID int64) ([]byte, string, error) {
+	if jobID == 0 {
+		return nil, "", fmt.Errorf("workflow job id is required")
+	}
+	return c.downloadActionsLog(ctx, repositoryFullName, fmt.Sprintf("actions/jobs/%d/logs", jobID), "download_workflow_job_logs", "github workflow job logs")
+}
+
+func (c *Client) DownloadWorkflowRunLogs(ctx context.Context, repositoryFullName string, runID int64) ([]byte, string, error) {
+	if runID == 0 {
+		return nil, "", fmt.Errorf("workflow run id is required")
+	}
+	return c.downloadActionsLog(ctx, repositoryFullName, fmt.Sprintf("actions/runs/%d/logs", runID), "download_workflow_run_logs", "github workflow run logs")
+}
+
+func (c *Client) downloadActionsLog(ctx context.Context, repositoryFullName, apiPath, metricName, errorLabel string) ([]byte, string, error) {
+	startedAt := time.Now()
+	result := "error"
+	defer func() { metrics.RecordGitHubAPI(metricName, result, time.Since(startedAt)) }()
+	repositoryFullName = c.repositoryFullName(repositoryFullName)
+	if repositoryFullName == "" {
+		return nil, "", fmt.Errorf("repository full name is required")
+	}
+	url := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, repositoryFullName, apiPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	setGitHubHeaders(req)
+
+	resp, err := c.doNoRedirect(req, repositoryFullName)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode == http.StatusMovedPermanently ||
+		resp.StatusCode == http.StatusFound ||
+		resp.StatusCode == http.StatusSeeOther ||
+		resp.StatusCode == http.StatusTemporaryRedirect ||
+		resp.StatusCode == http.StatusPermanentRedirect {
+		location := strings.TrimSpace(resp.Header.Get("Location"))
+		resp.Body.Close()
+		if location == "" {
+			return nil, "", fmt.Errorf("%s: redirect missing location", errorLabel)
+		}
+		resp, err = c.downloadRedirect(ctx, location)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	defer resp.Body.Close()
+	body, readErr := readActionsLogBody(resp.Body, 32<<20)
+	if readErr != nil {
+		return nil, "", fmt.Errorf("%s: %w", errorLabel, readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("%s: status %d: %s", errorLabel, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	result = "success"
+	return body, resp.Header.Get("Content-Type"), nil
+}
+
+func readActionsLogBody(r io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("log size limit must be positive")
+	}
+	body, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("log archive exceeds %d bytes", maxBytes)
+	}
+	return body, nil
+}
+
+func (c *Client) downloadRedirect(ctx context.Context, location string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := *c.downloadHTTP
+	client.CheckRedirect = nil
+	return client.Do(req)
+}
+
 func (c *Client) do(req *http.Request, repositoryFullName string) (*http.Response, error) {
 	if c.appAuth == nil {
 		return c.http.Do(req)
@@ -440,6 +635,22 @@ func (c *Client) do(req *http.Request, repositoryFullName string) (*http.Respons
 		return nil, err
 	}
 	return client.Do(req)
+}
+
+func (c *Client) doNoRedirect(req *http.Request, repositoryFullName string) (*http.Response, error) {
+	client := c.http
+	if c.appAuth != nil {
+		var err error
+		client, err = c.appAuth.clientForRepository(req.Context(), c.repositoryFullName(repositoryFullName))
+		if err != nil {
+			return nil, err
+		}
+	}
+	cloned := *client
+	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return cloned.Do(req)
 }
 
 func (a *appAuthenticator) clientForRepository(ctx context.Context, repositoryFullName string) (*http.Client, error) {
@@ -493,7 +704,10 @@ func (a *appAuthenticator) installationID(ctx context.Context, repositoryFullNam
 		return 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, fmt.Errorf("read github repository installation response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, fmt.Errorf("github repository installation: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
@@ -595,15 +809,21 @@ type authTransport interface {
 }
 
 func clientWithTransport(httpClient *http.Client, auth authTransport) *http.Client {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
+	httpClient = cloneHTTPClient(httpClient)
 	baseTransport := httpClient.Transport
 	if baseTransport == nil {
 		baseTransport = http.DefaultTransport
 	}
 	cloned := *httpClient
 	cloned.Transport = auth.RoundTripper(baseTransport)
+	return &cloned
+}
+
+func cloneHTTPClient(httpClient *http.Client) *http.Client {
+	if httpClient == nil {
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+	cloned := *httpClient
 	return &cloned
 }
 
@@ -686,6 +906,16 @@ type WorkflowJob struct {
 	WorkflowName string `json:"workflow_name"`
 	HeadBranch   string `json:"head_branch"`
 	Labels       Labels `json:"labels"`
+}
+
+type PullRequest struct {
+	Number int64  `json:"number"`
+	Title  string `json:"title"`
+}
+
+type Issue struct {
+	Number int64  `json:"number"`
+	Title  string `json:"title"`
 }
 
 type Repository struct {

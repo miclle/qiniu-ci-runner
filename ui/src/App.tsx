@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import { AuditSection, DiagnosticsSection, MatchSection, OverviewSection } from "@/components/admin-sections"
 import { LoginPage } from "@/components/login-page"
+import { RunnerJobDetail } from "@/components/runner-job-detail"
 import { RunnerGroupsSection } from "@/components/runner-groups-section"
 import { RunnerPoliciesSection } from "@/components/runner-policies-section"
 import { RunnerRequestsSection } from "@/components/runner-requests-section"
@@ -51,6 +52,7 @@ type AccountSettingsRoute = {
 function App() {
   const [authSession, setAuthSession] = useState<AuthSession>({ authenticated: false, oauth_enabled: false })
   const [locationPath, setLocationPath] = useState(() => window.location.pathname)
+  const [locationSearch, setLocationSearch] = useState(() => window.location.search)
   const [section, setSectionState] = useState<AdminSection>(() => sectionFromPath())
   const [runners, setRunners] = useState<RunnerState[]>([])
   const [runnerSpecs, setRunnerSpecs] = useState<RunnerSpec[]>([])
@@ -80,7 +82,7 @@ function App() {
   const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null)
   const [authorizedRepositories, setAuthorizedRepositories] = useState<Record<number, string[]>>({})
   const [loadingRepositoriesFor, setLoadingRepositoriesFor] = useState<number | null>(null)
-  const [userSelectedKey, setUserSelectedKey] = useState("")
+  const [userSelectedKey, setUserSelectedKey] = useState(() => userJobsGroupKeyFromLocation(window.location.pathname, window.location.search))
 
   const setSection = useCallback((next: string) => {
     const section = adminSections.includes(next as AdminSection) ? (next as AdminSection) : "overview"
@@ -93,12 +95,13 @@ function App() {
   }, [])
 
   const setUserPage = useCallback((next: "home" | "repositories" | "settings") => {
-    const nextPath = next === "settings" ? "/account/repositories" : next === "repositories" ? "/repositories" : "/"
-    if (window.location.pathname !== nextPath) {
+    const nextPath = next === "settings" ? "/account/repositories" : next === "repositories" ? "/repositories" : userJobsPath(userSelectedKey)
+    if (window.location.pathname + window.location.search !== nextPath) {
       window.history.pushState(null, "", nextPath)
     }
-    setLocationPath(nextPath)
-  }, [])
+    setLocationPath(window.location.pathname)
+    setLocationSearch(window.location.search)
+  }, [userSelectedKey])
 
   const setAccountSettingsRoute = useCallback(
     (accountLogin: string | undefined, tab: AccountSettingsTab) => {
@@ -106,10 +109,21 @@ function App() {
       if (window.location.pathname !== nextPath) {
         window.history.pushState(null, "", nextPath)
       }
-      setLocationPath(nextPath)
+      setLocationPath(window.location.pathname)
+      setLocationSearch(window.location.search)
     },
     [authSession.login]
   )
+
+  const setUserJobsSelection = useCallback((key: string) => {
+    setUserSelectedKey(key)
+    const nextPath = userJobsPath(key)
+    if (window.location.pathname + window.location.search !== nextPath) {
+      window.history.pushState(null, "", nextPath)
+    }
+    setLocationPath(window.location.pathname)
+    setLocationSearch(window.location.search)
+  }, [])
 
   const selected = useMemo(
     () => runners.find((runner) => runner.id === selectedID),
@@ -148,6 +162,8 @@ function App() {
 
   const hasAccess = authSession.authenticated && authSession.role === "admin"
   const isAdminRoute = locationPath === "/admin" || locationPath.startsWith("/admin/")
+  const userJobID = userJobIDFromPath(locationPath)
+  const userSelectedJobID = userJobIDFromSearch(locationSearch)
   const accountSettingsRoute = parseAccountSettingsRoute(locationPath, authSession.login)
   const userPage = accountSettingsRoute ? "settings" : locationPath === "/repositories" ? "repositories" : "home"
 
@@ -292,7 +308,8 @@ function App() {
       toast.success("GitHub App account connected")
       const nextPath = accountSettingsPathForInstallation(installation, authSession.login, "repositories")
       window.history.replaceState(null, "", nextPath)
-      setLocationPath(nextPath)
+      setLocationPath(window.location.pathname)
+      setLocationSearch(window.location.search)
       await loadUserAll()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to sync GitHub App repositories")
@@ -387,6 +404,8 @@ function App() {
   useEffect(() => {
     const handlePopState = () => {
       setLocationPath(window.location.pathname)
+      setLocationSearch(window.location.search)
+      setUserSelectedKey(userJobsGroupKeyFromLocation(window.location.pathname, window.location.search))
       setSectionState(sectionFromPath())
     }
     window.addEventListener("popstate", handlePopState)
@@ -398,7 +417,22 @@ function App() {
     const nextPath = `/account/repositories${window.location.search}`
     window.history.replaceState(null, "", nextPath)
     setLocationPath("/account/repositories")
+    setLocationSearch(window.location.search)
   }, [locationPath])
+
+  useEffect(() => {
+    if (!isUserJobsRoute(locationPath)) return
+    const key = userJobsGroupKeyFromLocation(locationPath, locationSearch)
+    setUserSelectedKey(key)
+    const canonicalPath = userJobsPath(key)
+    const currentLocation = `${locationPath}${locationSearch}`
+    const nextPath = withPreservedJobSearch(canonicalPath, locationSearch)
+    if (key && currentLocation !== nextPath) {
+      window.history.replaceState(null, "", nextPath)
+      setLocationPath(window.location.pathname)
+      setLocationSearch(window.location.search)
+    }
+  }, [locationPath, locationSearch])
 
   useEffect(() => {
     void loadAll()
@@ -548,6 +582,26 @@ function App() {
     toast.success("Runner ID copied")
   }
 
+  const openUserJob = (id: string) => {
+    const groupPath = userSelectedKey ? userJobsPath(userSelectedKey) : ""
+    const nextPath = groupPath && groupPath !== "/" ? withSearchParam(groupPath, "job", id) : `/jobs/${encodeURIComponent(id)}`
+    window.history.pushState(null, "", nextPath)
+    setLocationPath(window.location.pathname)
+    setLocationSearch(window.location.search)
+  }
+
+  const backToUserJobs = () => {
+    const nextPath = userJobsPath(userSelectedKey)
+    window.history.pushState(null, "", nextPath)
+    setLocationPath(window.location.pathname)
+    setLocationSearch(window.location.search)
+  }
+
+  const loadUserJobGroup = useCallback((key: string) => {
+    const path = userJobGroupAPIPath(key)
+    return path ? request(path) : Promise.resolve(null)
+  }, [request])
+
   if (!authSession.authenticated || !authSession.oauth_enabled) {
     return (
       <>
@@ -563,6 +617,33 @@ function App() {
   }
 
   if (!hasAccess || !isAdminRoute) {
+    if (userJobID) {
+      return (
+        <>
+          <UserJobRedirect
+            id={userJobID}
+            request={request}
+            onResolved={(key) => {
+              setUserSelectedKey(key)
+              const nextPath = withSearchParam(userJobsPath(key), "job", userJobID)
+              window.history.replaceState(null, "", nextPath)
+              setLocationPath(window.location.pathname)
+              setLocationSearch(window.location.search)
+            }}
+            fallback={
+              <RunnerJobDetail
+                id={userJobID}
+                apiBase="/user/runner_requests"
+                onBack={backToUserJobs}
+                onOpenJob={openUserJob}
+                request={request}
+              />
+            }
+          />
+          <Toaster richColors />
+        </>
+      )
+    }
     return (
       <>
         <UserDashboard
@@ -571,6 +652,7 @@ function App() {
           userPreferences={userPreferences}
           runners={userRunners}
           selectedKey={userSelectedKey}
+          selectedJobID={userSelectedJobID}
           page={userPage}
           accountSettingsRoute={accountSettingsRoute || defaultAccountSettingsRoute(authSession.login)}
           authorizedRepositories={authorizedRepositories}
@@ -580,7 +662,10 @@ function App() {
           onDeleteSandboxAPIKey={deleteSandboxAPIKey}
           onNavigate={setUserPage}
           onNavigateAccountSettings={setAccountSettingsRoute}
-          onSelectKey={setUserSelectedKey}
+          onOpenJob={openUserJob}
+          onLoadJobGroup={loadUserJobGroup}
+          request={request}
+          onSelectKey={setUserJobsSelection}
           onSignOut={signOut}
         />
         <Toaster richColors />
@@ -741,6 +826,47 @@ function App() {
   )
 }
 
+function UserJobRedirect({
+  id,
+  request,
+  onResolved,
+  fallback,
+}: {
+  id: string
+  request: (url: string, options?: RequestInit) => Promise<unknown>
+  onResolved: (key: string) => void
+  fallback: ReactNode
+}) {
+  const [failedID, setFailedID] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    void request(`/user/runner_requests/${encodeURIComponent(id)}/group`)
+      .then((group) => {
+        if (cancelled) return
+        const key = isRunnerJobGroupResponse(group) ? group.key : ""
+        if (key) {
+          onResolved(key)
+          return
+        }
+        setFailedID(id)
+      })
+      .catch(() => {
+        if (!cancelled) setFailedID(id)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [id, onResolved, request])
+
+  if (failedID === id) return <>{fallback}</>
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
+      Opening job in its build context...
+    </div>
+  )
+}
+
 function defaultAccountSettingsRoute(currentLogin?: string): AccountSettingsRoute {
   return { accountLogin: currentLogin, tab: "repositories" }
 }
@@ -793,6 +919,148 @@ function safeDecodePathSegment(value: string): string | null {
   } catch {
     return null
   }
+}
+
+function userJobIDFromPath(path: string) {
+  const match = path.match(/^\/jobs\/([^/]+)$/)
+  return match ? safeDecodePathSegment(match[1]) || "" : ""
+}
+
+function userJobIDFromSearch(search: string) {
+  return new URLSearchParams(search).get("job") || ""
+}
+
+function isRunnerJobGroupResponse(value: unknown): value is { key: string } {
+  return Boolean(value && typeof value === "object" && typeof (value as { key?: unknown }).key === "string")
+}
+
+function isUserJobsRoute(path: string) {
+  return path === "/" || Boolean(userJobsGroupKeyFromPath(path))
+}
+
+function userJobsGroupKeyFromLocation(path: string, search: string) {
+  const pathKey = userJobsGroupKeyFromPath(path, search)
+  if (pathKey) return pathKey
+  if (path !== "/") return ""
+  return new URLSearchParams(search).get("group") || ""
+}
+
+function userJobsGroupKeyFromPath(path: string, search = "") {
+  const pullRequestMatch = path.match(/^\/github\/pulls\/([^/]+)\/([^/]+)\/(\d+)\/jobs$/)
+  if (pullRequestMatch) {
+    return `pr:${decodeRepositoryPath(pullRequestMatch[1], pullRequestMatch[2])}:${pullRequestMatch[3]}`
+  }
+
+  const legacyPullRequestMatch = path.match(/^\/jobs\/pulls\/([^/]+)\/([^/]+)\/(\d+)$/)
+  if (legacyPullRequestMatch) {
+    return `pr:${decodeRepositoryPath(legacyPullRequestMatch[1], legacyPullRequestMatch[2])}:${legacyPullRequestMatch[3]}`
+  }
+
+  const runMatch = path.match(/^\/github\/runs\/([^/]+)\/([^/]+)\/(\d+)\/jobs$/)
+  if (runMatch) {
+    return `run:${decodeRepositoryPath(runMatch[1], runMatch[2])}:${runMatch[3]}`
+  }
+
+  const legacyRunMatch = path.match(/^\/jobs\/runs\/([^/]+)\/([^/]+)\/(\d+)$/)
+  if (legacyRunMatch) {
+    return `run:${decodeRepositoryPath(legacyRunMatch[1], legacyRunMatch[2])}:${legacyRunMatch[3]}`
+  }
+
+  const branchMatch = path.match(/^\/github\/branches\/([^/]+)\/([^/]+)\/(.+)\/([^/]+)\/jobs$/)
+  if (branchMatch) {
+    const repository = decodeRepositoryPath(branchMatch[1], branchMatch[2])
+    const branch = safeDecodePathSegment(branchMatch[3])
+    const sha = safeDecodePathSegment(branchMatch[4])
+    if (!branch || !sha) return ""
+    return `branch:${repository}:${branch}:${sha}`
+  }
+
+  const branchQueryMatch = path.match(/^\/github\/branches\/([^/]+)\/([^/]+)\/([^/]+)\/jobs$/)
+  if (branchQueryMatch) {
+    const repository = decodeRepositoryPath(branchQueryMatch[1], branchQueryMatch[2])
+    const sha = safeDecodePathSegment(branchQueryMatch[3])
+    const branch = new URLSearchParams(search).get("branch") || ""
+    if (!branch || !sha) return ""
+    return `branch:${repository}:${branch}:${sha}`
+  }
+
+  const legacyBranchMatch = path.match(/^\/jobs\/branches\/([^/]+)\/([^/]+)\/(.+)\/([^/]+)$/)
+  if (legacyBranchMatch) {
+    const repository = decodeRepositoryPath(legacyBranchMatch[1], legacyBranchMatch[2])
+    const branch = safeDecodePathSegment(legacyBranchMatch[3])
+    const sha = safeDecodePathSegment(legacyBranchMatch[4])
+    if (!branch || !sha) return ""
+    return `branch:${repository}:${branch}:${sha}`
+  }
+
+  const manualMatch = path.match(/^\/jobs\/manual\/([^/]+)\/([^/]+)\/([^/]+)$/)
+  if (manualMatch) {
+    const repository = decodeRepositoryPath(manualMatch[1], manualMatch[2])
+    const id = safeDecodePathSegment(manualMatch[3])
+    if (!id) return ""
+    return `manual:${repository}:${id}`
+  }
+
+  return ""
+}
+
+function userJobsPath(groupKey: string) {
+  if (!groupKey) return "/"
+  const pullRequestMatch = groupKey.match(/^pr:(.+):(\d+)$/)
+  if (pullRequestMatch) return `/github/pulls/${encodeRepositoryPath(pullRequestMatch[1])}/${pullRequestMatch[2]}/jobs`
+
+  const runMatch = groupKey.match(/^run:(.+):(\d+)$/)
+  if (runMatch) return `/github/runs/${encodeRepositoryPath(runMatch[1])}/${runMatch[2]}/jobs`
+
+  const branchMatch = groupKey.match(/^branch:([^:]+):(.+):([^:]+)$/)
+  if (branchMatch) {
+    return withSearchParam(`/github/branches/${encodeRepositoryPath(branchMatch[1])}/${encodeURIComponent(branchMatch[3])}/jobs`, "branch", branchMatch[2])
+  }
+
+  const manualMatch = groupKey.match(/^manual:(.+):([^:]+)$/)
+  if (manualMatch) return `/jobs/manual/${encodeRepositoryPath(manualMatch[1])}/${encodeURIComponent(manualMatch[2])}`
+
+  return `/?group=${encodeURIComponent(groupKey)}`
+}
+
+function userJobGroupAPIPath(groupKey: string) {
+  if (!groupKey) return ""
+  const pullRequestMatch = groupKey.match(/^pr:(.+):(\d+)$/)
+  if (pullRequestMatch) return `/user/github/pulls/${encodeRepositoryPath(pullRequestMatch[1])}/${pullRequestMatch[2]}/jobs`
+
+  const runMatch = groupKey.match(/^run:(.+):(\d+)$/)
+  if (runMatch) return `/user/github/runs/${encodeRepositoryPath(runMatch[1])}/${runMatch[2]}/jobs`
+
+  const branchMatch = groupKey.match(/^branch:([^:]+):(.+):([^:]+)$/)
+  if (branchMatch) {
+    return withSearchParam(`/user/github/branches/${encodeRepositoryPath(branchMatch[1])}/${encodeURIComponent(branchMatch[3])}/jobs`, "branch", branchMatch[2])
+  }
+
+  return ""
+}
+
+function encodeRepositoryPath(repository: string) {
+  return repository.split("/").map((segment) => encodeURIComponent(segment)).join("/")
+}
+
+function withSearchParam(path: string, key: string, value: string) {
+  const [pathname, search = ""] = path.split("?")
+  const params = new URLSearchParams(search)
+  params.set(key, value)
+  const query = params.toString()
+  return query ? `${pathname}?${query}` : pathname
+}
+
+function withPreservedJobSearch(path: string, search: string) {
+  const job = new URLSearchParams(search).get("job")
+  return job ? withSearchParam(path, "job", job) : path
+}
+
+function decodeRepositoryPath(ownerSegment: string, repoSegment: string) {
+  const owner = safeDecodePathSegment(ownerSegment)
+  const repo = safeDecodePathSegment(repoSegment)
+  if (!owner || !repo) return "unknown/repository"
+  return `${owner}/${repo}`
 }
 
 function accountSettingsPathForInstallation(

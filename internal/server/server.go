@@ -15,6 +15,7 @@ import (
 	"github.com/qiniu/ci-runner/internal/github"
 	"github.com/qiniu/ci-runner/internal/sandboxrunner"
 	"github.com/qiniu/ci-runner/internal/state"
+	"golang.org/x/sync/singleflight"
 )
 
 type Server struct {
@@ -28,6 +29,7 @@ type Server struct {
 	slots       chan struct{}
 	oauth       *http.Client
 	diagnostics *http.Client
+	terminals   *terminalHub
 
 	admissionMu sync.Mutex
 	locks       [64]sync.Mutex
@@ -37,6 +39,16 @@ type Server struct {
 	loopCtx     context.Context
 	loopCancel  context.CancelFunc
 	loopWG      sync.WaitGroup
+
+	pullTitleMu    sync.Mutex
+	pullTitleCache map[string]cachedPullTitle
+	pullTitleGroup singleflight.Group
+}
+
+type cachedPullTitle struct {
+	title     string
+	errorText string
+	expiresAt time.Time
 }
 
 type manualCreateRequest struct {
@@ -106,17 +118,19 @@ func New(cfg config.Config, store state.Store, gh *github.Client, sandbox sandbo
 		logger = slog.Default()
 	}
 	s := &Server{
-		cfg:         cfg,
-		store:       store,
-		gh:          gh,
-		sandbox:     sandbox,
-		sandboxHTTP: &http.Client{Timeout: 60 * time.Second},
-		logger:      logger,
-		mux:         http.NewServeMux(),
-		slots:       make(chan struct{}, cfg.MaxConcurrentRunners),
-		queueNotify: make(chan struct{}, 1),
-		oauth:       &http.Client{Timeout: 10 * time.Second},
-		diagnostics: &http.Client{Timeout: 5 * time.Second},
+		cfg:            cfg,
+		store:          store,
+		gh:             gh,
+		sandbox:        sandbox,
+		sandboxHTTP:    &http.Client{Timeout: 60 * time.Second},
+		logger:         logger,
+		mux:            http.NewServeMux(),
+		slots:          make(chan struct{}, cfg.MaxConcurrentRunners),
+		queueNotify:    make(chan struct{}, 1),
+		oauth:          &http.Client{Timeout: 10 * time.Second},
+		diagnostics:    &http.Client{Timeout: 5 * time.Second},
+		terminals:      newTerminalHub(logger),
+		pullTitleCache: map[string]cachedPullTitle{},
 	}
 	hostname, _ := os.Hostname()
 	s.workerID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
@@ -164,6 +178,9 @@ func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 func (s *Server) Close() {
+	if s.terminals != nil {
+		s.terminals.Close()
+	}
 	if s.loopCancel != nil {
 		s.logger.Info("stopping background loops")
 		s.loopCancel()
@@ -211,6 +228,20 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /user/github-app/installations/{id}/repositories", s.handleUserListGitHubInstallationRepositories)
 	s.mux.HandleFunc("DELETE /user/github-app/installations/{id}", s.handleUserDeleteGitHubInstallation)
 	s.mux.HandleFunc("GET /user/runner_requests", s.handleUserListRunners)
+	s.mux.HandleFunc("GET /user/runner_requests/{id}", s.handleUserGetRunner)
+	s.mux.HandleFunc("GET /user/runner_requests/{id}/group", s.handleUserGetRunnerJobGroup)
+	s.mux.HandleFunc("GET /user/github/pulls/{owner}/{repo}/{number}/jobs", s.handleUserGetGitHubPullJobGroup)
+	s.mux.HandleFunc("GET /user/github/runs/{owner}/{repo}/{runID}/jobs", s.handleUserGetGitHubRunJobGroup)
+	s.mux.HandleFunc("GET /user/github/branches/{owner}/{repo}/{sha}/jobs", s.handleUserGetGitHubBranchJobGroup)
+	s.mux.HandleFunc("GET /user/github/branches/{owner}/{repo}/{branch}/{sha}/jobs", s.handleUserGetGitHubBranchJobGroup)
+	s.mux.HandleFunc("GET /user/runner_requests/{id}/siblings", s.handleUserListRunnerSiblings)
+	s.mux.HandleFunc("GET /user/runner_requests/{id}/logs/{name}", s.handleUserGetRunnerLog)
+	s.mux.HandleFunc("GET /user/runner_requests/{id}/github-log", s.handleUserGetRunnerGitHubLog)
+	s.mux.HandleFunc("POST /user/runner_requests/{id}/terminal", s.handleUserCreateRunnerTerminal)
+	s.mux.HandleFunc("GET /user/runner_requests/{id}/terminal/{sessionID}/events", s.handleUserRunnerTerminalEvents)
+	s.mux.HandleFunc("POST /user/runner_requests/{id}/terminal/{sessionID}/input", s.handleUserRunnerTerminalInput)
+	s.mux.HandleFunc("POST /user/runner_requests/{id}/terminal/{sessionID}/resize", s.handleUserRunnerTerminalResize)
+	s.mux.HandleFunc("DELETE /user/runner_requests/{id}/terminal/{sessionID}", s.handleUserCloseRunnerTerminal)
 	s.mux.HandleFunc("GET /user/preferences", s.handleUserPreferences)
 	s.mux.HandleFunc("PUT /user/preferences/sandbox", s.handleUserSaveSandboxConfig)
 	s.mux.HandleFunc("DELETE /user/preferences/sandbox-api-key", s.handleUserDeleteSandboxAPIKey)
@@ -256,11 +287,29 @@ func (s *Server) handleUserRedirect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/")
-	if name == "accounts" || name == "repositories" || name == "settings" ||
-		strings.HasPrefix(name, "account/") || strings.HasPrefix(name, "organizations/") {
+	if isUserUIRoute(name) {
 		name = "index.html"
 	}
 	s.handleUI(w, r, name)
+}
+
+func isUserUIRoute(name string) bool {
+	if name == "accounts" || name == "repositories" || name == "settings" {
+		return true
+	}
+	for _, prefix := range []string{
+		"account/",
+		"organizations/",
+		"jobs/",
+		"github/pulls/",
+		"github/runs/",
+		"github/branches/",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request, name string) {
