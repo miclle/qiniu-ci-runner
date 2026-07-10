@@ -88,6 +88,19 @@ func (s *Server) sandboxServiceForScope(scope accountPreferenceScope) (sandboxru
 	if err := json.Unmarshal([]byte(preference.ValueJSON), &value); err != nil {
 		return nil, sandboxServiceConfigSnapshot{}, err
 	}
+	if normalizeSandboxPreferenceMode(value.Mode, scope) == sandboxPreferenceModeInherit {
+		if value.SourceAccountID <= 0 {
+			return nil, sandboxServiceConfigSnapshot{}, fmt.Errorf("sandbox service inherited account is not configured for %s:%d: %w", scope.Type, scope.ID, errSandboxServiceNotConfigured)
+		}
+		ok, err := s.githubInstallationLinkedToAccount(value.SourceAccountID, scope.ID)
+		if err != nil {
+			return nil, sandboxServiceConfigSnapshot{}, err
+		}
+		if !ok {
+			return nil, sandboxServiceConfigSnapshot{}, fmt.Errorf("sandbox service inherited account no longer has github installation %d: %w", scope.ID, errSandboxServiceNotConfigured)
+		}
+		return s.sandboxServiceForScope(accountPreferenceScope{Type: state.AccountScopeTypeAccount, ID: value.SourceAccountID})
+	}
 	apiURL := strings.TrimSpace(value.APIURL)
 	if apiURL == "" {
 		return nil, sandboxServiceConfigSnapshot{}, fmt.Errorf("sandbox service api_url is not configured for %s:%d", scope.Type, scope.ID)
@@ -105,6 +118,19 @@ func (s *Server) sandboxServiceForScope(scope accountPreferenceScope) (sandboxru
 	}
 	svc, err := s.sandboxServiceForConfig(snapshot)
 	return svc, snapshot, err
+}
+
+func (s *Server) githubInstallationLinkedToAccount(accountID, installationID int64) (bool, error) {
+	installations, err := s.store.ListGitHubInstallations(accountID)
+	if err != nil {
+		return false, err
+	}
+	for _, installation := range installations {
+		if installation.InstallationID == installationID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Server) sandboxServiceForConfig(snapshot sandboxServiceConfigSnapshot) (sandboxrunner.Service, error) {

@@ -25,8 +25,14 @@ type accountPreferencesResponse struct {
 }
 
 type accountSandboxPreference struct {
-	APIURL string                         `json:"api_url"`
-	APIKey accountSandboxAPIKeyPreference `json:"api_key"`
+	Mode                   string                         `json:"mode"`
+	APIURL                 string                         `json:"api_url"`
+	APIKey                 accountSandboxAPIKeyPreference `json:"api_key"`
+	Inherited              bool                           `json:"inherited"`
+	SourceAccountID        int64                          `json:"source_account_id,omitempty"`
+	SourceAccountLogin     string                         `json:"source_account_login,omitempty"`
+	SourceIsCurrentAccount bool                           `json:"source_is_current_account,omitempty"`
+	SourceAvailable        bool                           `json:"source_available"`
 }
 
 type accountSandboxAPIKeyPreference struct {
@@ -35,12 +41,16 @@ type accountSandboxAPIKeyPreference struct {
 }
 
 type accountSandboxServicePreferenceValue struct {
-	APIURL string `json:"api_url"`
+	Mode            string `json:"mode,omitempty"`
+	APIURL          string `json:"api_url,omitempty"`
+	SourceAccountID int64  `json:"source_account_id,omitempty"`
 }
 
 type upsertSandboxConfigRequest struct {
-	APIURL string `json:"api_url"`
-	APIKey string `json:"api_key"`
+	APIURL                 string `json:"api_url"`
+	APIKey                 string `json:"api_key"`
+	Mode                   string `json:"mode"`
+	ReplaceInheritedSource bool   `json:"replace_inherited_source"`
 }
 
 type accountPreferenceScope struct {
@@ -230,7 +240,7 @@ func (s *Server) handleUserPreferences(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	response, err := s.accountPreferencesResponse(scope)
+	response, err := s.accountPreferencesResponse(scope, account.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -253,22 +263,63 @@ func (s *Server) handleUserSaveSandboxConfig(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid sandbox config payload")
 		return
 	}
-	apiURL, err := normalizeHTTPURL(input.APIURL)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
+	mode := normalizeSandboxPreferenceMode(input.Mode, scope)
 	apiKey := strings.TrimSpace(input.APIKey)
-	_, currentKeyErr := s.store.GetAccountSecret(scope.Type, scope.ID, state.AccountSecretTypeSandboxAPIKey)
-	if apiKey == "" && errors.Is(currentKeyErr, state.ErrNotFound) {
-		writeError(w, http.StatusBadRequest, "api_key is required")
-		return
+	var value accountSandboxServicePreferenceValue
+	var secret *state.AccountSecret
+	if mode == sandboxPreferenceModeInherit {
+		if scope.Type != state.AccountScopeTypeGitHubInstall {
+			writeError(w, http.StatusBadRequest, "inherit mode is only supported for GitHub installation preferences")
+			return
+		}
+		sourceAccountID, err := s.inheritedSandboxSourceAccountID(scope, account.ID, input.ReplaceInheritedSource)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if sourceAccountID == account.ID {
+			configured, err := s.sandboxSourceAccountConfigured(account.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if !configured {
+				writeError(w, http.StatusBadRequest, "configure your account Sandbox service first")
+				return
+			}
+		}
+		value = accountSandboxServicePreferenceValue{Mode: sandboxPreferenceModeInherit, SourceAccountID: sourceAccountID}
+	} else {
+		apiURL, err := normalizeHTTPURL(input.APIURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, currentKeyErr := s.store.GetAccountSecret(scope.Type, scope.ID, state.AccountSecretTypeSandboxAPIKey)
+		if apiKey == "" && errors.Is(currentKeyErr, state.ErrNotFound) {
+			writeError(w, http.StatusBadRequest, "api_key is required")
+			return
+		}
+		if currentKeyErr != nil && !errors.Is(currentKeyErr, state.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, currentKeyErr.Error())
+			return
+		}
+		value = accountSandboxServicePreferenceValue{APIURL: apiURL}
+		if apiKey != "" {
+			encryptedAPIKey, err := encryptSecret(apiKey, s.cfg.AuthEncryptionKey)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			secret = &state.AccountSecret{
+				ScopeType:      scope.Type,
+				ScopeID:        scope.ID,
+				KeyType:        state.AccountSecretTypeSandboxAPIKey,
+				EncryptedValue: encryptedAPIKey,
+			}
+		}
 	}
-	if currentKeyErr != nil && !errors.Is(currentKeyErr, state.ErrNotFound) {
-		writeError(w, http.StatusInternalServerError, currentKeyErr.Error())
-		return
-	}
-	valueJSON, err := json.Marshal(accountSandboxServicePreferenceValue{APIURL: apiURL})
+	valueJSON, err := json.Marshal(value)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -280,29 +331,29 @@ func (s *Server) handleUserSaveSandboxConfig(w http.ResponseWriter, r *http.Requ
 		Key:       accountPreferenceKeySandboxService,
 		ValueJSON: string(valueJSON),
 	}
-	var secret *state.AccountSecret
-	if apiKey != "" {
-		encryptedAPIKey, err := encryptSecret(apiKey, s.cfg.AuthEncryptionKey)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		secret = &state.AccountSecret{
-			ScopeType:      scope.Type,
-			ScopeID:        scope.ID,
-			KeyType:        state.AccountSecretTypeSandboxAPIKey,
-			EncryptedValue: encryptedAPIKey,
-		}
+	if mode == sandboxPreferenceModeInherit {
+		_, err = s.store.UpsertAccountPreferenceAndDeleteSecret(preference, state.AccountSecret{
+			ScopeType: scope.Type,
+			ScopeID:   scope.ID,
+			KeyType:   state.AccountSecretTypeSandboxAPIKey,
+		})
+	} else {
+		_, _, err = s.store.UpsertAccountPreferenceAndSecret(preference, secret)
 	}
-	if _, _, err := s.store.UpsertAccountPreferenceAndSecret(preference, secret); err != nil {
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.recordAudit("github:"+session.Subject, "sandbox.configure", scope.Type, strconv.FormatInt(scope.ID, 10), map[string]any{
-		"api_url":        apiURL,
+	auditPayload := map[string]any{
+		"mode":           mode,
+		"api_url":        value.APIURL,
 		"api_key_update": apiKey != "",
-	})
-	response, err := s.accountPreferencesResponse(scope)
+	}
+	if mode == sandboxPreferenceModeInherit {
+		auditPayload["source_account_id"] = value.SourceAccountID
+	}
+	s.recordAudit("github:"+session.Subject, "sandbox.configure", scope.Type, strconv.FormatInt(scope.ID, 10), auditPayload)
+	response, err := s.accountPreferencesResponse(scope, account.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -325,7 +376,7 @@ func (s *Server) handleUserDeleteSandboxAPIKey(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.recordAudit("github:"+session.Subject, "sandbox_api_key.delete", scope.Type, strconv.FormatInt(scope.ID, 10), nil)
-	response, err := s.accountPreferencesResponse(scope)
+	response, err := s.accountPreferencesResponse(scope, account.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -333,14 +384,100 @@ func (s *Server) handleUserDeleteSandboxAPIKey(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) accountPreferencesResponse(scope accountPreferenceScope) (accountPreferencesResponse, error) {
+func (s *Server) accountPreferencesResponse(scope accountPreferenceScope, viewerAccountID int64) (accountPreferencesResponse, error) {
 	var response accountPreferencesResponse
 	preference, err := s.store.GetAccountPreference(scope.Type, scope.ID, accountPreferenceNamespaceSandbox, accountPreferenceKeySandboxService)
 	if err != nil {
 		if !errors.Is(err, state.ErrNotFound) {
 			return accountPreferencesResponse{}, err
 		}
+		response.Sandbox.Mode = sandboxPreferenceModeCustom
+		return response, nil
 	} else {
+		var value accountSandboxServicePreferenceValue
+		if err := json.Unmarshal([]byte(preference.ValueJSON), &value); err != nil {
+			return accountPreferencesResponse{}, err
+		}
+		mode := normalizeSandboxPreferenceMode(value.Mode, scope)
+		response.Sandbox.Mode = mode
+		if mode == sandboxPreferenceModeInherit {
+			response.Sandbox.Inherited = true
+			response.Sandbox.SourceAccountID = value.SourceAccountID
+			response.Sandbox.SourceIsCurrentAccount = value.SourceAccountID == viewerAccountID
+			identity, err := s.store.GetOAuthIdentityForAccount(value.SourceAccountID, "github")
+			if err != nil && !errors.Is(err, state.ErrNotFound) {
+				return accountPreferencesResponse{}, err
+			}
+			response.Sandbox.SourceAccountLogin = identity.OAuthLogin
+			available, err := s.githubInstallationLinkedToAccount(value.SourceAccountID, scope.ID)
+			if err != nil {
+				return accountPreferencesResponse{}, err
+			}
+			response.Sandbox.SourceAvailable = available
+			if !available {
+				return response, nil
+			}
+			return s.fillSandboxResponseFromScope(response, accountPreferenceScope{Type: state.AccountScopeTypeAccount, ID: value.SourceAccountID})
+		}
+		response.Sandbox.APIURL = value.APIURL
+	}
+	return s.fillSandboxResponseFromScope(response, scope)
+}
+
+func (s *Server) inheritedSandboxSourceAccountID(scope accountPreferenceScope, currentAccountID int64, replace bool) (int64, error) {
+	if replace {
+		return currentAccountID, nil
+	}
+	preference, err := s.store.GetAccountPreference(scope.Type, scope.ID, accountPreferenceNamespaceSandbox, accountPreferenceKeySandboxService)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return currentAccountID, nil
+		}
+		return 0, err
+	}
+	var value accountSandboxServicePreferenceValue
+	if err := json.Unmarshal([]byte(preference.ValueJSON), &value); err != nil {
+		return 0, err
+	}
+	if normalizeSandboxPreferenceMode(value.Mode, scope) == sandboxPreferenceModeInherit && value.SourceAccountID > 0 {
+		return value.SourceAccountID, nil
+	}
+	return currentAccountID, nil
+}
+
+func (s *Server) sandboxSourceAccountConfigured(accountID int64) (bool, error) {
+	preference, err := s.store.GetAccountPreference(state.AccountScopeTypeAccount, accountID, accountPreferenceNamespaceSandbox, accountPreferenceKeySandboxService)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	var value accountSandboxServicePreferenceValue
+	if err := json.Unmarshal([]byte(preference.ValueJSON), &value); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(value.APIURL) == "" {
+		return false, nil
+	}
+	if _, err := s.store.GetAccountSecret(state.AccountScopeTypeAccount, accountID, state.AccountSecretTypeSandboxAPIKey); err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Server) fillSandboxResponseFromScope(response accountPreferencesResponse, scope accountPreferenceScope) (accountPreferencesResponse, error) {
+	if strings.TrimSpace(response.Sandbox.APIURL) == "" {
+		preference, err := s.store.GetAccountPreference(scope.Type, scope.ID, accountPreferenceNamespaceSandbox, accountPreferenceKeySandboxService)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				return response, nil
+			}
+			return accountPreferencesResponse{}, err
+		}
 		var value accountSandboxServicePreferenceValue
 		if err := json.Unmarshal([]byte(preference.ValueJSON), &value); err != nil {
 			return accountPreferencesResponse{}, err
@@ -357,6 +494,19 @@ func (s *Server) accountPreferencesResponse(scope accountPreferenceScope) (accou
 	response.Sandbox.APIKey.Configured = true
 	response.Sandbox.APIKey.UpdatedAt = key.UpdatedAt.Format(time.RFC3339)
 	return response, nil
+}
+
+const (
+	sandboxPreferenceModeCustom  = "custom"
+	sandboxPreferenceModeInherit = "inherit"
+)
+
+func normalizeSandboxPreferenceMode(mode string, scope accountPreferenceScope) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == sandboxPreferenceModeInherit && scope.Type == state.AccountScopeTypeGitHubInstall {
+		return sandboxPreferenceModeInherit
+	}
+	return sandboxPreferenceModeCustom
 }
 
 func (s *Server) accountPreferenceScopeFromRequest(accountID int64, r *http.Request) (accountPreferenceScope, error) {

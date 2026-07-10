@@ -240,6 +240,7 @@ type RunnerCatalogStore interface {
 
 type IdentityStore interface {
 	GetAccountByOAuthIdentity(provider, subject string) (Account, OAuthIdentity, error)
+	GetOAuthIdentityForAccount(accountID int64, provider string) (OAuthIdentity, error)
 	EnsureAccountForOAuthIdentity(identity OAuthIdentity, role string) (Account, OAuthIdentity, error)
 	UpsertAccountForOAuthIdentity(identity OAuthIdentity, role string) (Account, OAuthIdentity, error)
 	LinkOAuthIdentityToAccount(accountID int64, identity OAuthIdentity) (Account, OAuthIdentity, error)
@@ -263,6 +264,7 @@ type AccountPreferenceStore interface {
 	GetAccountPreference(scopeType string, scopeID int64, namespace, key string) (AccountPreference, error)
 	UpsertAccountPreference(preference AccountPreference) (AccountPreference, error)
 	UpsertAccountPreferenceAndSecret(preference AccountPreference, secret *AccountSecret) (AccountPreference, *AccountSecret, error)
+	UpsertAccountPreferenceAndDeleteSecret(preference AccountPreference, secret AccountSecret) (AccountPreference, error)
 }
 
 type AuditStore interface {
