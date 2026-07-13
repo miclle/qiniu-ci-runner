@@ -76,11 +76,11 @@ export function OverviewSection({
             {runnerSpecs.map((runnerSpec) => (
               <div
                 key={runnerSpec.name}
-                className="rounded-md border p-3 text-sm"
+                className="min-w-0 rounded-md border p-3 text-sm"
                 onClick={() => onEditRunnerSpec(runnerSpec)}
               >
-                <div className="font-medium">{runnerSpec.name}</div>
-                <div className="text-xs text-muted-foreground">
+                <div className="truncate font-medium">{runnerSpec.name}</div>
+                <div className="truncate text-xs text-muted-foreground">
                   {runnerSpec.labels.join(", ")} · template {runnerSpec.template_id}
                 </div>
               </div>
@@ -91,11 +91,11 @@ export function OverviewSection({
             {runnerPolicies.map((policy) => (
               <div
                 key={policy.id}
-                className="rounded-md border p-3 text-sm"
+                className="min-w-0 rounded-md border p-3 text-sm"
                 onClick={() => onEditPolicy(policy)}
               >
-                <div className="font-medium">{policy.repository_full_name}</div>
-                <div className="text-xs text-muted-foreground">{policy.runner_spec_name}</div>
+                <div className="truncate font-medium">{policy.repository_full_name}</div>
+                <div className="truncate text-xs text-muted-foreground">{policy.runner_spec_name}</div>
               </div>
             ))}
           </div>
@@ -199,8 +199,8 @@ export function AuditSection({ auditEvents }: { auditEvents: AuditEvent[] }) {
                   <TableCell>
                     {event.resource_type} · {event.resource_id}
                   </TableCell>
-                  <TableCell className="max-w-[420px] truncate text-xs text-muted-foreground">
-                    {event.payload_json || "-"}
+                  <TableCell className="text-xs text-muted-foreground">
+                    <div className="max-w-[420px] truncate">{event.payload_json || "-"}</div>
                   </TableCell>
                 </TableRow>
               ))
