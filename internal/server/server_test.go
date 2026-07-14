@@ -524,6 +524,86 @@ func TestUserGitHubAppConfigurationAndRunnerList(t *testing.T) {
 	}
 }
 
+func TestUserSyncGitHubInstallationsFromOAuthToken(t *testing.T) {
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/user/installations":
+			if r.Header.Get("Authorization") != "Bearer user-token" {
+				t.Fatalf("expected oauth token authorization, got %q", r.Header.Get("Authorization"))
+			}
+			w.Write([]byte(`{"installations":[{"id":987,"account":{"login":"octo-org","name":"Octo Org","avatar_url":"https://avatars.example/o.png"}}]}`))
+		default:
+			t.Fatalf("unexpected github sync request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, ghServer.URL, &fakeSandbox{})
+	account, _, err := store.GetAccountByOAuthIdentity("github", "hubot-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := encryptSecret("user-token", srv.cfg.AuthEncryptionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertAccountSecret(state.AccountSecret{
+		ScopeType:      state.AccountScopeTypeAccount,
+		ScopeID:        account.ID,
+		KeyType:        state.AccountSecretTypeGitHubOAuthToken,
+		EncryptedValue: encryptedToken,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := store.UpsertGitHubInstallation(state.GitHubInstallation{
+		AccountID:      account.ID,
+		InstallationID: 654,
+		AccountLogin:   "stale-org",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.ID <= 0 {
+		t.Fatalf("expected stale installation id, got %#v", stale)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/user/github-app/installations/sync", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected sync status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	installations, err := store.ListGitHubInstallations(account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installations) != 1 || installations[0].InstallationID != 987 || installations[0].AccountLogin != "octo-org" {
+		t.Fatalf("unexpected synced installations: %#v", installations)
+	}
+}
+
+func TestUserSyncGitHubInstallationsRequiresOAuthTokenCode(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "https://github.example", &fakeSandbox{})
+	if _, _, err := store.GetAccountByOAuthIdentity("github", "hubot-id"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/user/github-app/installations/sync", nil)
+	req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected sync status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"REAUTH_REQUIRED"`) {
+		t.Fatalf("expected reauth code response, got %s", rec.Body.String())
+	}
+}
+
 func TestUserRunnerDetailLogAndTerminal(t *testing.T) {
 	store := state.New(t.TempDir())
 	account, _, err := store.UpsertAccountForOAuthIdentity(state.OAuthIdentity{OAuthProvider: "github", OAuthSubject: "hubot-id", OAuthLogin: "hubot"}, "user")
@@ -936,7 +1016,7 @@ func TestGitHubOAuthLoginCreatesAdminSession(t *testing.T) {
 		t.Fatalf("expected oauth-enabled session response, status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/auth/github/login", nil)
+	req = httptest.NewRequest(http.MethodGet, "/auth/github/login?return_to=/account/repositories", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound {
@@ -956,16 +1036,34 @@ func TestGitHubOAuthLoginCreatesAdminSession(t *testing.T) {
 	if stateCookie == nil || stateCookie.Value == "" {
 		t.Fatal("expected oauth state cookie")
 	}
+	loginCookies := rec.Result().Cookies()
+	if returnCookie := testCookie(loginCookies, oauthReturnToCookieName); returnCookie == nil || returnCookie.Value != "/account/repositories" {
+		t.Fatalf("expected oauth return_to cookie, got %#v", returnCookie)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/auth/github/login", nil)
+	req.AddCookie(&http.Cookie{Name: oauthReturnToCookieName, Value: "/account/repositories"})
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected plain login redirect, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	clearedReturnCookie := testCookie(rec.Result().Cookies(), oauthReturnToCookieName)
+	if clearedReturnCookie == nil || clearedReturnCookie.MaxAge >= 0 {
+		t.Fatalf("expected plain login to clear stale return_to cookie, got %#v", clearedReturnCookie)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/auth/github/callback?code=oauth-code&state="+stateCookie.Value, nil)
-	req.AddCookie(stateCookie)
+	for _, cookie := range loginCookies {
+		req.AddCookie(cookie)
+	}
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected callback redirect, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if loc := rec.Header().Get("Location"); loc != "/" {
-		t.Fatalf("expected admin callback to redirect to /, got %q", loc)
+	if loc := rec.Header().Get("Location"); loc != "/account/repositories" {
+		t.Fatalf("expected admin callback to redirect to return_to path, got %q", loc)
 	}
 	if gotTokenAuth != "Bearer user-token" {
 		t.Fatalf("expected user fetch bearer token, got %q", gotTokenAuth)
@@ -987,6 +1085,21 @@ func TestGitHubOAuthLoginCreatesAdminSession(t *testing.T) {
 	if session.Role != "admin" {
 		t.Fatalf("expected admin session role, got %q", session.Role)
 	}
+	account, _, err := store.GetAccountByOAuthIdentity("github", "12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedToken, err := store.GetAccountSecret(state.AccountScopeTypeAccount, account.ID, state.AccountSecretTypeGitHubOAuthToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decryptedToken, err := decryptSecret(savedToken.EncryptedValue, srv.cfg.AuthEncryptionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decryptedToken != "user-token" {
+		t.Fatalf("unexpected saved github oauth token: %q", decryptedToken)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/runner_requests", nil)
 	req.AddCookie(sessionCookie)
@@ -1002,6 +1115,17 @@ func TestGitHubOAuthLoginCreatesAdminSession(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"role":"admin"`) {
 		t.Fatalf("expected session role response, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSanitizeOAuthReturnToRejectsBackslashRedirects(t *testing.T) {
+	for _, value := range []string{`/\example.com`, `/\\example.com`, `/account\repositories`} {
+		if got := sanitizeOAuthReturnTo(value); got != "" {
+			t.Fatalf("expected %q to be rejected, got %q", value, got)
+		}
+	}
+	if got := sanitizeOAuthReturnTo("/account/repositories"); got != "/account/repositories" {
+		t.Fatalf("expected account path to be preserved, got %q", got)
 	}
 }
 
@@ -3523,6 +3647,15 @@ func testSessionCookie(subject, login, role string) *http.Cookie {
 		Value: payloadValue + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)),
 		Path:  "/",
 	}
+}
+
+func testCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	return nil
 }
 
 func testServerPrivateKeyFile(t *testing.T) string {

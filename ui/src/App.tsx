@@ -39,6 +39,7 @@ import {
   type RunnerSpecMatch,
   type RunnerState,
   type RunnerStatus,
+  type SyncedGitHubInstallations,
   type UserPreferences,
 } from "@/admin-types"
 import { useRunnerCatalog } from "@/hooks/use-runner-catalog"
@@ -48,6 +49,7 @@ type AccountSettingsRoute = {
   accountLogin?: string
   tab: AccountSettingsTab
 }
+type RequestError = Error & { code?: string }
 
 function App() {
   const [authSession, setAuthSession] = useState<AuthSession>({ authenticated: false, oauth_enabled: false })
@@ -82,6 +84,7 @@ function App() {
   const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null)
   const [authorizedRepositories, setAuthorizedRepositories] = useState<Record<number, string[]>>({})
   const [loadingRepositoriesFor, setLoadingRepositoriesFor] = useState<number | null>(null)
+  const [syncingGitHubInstallations, setSyncingGitHubInstallations] = useState(false)
   const [userSelectedKey, setUserSelectedKey] = useState(() => userJobsGroupKeyFromLocation(window.location.pathname, window.location.search))
 
   const setSection = useCallback((next: string) => {
@@ -199,7 +202,18 @@ function App() {
       }
       if (!response.ok) {
         const text = await response.text()
-        throw new Error(text || `${response.status} ${response.statusText}`)
+        let message = text
+        let code = ""
+        try {
+          const parsed = JSON.parse(text) as { code?: string; error?: string }
+          code = parsed.code || ""
+          message = parsed.error || text
+        } catch {
+          // Keep the raw response body for non-JSON errors.
+        }
+        const error = new Error(message || `${response.status} ${response.statusText}`) as RequestError
+        error.code = code
+        throw error
       }
       const contentType = response.headers.get("content-type") || ""
       if (contentType.includes("application/json")) return response.json()
@@ -213,6 +227,11 @@ function App() {
       .split(",")
       .map((label) => label.trim())
       .filter(Boolean)
+
+  const refreshGitHubOAuthLogin = useCallback(() => {
+    const returnTo = window.location.pathname + window.location.search
+    window.location.href = `/auth/github/login?return_to=${encodeURIComponent(returnTo || "/")}`
+  }, [])
 
   const loadLog = useCallback(
     async (id: string, name: (typeof logNames)[number]) => {
@@ -305,14 +324,14 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ installation_id: installationID, setup_state: setupState }),
       })) as GitHubInstallation
-      toast.success("GitHub App account connected")
+      toast.success("GitHub App account synced")
       const nextPath = accountSettingsPathForInstallation(installation, authSession.login, "repositories")
       window.history.replaceState(null, "", nextPath)
       setLocationPath(window.location.pathname)
       setLocationSearch(window.location.search)
       await loadUserAll()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to sync GitHub App repositories")
+      toast.error(error instanceof Error ? error.message : "Failed to sync GitHub App account")
     } finally {
       setLoading(false)
     }
@@ -331,6 +350,30 @@ function App() {
       setLoadingRepositoriesFor(null)
     }
   }, [request])
+
+  const syncGitHubInstallations = useCallback(async () => {
+    if (syncingGitHubInstallations) return
+    setLoading(true)
+    setSyncingGitHubInstallations(true)
+    try {
+      const data = (await request("/user/github-app/installations/sync", { method: "POST" })) as SyncedGitHubInstallations
+      const count = data.installations?.length ?? 0
+      toast.success(count === 1 ? "Synced 1 GitHub App account" : `Synced ${count} GitHub App accounts`)
+      await loadUserAll()
+    } catch (error) {
+      const requestError = error as RequestError
+      const message = error instanceof Error ? error.message : "Failed to sync GitHub App accounts"
+      if (requestError.code === "REAUTH_REQUIRED" || message === "sign in with GitHub again before syncing installations") {
+        toast.message("Refreshing GitHub sign-in...")
+        refreshGitHubOAuthLogin()
+        return
+      }
+      toast.error(message)
+    } finally {
+      setSyncingGitHubInstallations(false)
+      setLoading(false)
+    }
+  }, [loadUserAll, refreshGitHubOAuthLogin, request, syncingGitHubInstallations])
 
   const saveSandboxConfig = useCallback(async (
     apiURL: string,
@@ -670,7 +713,9 @@ function App() {
           accountSettingsRoute={accountSettingsRoute || defaultAccountSettingsRoute(authSession.login)}
           authorizedRepositories={authorizedRepositories}
           loadingRepositoriesFor={loadingRepositoriesFor}
+          syncingGitHubInstallations={syncingGitHubInstallations}
           onLoadAuthorizedRepositories={(id) => void loadAuthorizedRepositories(id)}
+          onSyncGitHubInstallations={() => void syncGitHubInstallations()}
           onSaveSandboxConfig={saveSandboxConfig}
           onDeleteSandboxAPIKey={deleteSandboxAPIKey}
           onNavigate={setUserPage}
