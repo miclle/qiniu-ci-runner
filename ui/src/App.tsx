@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import { toast } from "sonner"
 
 import { AppSidebar } from "@/components/app-sidebar"
+import { AccountsSection } from "@/components/accounts-section"
 import { AuditSection, DiagnosticsSection, MatchSection, OverviewSection } from "@/components/admin-sections"
 import { LoginPage } from "@/components/login-page"
 import { RunnerJobDetail } from "@/components/runner-job-detail"
@@ -65,7 +66,6 @@ function App() {
   const [selectedLog, setSelectedLog] = useState<(typeof logNames)[number]>("control.log")
   const [logText, setLogText] = useState("No runner selected")
   const [loading, setLoading] = useState(false)
-  const [connected, setConnected] = useState(false)
   const [createID, setCreateID] = useState("")
   const [createRepository, setCreateRepository] = useState("")
   const [createRunnerSpec, setCreateRunnerSpec] = useState("")
@@ -198,7 +198,6 @@ function App() {
         } catch {
           setAuthSession((current) => ({ ...current, authenticated: false, login: undefined, role: undefined, avatar_url: undefined, expires_at: undefined }))
         }
-        setConnected(false)
         throw new Error("Session expired or access is not allowed")
       }
       if (!response.ok) {
@@ -254,10 +253,7 @@ function App() {
   )
 
   const loadAll = useCallback(async () => {
-    if (!hasAccess) {
-      setConnected(false)
-      return
-    }
+    if (!hasAccess) return
     setLoading(true)
     try {
       const [runnerData, runnerSpecData, runnerGroupData, policyData, auditData] = await Promise.all([
@@ -273,13 +269,11 @@ function App() {
       setRunnerGroups(Array.isArray(runnerGroupData) ? (runnerGroupData as RunnerGroup[]) : [])
       setRunnerPolicies(Array.isArray(policyData) ? (policyData as RunnerPolicy[]) : [])
       setAuditEvents(Array.isArray(auditData) ? (auditData as AuditEvent[]) : [])
-      setConnected(true)
       if (selectedID && !nextRunners.some((runner) => runner.id === selectedID)) {
         setSelectedID("")
         setLogText("No runner selected")
       }
     } catch (error) {
-      setConnected(false)
       toast.error(error instanceof Error ? error.message : "Failed to load control plane data")
     } finally {
       setLoading(false)
@@ -435,10 +429,6 @@ function App() {
     setSection,
     parseLabels,
   })
-
-  useEffect(() => {
-    void fetch("/healthz").catch(() => setConnected(false))
-  }, [])
 
   useEffect(() => {
     void (async () => {
@@ -736,28 +726,26 @@ function App() {
     <SidebarProvider>
       <AppSidebar
         section={section}
-        connected={connected}
-        activeCount={metrics[0]?.value || 0}
-        authLabel={authSession.authenticated ? `@${authSession.login}` : "Locked"}
         onSectionChange={setSection}
-        onSignOut={signOut}
       />
       <SidebarInset className="min-h-0 overflow-hidden">
-        <SiteHeader />
+        <SiteHeader authSession={authSession} onSignOut={signOut} />
         <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 lg:gap-6 lg:p-6">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {metrics.map((metric) => (
-              <Card key={metric.label} className="gap-3 py-5">
-                <CardHeader className="px-5">
-                  <CardDescription>{metric.label}</CardDescription>
-                  <CardTitle className="text-3xl">{metric.value}</CardTitle>
-                </CardHeader>
-                <CardContent className="px-5 text-xs text-muted-foreground">
-                  {metric.description}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          {section !== "accounts" ? (
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {metrics.map((metric) => (
+                <Card key={metric.label} className="gap-3 py-5">
+                  <CardHeader className="px-5">
+                    <CardDescription>{metric.label}</CardDescription>
+                    <CardTitle className="text-3xl">{metric.value}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-5 text-xs text-muted-foreground">
+                    {metric.description}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : null}
 
           {section === "overview" ? (
             <OverviewSection
@@ -768,6 +756,8 @@ function App() {
               onEditPolicy={loadPolicyIntoForm}
             />
           ) : null}
+
+          {section === "accounts" ? <AccountsSection request={request} /> : null}
 
           {section === "runner_requests" ? (
             <RunnerRequestsSection
