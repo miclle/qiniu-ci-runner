@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -1638,6 +1639,152 @@ func TestGitHubInstallationsAndRepositoryRunnerList(t *testing.T) {
 	}
 	if len(installations) != 0 {
 		t.Fatalf("expected installation to be deleted, got %#v", installations)
+	}
+}
+
+func TestListStatesForGitHubInstallationRepositoriesPreservesPairs(t *testing.T) {
+	store := New(t.TempDir())
+	requests := []RunnerRequest{
+		{ID: "first-visible", Source: "test", GitHubInstallationID: 987, RepositoryFullName: "o/first"},
+		{ID: "first-cross-pair", Source: "test", GitHubInstallationID: 987, RepositoryFullName: "other/second"},
+		{ID: "second-visible", Source: "test", GitHubInstallationID: 654, RepositoryFullName: "other/second"},
+		{ID: "second-cross-pair", Source: "test", GitHubInstallationID: 654, RepositoryFullName: "o/first"},
+	}
+	for _, request := range requests {
+		if _, _, err := store.CreateRequest(request, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	states, err := store.ListStatesForGitHubInstallationRepositories([]GitHubInstallationRepositoryAccess{
+		{InstallationID: 987, Repositories: []string{"o/first"}},
+		{InstallationID: 654, Repositories: []string{"other/second"}},
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(states))
+	for _, runnerState := range states {
+		ids = append(ids, runnerState.ID)
+	}
+	sort.Strings(ids)
+	if !reflect.DeepEqual(ids, []string{"first-visible", "second-visible"}) {
+		t.Fatalf("unexpected pair-filtered states: %#v", ids)
+	}
+}
+
+func TestListStatesForGitHubInstallationRepositoriesMatchesRepositoryCaseInsensitively(t *testing.T) {
+	store := New(t.TempDir())
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID:                   "visible",
+		Source:               "test",
+		GitHubInstallationID: 987,
+		RepositoryFullName:   "Octo/Visible",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := store.ListStatesForGitHubInstallationRepositories([]GitHubInstallationRepositoryAccess{
+		{InstallationID: 987, Repositories: []string{"octo/visible"}},
+	}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].ID != "visible" {
+		t.Fatalf("expected case-insensitive repository match, got %#v", states)
+	}
+}
+
+func TestListStatesForGitHubInstallationRepositoriesFiltersBeforeLimit(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+	for _, request := range []RunnerRequest{
+		{
+			ID:                   "authorized-older",
+			Source:               "test",
+			GitHubInstallationID: 987,
+			RepositoryFullName:   "o/visible",
+			CreatedAt:            now.Add(-time.Minute),
+		},
+		{
+			ID:                   "unauthorized-newer",
+			Source:               "test",
+			GitHubInstallationID: 987,
+			RepositoryFullName:   "o/hidden",
+			CreatedAt:            now,
+		},
+	} {
+		if _, _, err := store.CreateRequest(request, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	states, err := store.ListStatesForGitHubInstallationRepositories([]GitHubInstallationRepositoryAccess{
+		{InstallationID: 987, Repositories: []string{"o/visible"}},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].ID != "authorized-older" {
+		t.Fatalf("expected authorization filter before limit, got %#v", states)
+	}
+}
+
+func TestGitHubInstallationRepositoryAccessQueryBatchesStayWithinParameterLimit(t *testing.T) {
+	repositories := make([]string, 0, 1200)
+	for index := range 1200 {
+		repositories = append(repositories, fmt.Sprintf("o/repo-%d", index))
+	}
+
+	batches := githubInstallationRepositoryAccessQueryBatches([]GitHubInstallationRepositoryAccess{
+		{InstallationID: 987, Repositories: repositories},
+	}, maxRunnerRequestRepositoryAccessQueryParameters)
+	if len(batches) < 2 {
+		t.Fatalf("expected large repository access to be split, got %d batch", len(batches))
+	}
+	for index, batch := range batches {
+		if batch.parameterCount > maxRunnerRequestRepositoryAccessQueryParameters {
+			t.Fatalf("batch %d has %d parameters, limit %d", index, batch.parameterCount, maxRunnerRequestRepositoryAccessQueryParameters)
+		}
+	}
+}
+
+func TestListStatesForGitHubInstallationRepositoriesHandlesLargeAccessSet(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+	for _, request := range []RunnerRequest{
+		{
+			ID:                   "older-in-first-batch",
+			Source:               "test",
+			GitHubInstallationID: 987,
+			RepositoryFullName:   "o/repo-0",
+			CreatedAt:            now.Add(-time.Minute),
+		},
+		{
+			ID:                   "newer-in-later-batch",
+			Source:               "test",
+			GitHubInstallationID: 987,
+			RepositoryFullName:   "o/repo-1199",
+			CreatedAt:            now,
+		},
+	} {
+		if _, _, err := store.CreateRequest(request, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repositories := make([]string, 0, 1200)
+	for index := range 1200 {
+		repositories = append(repositories, fmt.Sprintf("o/repo-%d", index))
+	}
+
+	states, err := store.ListStatesForGitHubInstallationRepositories([]GitHubInstallationRepositoryAccess{
+		{InstallationID: 987, Repositories: repositories},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 1 || states[0].ID != "newer-in-later-batch" {
+		t.Fatalf("expected global newest state from a later query batch, got %#v", states)
 	}
 }
 
