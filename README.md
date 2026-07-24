@@ -100,6 +100,7 @@ Key notes:
 
 - Relative `database.dsn` and `github.app.private_key_file` paths resolve from the config file's directory.
 - Use SQLite for local and single-node deployments. PostgreSQL and MySQL are supported but multi-instance operation on a shared database has not been verified.
+- Existing SQLite `runner_requests` tables add missing model columns and indexes on startup without table recreation. Creating the list-ordering indexes does not rewrite runner rows, but it can add brief startup I/O and lock contention on a large database; see [docs/testing.md](docs/testing.md) for the migration and query-plan checks.
 - GitHub Enterprise Server is **not** supported; use a GitHub.com App.
 - Configure exactly one GitHub auth method: `github.app`, `github.token`, or `github.basic_auth`.
 - When `github.app.installation_id` is omitted, runnerd resolves the installation dynamically per repository, allowing one App to serve multiple accounts.
@@ -188,6 +189,8 @@ The built-in web UI provides:
 | `/admin/sandbox_service` | Sandbox service configuration |
 
 Ordinary-user routes include `/repositories`, PR job groups (`/github/pulls/{owner}/{repo}/{number}/jobs`), and account settings (`/account/preferences`, `/account/sandbox-templates`, `/account/sandbox-instances`), with matching `/organizations/{login}/...` routes.
+
+Runner request lists return the newest 100 rows by default and cap pages at 500. They project only public runner-state fields instead of stored webhook payloads or Sandbox credentials. Admin polling uses the `(queued_at DESC, id ASC)` index; repository-authorized user polling queries each installation through `(github_installation_id, queued_at DESC, id ASC)` and merges the bounded results while preserving exact installation/repository access pairs.
 
 ## Troubleshooting
 
