@@ -3438,10 +3438,413 @@ func TestFreshSchemaSQLBackends(t *testing.T) {
 	}
 }
 
+func TestFreshSchemaIncludesScopedRunnerCatalog(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"scoped_runner_profiles"} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("expected fresh schema table %s", table)
+		}
+	}
+	if db.Migrator().HasTable("runner_profile_scope_controls") {
+		t.Fatal("fresh schema must not create removed runner_profile_scope_controls")
+	}
+	for _, index := range []struct {
+		model any
+		name  string
+	}{
+		{model: "scoped_runner_profiles", name: "idx_scoped_runner_profiles_scope_labels"},
+		{model: "scoped_runner_profiles", name: "idx_scoped_runner_profiles_scope"},
+	} {
+		if !db.Migrator().HasIndex(index.model, index.name) {
+			t.Fatalf("expected fresh schema index %s", index.name)
+		}
+	}
+	for _, column := range []string{"profile_source", "profile_scope_type", "profile_scope_id"} {
+		if !db.Migrator().HasColumn(&runnerRequestRecord{}, column) {
+			t.Fatalf("expected runner_requests.%s", column)
+		}
+	}
+}
+
+func TestMigrateSQLiteRunnerRequestAddsProfileScopeWithoutLosingRows(t *testing.T) {
+	databaseURL := filepath.Join(t.TempDir(), "runnerd.db")
+	setup := NewWithOptions(Options{Backend: BackendSQLite, DatabaseDSN: databaseURL, MigrateOnStart: false}).(*DBStore)
+	db, err := setup.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE runner_requests (
+		id TEXT PRIMARY KEY,
+		source TEXT NOT NULL,
+		labels_json TEXT NOT NULL,
+		profile_name TEXT,
+		runner_name TEXT NOT NULL,
+		status TEXT NOT NULL,
+		queued_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		version INTEGER NOT NULL DEFAULT 0
+	);`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE INDEX idx_runner_requests_profile_queued_id ON runner_requests(profile_name, queued_at DESC, id ASC)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := db.Exec(`INSERT INTO runner_requests (id, source, labels_json, runner_name, status, queued_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-request", "github", `[]`, "runner", StatusCompleted, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	closeTestDB(t, db)
+
+	migrated := NewWithOptions(Options{Backend: BackendSQLite, DatabaseDSN: databaseURL, MigrateOnStart: true}).(*DBStore)
+	if err := migrated.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = migrated.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row struct {
+		ID     string
+		Status string
+	}
+	if err := db.Table("runner_requests").Select("id, status").Where("id = ?", "legacy-request").Scan(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.ID != "legacy-request" || row.Status != StatusCompleted {
+		t.Fatalf("legacy row changed during migration: %#v", row)
+	}
+	for _, column := range []string{"profile_source", "profile_scope_type", "profile_scope_id"} {
+		if !db.Migrator().HasColumn(&runnerRequestRecord{}, column) {
+			t.Fatalf("expected migrated runner_requests.%s", column)
+		}
+	}
+	if !db.Migrator().HasIndex(&runnerRequestRecord{}, "idx_runner_requests_profile_scope_status") {
+		t.Fatal("expected profile scope status index")
+	}
+}
+
+func TestMigrateSQLiteScopedRunnerCatalogIsIdempotent(t *testing.T) {
+	databaseURL := filepath.Join(t.TempDir(), "runnerd.db")
+	store := NewWithOptions(Options{Backend: BackendSQLite, DatabaseDSN: databaseURL, MigrateOnStart: true}).(*DBStore)
+	if err := store.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before []string
+	if err := db.Raw(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scoped_runner_profiles' ORDER BY name`).Scan(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("expected scoped catalog tables before repeat migration, got %v", before)
+	}
+	if err := store.migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var after []string
+	if err := db.Raw(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scoped_runner_profiles' ORDER BY name`).Scan(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("repeated migration changed scoped catalog tables: before=%v after=%v", before, after)
+	}
+}
+
+func TestScopedRunnerCatalogFreshSchemaSQLBackends(t *testing.T) {
+	if os.Getenv("RUNNERD_CATALOG_BACKEND_TESTS") != "1" {
+		t.Skip("set RUNNERD_CATALOG_BACKEND_TESTS=1 with dedicated Postgres and MySQL test databases")
+	}
+	for _, backend := range []struct {
+		name string
+		dsn  string
+	}{
+		{name: BackendPostgres, dsn: os.Getenv("RUNNERD_POSTGRES_TEST_DSN")},
+		{name: BackendMySQL, dsn: os.Getenv("RUNNERD_MYSQL_TEST_DSN")},
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			if strings.TrimSpace(backend.dsn) == "" {
+				t.Skip("dedicated SQL backend test DSN not configured")
+			}
+			store := NewWithOptions(Options{Backend: backend.name, DatabaseDSN: backend.dsn, MigrateOnStart: true}).(*DBStore)
+			db, err := store.dbOrEnsure()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				_ = db.Exec("DROP TABLE scoped_runner_profiles").Error
+				closeTestDB(t, db)
+			}()
+			for _, table := range []string{"scoped_runner_profiles"} {
+				if !db.Migrator().HasTable(table) {
+					t.Fatalf("expected %s table", table)
+				}
+			}
+			for _, index := range []string{
+				"idx_scoped_runner_profiles_scope",
+				"idx_scoped_runner_profiles_scope_labels",
+			} {
+				if !db.Migrator().HasIndex("scoped_runner_profiles", index) {
+					t.Fatalf("expected %s index", index)
+				}
+			}
+			if db.Migrator().HasTable("runner_profile_scope_controls") {
+				t.Fatal("fresh schema must not create removed runner_profile_scope_controls")
+			}
+		})
+	}
+}
+
+func TestScopedRunnerProfilesAreIsolatedByScope(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	a := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	b := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 2}
+	profile := ScopedRunnerProfile{Name: "custom", WorkflowLabels: []string{"qiniu", "linux"}, TemplateID: "template-a", Enabled: true}
+	profile.ScopeType, profile.ScopeID = a.Type, a.ID
+	if _, err := store.UpsertScopedProfileIfUnchanged(profile, nil); err != nil {
+		t.Fatal(err)
+	}
+	profile.ScopeType, profile.ScopeID, profile.TemplateID = b.Type, b.ID, "template-b"
+	if _, err := store.UpsertScopedProfileIfUnchanged(profile, nil); err != nil {
+		t.Fatal(err)
+	}
+	gotA, err := store.GetScopedProfile(a, "custom")
+	if err != nil || gotA.TemplateID != "template-a" {
+		t.Fatalf("scope A read = %#v, err=%v", gotA, err)
+	}
+	gotB, err := store.GetScopedProfile(b, "custom")
+	if err != nil || gotB.TemplateID != "template-b" {
+		t.Fatalf("scope B read = %#v, err=%v", gotB, err)
+	}
+}
+
+func TestScopedRunnerProfileConditionalCreateRejectsExistingName(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	profile := ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "custom", WorkflowLabels: []string{"qiniu", "linux"}, TemplateID: "template-a", Enabled: true}
+	if _, err := store.UpsertScopedProfileIfUnchanged(profile, nil); err != nil {
+		t.Fatal(err)
+	}
+	profile.TemplateID = "template-b"
+	if _, err := store.UpsertScopedProfileIfUnchanged(profile, nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate scoped create = %v, want ErrConflict", err)
+	}
+	saved, err := store.GetScopedProfile(scope, profile.Name)
+	if err != nil || saved.TemplateID != "template-a" {
+		t.Fatalf("duplicate create overwrote scoped profile = %#v, err=%v", saved, err)
+	}
+}
+
+func TestScopedRunnerProfileRejectsDuplicateNormalizedLabels(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	base := ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "one", WorkflowLabels: []string{"linux", "qiniu"}, TemplateID: "template", Enabled: true}
+	if _, err := store.UpsertScopedProfileIfUnchanged(base, nil); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := base
+	duplicate.Name = "two"
+	duplicate.WorkflowLabels = []string{" qiniu ", "linux", "qiniu"}
+	if _, err := store.UpsertScopedProfileIfUnchanged(duplicate, nil); !errors.Is(err, ErrRunnerProfileLabelsConflict) {
+		t.Fatalf("duplicate normalized labels = %v, want ErrRunnerProfileLabelsConflict", err)
+	}
+}
+
+func TestScopedRunnerProfileUpdateRejectsDuplicateNormalizedLabels(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	first := ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "one", WorkflowLabels: []string{"linux", "qiniu"}, TemplateID: "template-one", Enabled: true}
+	if _, err := store.UpsertScopedProfileIfUnchanged(first, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.UpsertScopedProfileIfUnchanged(ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "two", WorkflowLabels: []string{"qiniu", "gpu"}, TemplateID: "template-two", Enabled: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.WorkflowLabels = []string{" qiniu ", "linux", "qiniu"}
+	if _, err := store.UpsertScopedProfileIfUnchanged(second, &second.UpdatedAt); !errors.Is(err, ErrRunnerProfileLabelsConflict) {
+		t.Fatalf("duplicate normalized labels on update = %v, want ErrRunnerProfileLabelsConflict", err)
+	}
+}
+
+func TestListEffectiveProfilesReportsOnlyExactGlobalLabelOverrides(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	if _, err := store.UpsertProfile(RunnerProfile{Name: "global", Labels: []string{"qiniu", "linux"}, RequiredLabels: []string{"qiniu"}, TemplateID: "global-template", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	for _, profile := range []ScopedRunnerProfile{
+		{ScopeType: scope.Type, ScopeID: scope.ID, Name: "override", WorkflowLabels: []string{"linux", "qiniu"}, TemplateID: "override-template", Enabled: true},
+		{ScopeType: scope.Type, ScopeID: scope.ID, Name: "distinct", WorkflowLabels: []string{"qiniu", "gpu"}, TemplateID: "distinct-template", Enabled: true},
+	} {
+		if _, err := store.UpsertScopedProfileIfUnchanged(profile, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := store.ListEffectiveProfiles(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, item := range items {
+		if item.Source == "scoped_custom" {
+			got[item.Profile.Name] = item.OverridesGlobal
+		}
+	}
+	if !got["override"] || got["distinct"] {
+		t.Fatalf("override flags = %#v, want override=true and distinct=false", got)
+	}
+}
+
+func TestScopedRunnerProfileConditionalWritesRejectStaleRevision(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	profile := ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "custom", WorkflowLabels: []string{"qiniu"}, TemplateID: "template", Enabled: true}
+	saved, err := store.UpsertScopedProfileIfUnchanged(profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved.TemplateID = "template-new"
+	if _, err := store.UpsertScopedProfileIfUnchanged(saved, &profile.UpdatedAt); err == nil {
+		t.Fatal("expected stale scoped profile revision conflict")
+	}
+}
+
+func TestMatchProfileForScopeIgnoresLegacyManagedScopeControls(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	if _, err := store.UpsertProfile(RunnerProfile{Name: "managed", Labels: []string{"qiniu"}, RequiredLabels: []string{"qiniu"}, TemplateID: "template", ManagedBy: "runnerd", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS runner_profile_scope_controls (
+		scope_type TEXT NOT NULL,
+		scope_id INTEGER NOT NULL,
+		profile_name TEXT NOT NULL,
+		enabled BOOLEAN NOT NULL,
+		max_concurrency INTEGER NOT NULL DEFAULT 0,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (scope_type, scope_id, profile_name)
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.Exec(`INSERT INTO runner_profile_scope_controls (scope_type, scope_id, profile_name, enabled, max_concurrency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, scope.Type, scope.ID, "managed", false, 1, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	match, err := store.MatchProfileForScope(scope, "owner/repo", []string{"qiniu"})
+	if err != nil || match.Profile == nil || match.Profile.Name != "managed" {
+		t.Fatalf("legacy control changed global match: %#v, err=%v", match, err)
+	}
+}
+
+func TestMatchProfileForScopePrefersExactScopedProfileAndShadowsWhenDisabled(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	if _, err := store.UpsertProfile(RunnerProfile{Name: "global", Labels: []string{"qiniu", "linux"}, RequiredLabels: []string{"qiniu"}, TemplateID: "global-template", Enabled: true, Priority: 100}); err != nil {
+		t.Fatal(err)
+	}
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	custom := ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "custom", WorkflowLabels: []string{"qiniu", "linux"}, TemplateID: "custom-template", Enabled: true}
+	if _, err := store.UpsertScopedProfileIfUnchanged(custom, nil); err != nil {
+		t.Fatal(err)
+	}
+	match, err := store.MatchProfileForScope(scope, "owner/repo", []string{"linux", "qiniu"})
+	if err != nil || match.Profile == nil || match.Profile.Name != "custom" || match.Source != "scoped_custom" {
+		t.Fatalf("custom match = %#v, err=%v", match, err)
+	}
+	custom.Enabled = false
+	saved, err := store.GetScopedProfile(scope, "custom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom.UpdatedAt = saved.UpdatedAt
+	if _, err := store.UpsertScopedProfileIfUnchanged(custom, &saved.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	match, err = store.MatchProfileForScope(scope, "owner/repo", []string{"qiniu", "linux"})
+	if err != nil || match.Profile != nil || match.Reason != "profile_scope_disabled" || match.Source != "scoped_custom" {
+		t.Fatalf("disabled custom match = %#v, err=%v", match, err)
+	}
+}
+
+func TestMatchProfileForScopeMatchesScopedLabelsCaseInsensitively(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	if _, err := store.UpsertProfile(RunnerProfile{Name: "global", Labels: []string{"qiniu", "gpu"}, RequiredLabels: []string{"qiniu"}, TemplateID: "global-template", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	if _, err := store.UpsertScopedProfileIfUnchanged(ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "custom", WorkflowLabels: []string{"QINIU", "GPU"}, TemplateID: "custom-template", Enabled: false}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	match, err := store.MatchProfileForScope(scope, "owner/repo", []string{"qiniu", "gpu"})
+	if err != nil || match.Profile != nil || match.Source != "scoped_custom" || match.Reason != "profile_scope_disabled" {
+		t.Fatalf("case-insensitive disabled custom match = %#v, err=%v", match, err)
+	}
+}
+
+func TestMatchProfileForScopeFallsBackToGlobalAndCountsStayScoped(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	if _, err := store.UpsertProfile(RunnerProfile{Name: "global", Labels: []string{"qiniu"}, RequiredLabels: []string{"qiniu"}, TemplateID: "template", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	scopeA := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	scopeB := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 2}
+	match, err := store.MatchProfileForScope(scopeA, "owner/repo", []string{"qiniu"})
+	if err != nil || match.Profile == nil || match.Source != "global" || match.ScopeID != scopeA.ID {
+		t.Fatalf("global fallback = %#v, err=%v", match, err)
+	}
+	for _, req := range []RunnerRequest{
+		{ID: "a", ProfileName: "global", ProfileSource: "global", ProfileScopeType: scopeA.Type, ProfileScopeID: scopeA.ID, Labels: []string{"qiniu"}, RunnerName: "a"},
+		{ID: "b", ProfileName: "global", ProfileSource: "global", ProfileScopeType: scopeB.Type, ProfileScopeID: scopeB.ID, Labels: []string{"qiniu"}, RunnerName: "b"},
+	} {
+		if _, _, err := store.CreateRequest(req, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count, err := store.ActiveCountForProfileScope("global", scopeA, "global")
+	if err != nil || count != 1 {
+		t.Fatalf("scope A count = %d, err=%v", count, err)
+	}
+}
+
+func TestScopedRunnerProfileNameConflictsWithEnabledGlobalProfile(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	if _, err := store.UpsertProfile(RunnerProfile{Name: "ubuntu", Labels: []string{"qiniu"}, RequiredLabels: []string{"qiniu"}, TemplateID: "global", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	if _, err := store.UpsertScopedProfileIfUnchanged(ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "ubuntu", WorkflowLabels: []string{"custom"}, TemplateID: "scoped", Enabled: true}, nil); err == nil {
+		t.Fatal("expected scoped profile name conflict with enabled global profile")
+	}
+}
+
+func TestScopedRunnerProfileNameCanMatchDisabledGlobalProfile(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	if _, err := store.UpsertProfile(RunnerProfile{Name: "ubuntu", Labels: []string{"qiniu"}, RequiredLabels: []string{"qiniu"}, TemplateID: "global", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	scope := RunnerProfileScope{Type: RunnerProfileScopeAccount, ID: 1}
+	if _, err := store.UpsertScopedProfileIfUnchanged(ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "ubuntu", WorkflowLabels: []string{"custom"}, TemplateID: "scoped", Enabled: true}, nil); err != nil {
+		t.Fatalf("disabled global profile should not block scoped name: %v", err)
+	}
+}
+
 func sqlBackendTestTables() []string {
 	return []string{
 		"runner_events",
 		"runner_requests",
+		"scoped_runner_profiles",
 		"runner_group_specs",
 		"repository_policies",
 		"runner_groups",

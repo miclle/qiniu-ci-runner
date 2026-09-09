@@ -254,6 +254,176 @@ func TestRunnerLifecycleCustomTemplateUsesStoredIDWithoutCatalog(t *testing.T) {
 	}
 }
 
+func TestRunnerLifecycleRevalidatesGlobalProfileBeforeStarting(t *testing.T) {
+	store := state.New(t.TempDir())
+	profile := lifecycleManagedProfile("managed-template-id")
+	upsertLifecycleProfile(t, store, profile)
+	scope := state.RunnerProfileScope{Type: state.RunnerProfileScopeAccount, ID: 1}
+	created, _, err := store.CreateRequest(state.RunnerRequest{ID: "disabled-global-request", Source: "test", RepositoryFullName: "o/r", RequestedLabels: append([]string(nil), profile.Labels...), Labels: append([]string(nil), profile.Labels...), ProfileName: profile.Name, ProfileSource: "global", ProfileScopeType: scope.Type, ProfileScopeID: scope.ID, RunnerName: "e2b-disabled-global-request"}, nil)
+	if err != nil || !created {
+		t.Fatalf("CreateRequest created=%v err=%v", created, err)
+	}
+	profile.Enabled = false
+	upsertLifecycleProfile(t, store, profile)
+	sandbox := &lifecycleSandboxService{}
+	srv := newRunnerLifecycleTestServer(t, store, "http://127.0.0.1:1", sandbox)
+
+	srv.startRunner(context.Background(), "disabled-global-request", "worker-test")
+
+	got, err := store.ReadState("disabled-global-request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureStage != "profile_validation" || got.Status == state.StatusRunning {
+		t.Fatalf("state = %#v, want profile_validation failure", got)
+	}
+	if inputs := sandbox.startInputs(); len(inputs) != 0 {
+		t.Fatalf("disabled global profile started sandbox with inputs %#v", inputs)
+	}
+}
+
+func TestRunnerLifecycleRejectsNewRequiredLabelsBeforeStarting(t *testing.T) {
+	store := state.New(t.TempDir())
+	profile := state.RunnerProfile{
+		Name:           "platform-custom",
+		Labels:         []string{"self-hosted", "base", "new-required"},
+		RequiredLabels: []string{"base"},
+		TemplateID:     "custom-template-id",
+		MaxConcurrency: 10,
+		Enabled:        true,
+	}
+	upsertLifecycleProfile(t, store, profile)
+	created, _, err := store.CreateRequest(state.RunnerRequest{ID: "changed-required-labels", Source: "test", RepositoryFullName: "o/r", RequestedLabels: []string{"self-hosted", "base"}, Labels: append([]string(nil), profile.Labels...), ProfileName: profile.Name, ProfileSource: "global", RunnerName: "e2b-changed-required-labels"}, nil)
+	if err != nil || !created {
+		t.Fatalf("CreateRequest created=%v err=%v", created, err)
+	}
+	profile.RequiredLabels = []string{"base", "new-required"}
+	upsertLifecycleProfile(t, store, profile)
+	sandbox := &lifecycleSandboxService{}
+	srv := newRunnerLifecycleTestServer(t, store, "http://127.0.0.1:1", sandbox)
+
+	srv.startRunner(context.Background(), "changed-required-labels", "worker-test")
+
+	got, err := store.ReadState("changed-required-labels")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureStage != "profile_validation" || got.Status == state.StatusRunning {
+		t.Fatalf("state = %#v, want profile_validation failure", got)
+	}
+	if inputs := sandbox.startInputs(); len(inputs) != 0 {
+		t.Fatalf("changed global profile started sandbox with inputs %#v", inputs)
+	}
+}
+
+func TestRunnerLifecycleSerializesProfileReloadWithMutations(t *testing.T) {
+	baseStore := state.New(t.TempDir())
+	profile := state.RunnerProfile{Name: "platform-custom", Labels: []string{"self-hosted", "custom"}, RequiredLabels: []string{"custom"}, TemplateID: "custom-template-id", MaxConcurrency: 10, Enabled: true}
+	upsertLifecycleProfile(t, baseStore, profile)
+	created, _, err := baseStore.CreateRequest(state.RunnerRequest{ID: "serialized-profile-reload", Source: "test", RepositoryFullName: "o/r", RequestedLabels: append([]string(nil), profile.Labels...), Labels: append([]string(nil), profile.Labels...), ProfileName: profile.Name, ProfileSource: "global", RunnerName: "e2b-serialized-profile-reload"}, nil)
+	if err != nil || !created {
+		t.Fatalf("CreateRequest created=%v err=%v", created, err)
+	}
+	store := &blockingProfileLookupStore{Store: baseStore, entered: make(chan struct{}), release: make(chan struct{})}
+	srv := newRunnerLifecycleTestServer(t, store, "http://127.0.0.1:1", &lifecycleSandboxService{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.startRunner(context.Background(), "serialized-profile-reload", "worker-test")
+	}()
+
+	<-store.entered
+	mutationCouldInterleave := srv.admissionMu.TryLock()
+	if mutationCouldInterleave {
+		srv.admissionMu.Unlock()
+	}
+	close(store.release)
+	<-done
+	if mutationCouldInterleave {
+		t.Fatal("runner profile reload did not hold the mutation serialization lock")
+	}
+}
+
+func TestRunnerLifecycleRevalidatesScopedProfileBeforeStarting(t *testing.T) {
+	store := state.New(t.TempDir())
+	scope := state.RunnerProfileScope{Type: state.RunnerProfileScopeAccount, ID: 1}
+	profile, err := store.UpsertScopedProfileIfUnchanged(state.ScopedRunnerProfile{ScopeType: scope.Type, ScopeID: scope.ID, Name: "custom", WorkflowLabels: []string{"self-hosted", "custom"}, TemplateID: "custom-template-id", Enabled: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, _, err := store.CreateRequest(state.RunnerRequest{ID: "disabled-scoped-request", Source: "test", RepositoryFullName: "o/r", RequestedLabels: []string{"self-hosted", "custom"}, Labels: []string{"self-hosted", "custom"}, ProfileName: profile.Name, ProfileSource: "scoped_custom", ProfileScopeType: scope.Type, ProfileScopeID: scope.ID, RunnerName: "e2b-disabled-scoped-request"}, nil)
+	if err != nil || !created {
+		t.Fatalf("CreateRequest created=%v err=%v", created, err)
+	}
+	profile.Enabled = false
+	if _, err := store.UpsertScopedProfileIfUnchanged(profile, &profile.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	sandbox := &lifecycleSandboxService{}
+	srv := newRunnerLifecycleTestServer(t, store, "http://127.0.0.1:1", sandbox)
+
+	srv.startRunner(context.Background(), "disabled-scoped-request", "worker-test")
+
+	got, err := store.ReadState("disabled-scoped-request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureStage != "profile_validation" || got.Status == state.StatusRunning {
+		t.Fatalf("state = %#v, want profile_validation failure", got)
+	}
+	if inputs := sandbox.startInputs(); len(inputs) != 0 {
+		t.Fatalf("disabled scoped profile started sandbox with inputs %#v", inputs)
+	}
+}
+
+type blockingProfileLookupStore struct {
+	state.Store
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingProfileLookupStore) GetProfile(name string) (state.RunnerProfile, error) {
+	profile, err := s.Store.GetProfile(name)
+	s.once.Do(func() {
+		close(s.entered)
+		<-s.release
+	})
+	return profile, err
+}
+
+type effectiveProfileLookupRejectingStore struct {
+	state.Store
+}
+
+func (s *effectiveProfileLookupRejectingStore) GetEffectiveProfile(state.RunnerProfileScope, string, string) (state.EffectiveRunnerProfile, error) {
+	return state.EffectiveRunnerProfile{}, errors.New("full effective catalog lookup is unavailable")
+}
+
+func TestProfileForRunnerRequestUsesDirectScopedLookup(t *testing.T) {
+	baseStore := state.New(t.TempDir())
+	scope := state.RunnerProfileScope{Type: state.RunnerProfileScopeAccount, ID: 1}
+	want, err := baseStore.UpsertScopedProfileIfUnchanged(state.ScopedRunnerProfile{
+		ScopeType: scope.Type, ScopeID: scope.ID, Name: "custom",
+		WorkflowLabels: []string{"self-hosted", "custom"}, TemplateID: "custom-template-id", Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{store: &effectiveProfileLookupRejectingStore{Store: baseStore}}
+
+	got, err := srv.profileForRunnerRequest(state.RunnerRequest{
+		ProfileName: want.Name, ProfileSource: "scoped_custom",
+		ProfileScopeType: scope.Type, ProfileScopeID: scope.ID,
+	})
+	if err != nil {
+		t.Fatalf("profileForRunnerRequest: %v", err)
+	}
+	if got.Name != want.Name || got.TemplateID != want.TemplateID || !got.Enabled {
+		t.Fatalf("profile = %#v, want direct scoped profile %#v", got, want)
+	}
+}
+
 func TestRunnerLifecycleRetryUsesPersistedSpecWithoutPolicyOrGroupReads(t *testing.T) {
 	// Characterization test: a retry starts from its admitted Runner Spec. It
 	// catches a migration that rematches a stored request through retired policy
@@ -831,7 +1001,7 @@ func createLifecycleRequest(t *testing.T, store state.Store, id, profileName str
 		Source:               "test",
 		GitHubInstallationID: installationID,
 		RepositoryFullName:   "o/r",
-		Labels:               []string{"self-hosted"},
+		Labels:               []string{"self-hosted", profileName},
 		ProfileName:          profileName,
 		RunnerName:           "e2b-" + id,
 	}, nil)

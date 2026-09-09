@@ -57,6 +57,7 @@ export function adminPollingResources(section: AdminSection): AdminDataResource[
 export function userDataResources(path: string): UserDataResource[] {
   if (isUserJobsRoute(path)) return ["github_app", "runner_requests", "onboarding"]
   if (path === "/repositories") return ["github_app", "preferences", "onboarding"]
+  if (path === "/runner-specs") return []
   if (isAccountSettingsRoute(path)) return ["github_app", "preferences", "onboarding"]
   return []
 }
@@ -129,8 +130,8 @@ export function isAccountSettingsRoute(path: string): boolean {
   return (
     path === "/settings" ||
     path === "/accounts" ||
-    /^\/account\/(repositories|preferences|sandbox|sandbox-templates|sandbox-instances)$/.test(path) ||
-    /^\/organizations\/[^/]+\/(repositories|preferences|sandbox|sandbox-templates|sandbox-instances)$/.test(path)
+    /^\/account\/(repositories|preferences|sandbox|sandbox-templates|sandbox-instances|runner-specs)$/.test(path) ||
+    /^\/organizations\/[^/]+\/(repositories|preferences|sandbox|sandbox-templates|sandbox-instances|runner-specs)$/.test(path)
   )
 }
 
@@ -138,8 +139,8 @@ function isSandboxSettingsRoute(path: string): boolean {
   return (
     path === "/settings" ||
     path === "/accounts" ||
-    /^\/account\/(preferences|sandbox|sandbox-templates|sandbox-instances)$/.test(path) ||
-    /^\/organizations\/[^/]+\/(preferences|sandbox|sandbox-templates|sandbox-instances)$/.test(path)
+    /^\/account\/(preferences|sandbox|sandbox-templates|sandbox-instances|runner-specs)$/.test(path) ||
+    /^\/organizations\/[^/]+\/(preferences|sandbox|sandbox-templates|sandbox-instances|runner-specs)$/.test(path)
   )
 }
 
@@ -154,6 +155,7 @@ function isUserRoute(path: string): boolean {
     isUserJobsRoute(path) ||
     /^\/jobs\/[^/]+$/.test(path) ||
     path === "/repositories" ||
+    path === "/runner-specs" ||
     isAccountSettingsRoute(path)
   )
 }

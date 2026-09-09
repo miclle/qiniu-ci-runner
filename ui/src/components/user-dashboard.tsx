@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  Boxes,
   BookOpen,
   CalendarDays,
   Check,
@@ -51,6 +52,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { shouldShowSandboxSetupTask } from "@/user-onboarding"
 import { SandboxesSection, SandboxTemplatesSection } from "@/components/sandbox-catalog-sections"
+import { UserRunnerSpecsSection } from "@/components/user-runner-specs-section"
 import { findSandboxRegionByAPIURL, useSandboxRegions } from "@/components/sandbox-catalog-utils"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -75,8 +77,8 @@ type BuildGroup = {
   pullRequestNumber?: number
 }
 
-type UserPage = "home" | "repositories" | "settings"
-type AccountSettingsTab = "repositories" | "preferences" | "sandbox-templates" | "sandbox-instances"
+type UserPage = "home" | "repositories" | "runner-specs" | "settings"
+type AccountSettingsTab = "repositories" | "preferences" | "sandbox-templates" | "sandbox-instances" | "runner-specs"
 type AccountSettingsRoute = {
   accountLogin?: string
   tab: AccountSettingsTab
@@ -88,8 +90,6 @@ type GitHubLogState =
 
 const jobLogTabsListClassName = "h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent p-0 text-muted-foreground"
 const jobLogTabsTriggerClassName = "h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent"
-
-
 
 export function UserDashboard({
   authSession,
@@ -272,6 +272,14 @@ export function UserDashboard({
             <BookOpen className="h-4 w-4" />
             {t("user.repositories")}
           </a>
+          <a
+            href="/runner-specs"
+            className={navItemClass(page === "runner-specs")}
+            onClick={(event) => goToPage(event, "runner-specs")}
+          >
+            <Boxes className="h-4 w-4" />
+            {t("user.runnerSpecs")}
+          </a>
         </nav>
         <div className="ml-auto flex items-center gap-2">
           <AccountMenu
@@ -304,6 +312,14 @@ export function UserDashboard({
           <BookOpen className="h-4 w-4" />
           {t("user.repositories")}
         </a>
+        <a
+          href="/runner-specs"
+          className={navItemClass(page === "runner-specs")}
+          onClick={(event) => goToPage(event, "runner-specs")}
+        >
+          <Boxes className="h-4 w-4" />
+          {t("user.runnerSpecs")}
+        </a>
       </nav>
 
       {page === "repositories" ? (
@@ -320,6 +336,10 @@ export function UserDashboard({
           onLoadAuthorizedRepositories={onLoadAuthorizedRepositories}
           onSyncGitHubInstallations={onSyncGitHubInstallations}
           onSelectAccount={onNavigateRepositoryAccount}
+        />
+      ) : page === "runner-specs" ? (
+        <PlatformRunnerSpecsPage
+          request={request}
         />
       ) : page === "settings" ? (
         <AccountsPage
@@ -357,6 +377,27 @@ export function UserDashboard({
       )}
     </main>
   )
+}
+
+function PlatformRunnerSpecsPage({
+  request,
+}: {
+  request: (url: string, options?: RequestInit) => Promise<unknown>
+}) {
+  const { t } = useTranslation()
+
+  return <div className="min-h-0 flex-1 overflow-y-auto">
+    <section className="border-b bg-muted/35 px-4 py-4 lg:px-6">
+      <h1 className="text-xl font-semibold">{t("user.platformRunnerSpecsPageTitle")}</h1>
+      <p className="mt-1 text-sm text-muted-foreground">{t("user.platformRunnerSpecsPageDescription")}</p>
+    </section>
+    <section className="mx-auto grid w-full max-w-6xl gap-4 p-4 lg:p-6">
+      <UserRunnerSpecsSection
+        request={request}
+        view="platform"
+      />
+    </section>
+  </div>
 }
 
 function SyncGitHubInstallationsButton({
@@ -558,6 +599,12 @@ function AccountsPage({
                     {t("user.sandboxService")}
                   </TabsTrigger>
                   <TabsTrigger
+                    value="runner-specs"
+                    className="ml-8 h-10 flex-none rounded-none border-0 border-b-2 border-transparent bg-transparent px-0 py-2 shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
+                  >
+                    {t("user.customRunnerSpecs")}
+                  </TabsTrigger>
+                  <TabsTrigger
                     value="sandbox-templates"
                     className="ml-8 h-10 flex-none rounded-none border-0 border-b-2 border-transparent bg-transparent px-0 py-2 shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
                   >
@@ -580,6 +627,19 @@ function AccountsPage({
                     onDelete={() => onDeleteSandboxAPIKey(preferenceInstallationID)}
                   />
                   <CacheS3Card preferences={userPreferences} installationID={preferenceInstallationID} onSave={onSaveCacheConfig} onDelete={onDeleteCacheConfig} />
+                </TabsContent>
+                <TabsContent value="runner-specs">
+                  <UserRunnerSpecsSection
+                    request={request}
+                    installationID={preferenceInstallationID}
+                    scopeName={selected.account_login || currentLogin}
+                    sandboxServiceHref={preferenceInstallationID && selected.account_login
+                      ? `/organizations/${encodeURIComponent(selected.account_login)}/preferences`
+                      : "/account/preferences"}
+                    sandboxTemplatesHref={preferenceInstallationID && selected.account_login
+                      ? `/organizations/${encodeURIComponent(selected.account_login)}/sandbox-templates`
+                      : "/account/sandbox-templates"}
+                  />
                 </TabsContent>
                 <TabsContent value="sandbox-templates">
                   <SandboxTemplatesSection
@@ -612,6 +672,8 @@ function AccountsPage({
                 />
                 <CacheS3Card preferences={userPreferences} onSave={onSaveCacheConfig} onDelete={onDeleteCacheConfig} />
               </div>
+            ) : route.tab === "runner-specs" ? (
+              <div className="space-y-4"><UserRunnerSpecsSection request={request} scopeName={currentLogin} sandboxServiceHref="/account/preferences" sandboxTemplatesHref="/account/sandbox-templates" /></div>
             ) : route.tab === "sandbox-templates" ? (
               <div className="space-y-4">
                 <div>

@@ -27,7 +27,7 @@ The Qiniu CI Runner control plane is open source. Qiniu Sandbox, where workflow 
 - **GitHub App auth** — recommended production path with OAuth sign-in for the built-in web console
 - **Multi-database** — SQLite (default), PostgreSQL, or MySQL for runtime state
 - **Concurrency control** — global `max_concurrent_runners` and per-spec `max_concurrency` with queue-based backpressure
-- **Built-in web UI** — admin console for runner specs, groups, policies, accounts, and diagnostics; ordinary-user console for job groups, logs, and sandbox management
+- **Built-in web UI** — admin console for runner requests, global runner specs, accounts, the platform Sandbox fallback, audit, matching, and diagnostics; ordinary-user console for job groups, logs, repository readiness, a platform Runner Spec catalog, scoped Sandbox management, and account/Organization custom Runner Specs
 - **Config obfuscation** — sensitive values can be hidden from casual config inspection
 - **Retry & recovery** — transient failures are retried with backoff; queued work and active remote runners are recovered after a service restart
 
@@ -51,7 +51,7 @@ GitHub webhook (workflow_job)
 ```
 
 1. GitHub sends a `workflow_job` (queued) webhook to runnerd.
-2. runnerd matches the job labels against runner specs and policies.
+2. runnerd applies the repository allowlist, then matches the job labels against enabled Runner Specs.
 3. runnerd creates a Qiniu Sandbox instance and registers a self-hosted runner inside it.
 4. GitHub Actions dispatches the job to the runner; the job executes in the sandbox.
 5. When the job completes (or times out), runnerd removes the runner registration and stops the sandbox.
@@ -260,8 +260,8 @@ managed spec in Admin without changing its reconciled catalog identity.
 
 Internal Runner Groups and Repository Policies have been removed. Their legacy
 management APIs now return `404 Not Found`, while old Admin bookmarks redirect
-to Runner Specs. Existing legacy database tables and rows are left untouched so
-the previous application image can still be restored without a schema rollback.
+to Runner Specs. They are not part of supported configuration, matching, or
+recovery behavior; any legacy database artifacts are ignored by current code.
 
 Managed specs store a stable public template name. Immediately before runner
 creation, runnerd resolves that name against the repository owner's scoped
@@ -283,6 +283,28 @@ documents those large defaults and their resource contract. The credential-bound
 `GET /user/sandbox/templates?region=<id>` catalog remains a separate scoped
 resource.
 
+Ordinary users browse the read-only platform Runner Spec catalog at
+`/runner-specs`. That page has no account/Organization selector or user-editable
+availability and concurrency policy. Users manage only owned custom Specs under
+`/account/runner-specs` or
+`/organizations/{login}/runner-specs`. The authenticated `/user/runner-specs`
+API combines runnerd-managed specs, read-only platform custom specs, and custom
+specs owned by that account or manageable Organization. Platform availability
+and concurrency remain global Admin policy. Scoped custom specs use exact
+normalized workflow labels, may override a global spec with the same label set,
+and validate new or changed template IDs only with that scope's explicit or
+legally inherited Sandbox credentials. `runner_group` is available only for
+Organization custom specs. The response exposes a template ID only for the
+caller's own scoped custom spec, never for a platform custom spec. A queued
+request reloads and validates the same persisted source and scope immediately
+before startup, so a spec disabled while waiting cannot launch a runner.
+
+An Admin-created custom Runner Spec is a platform-shared spec: it is available
+read-only in every manageable account and Organization catalog. Admin creation
+therefore uses explicit platform-wide copy and validates the template only with
+the Admin Sandbox service. Use a scoped custom spec instead when an environment
+must remain private to one account or Organization.
+
 For custom specs, `template_id` should point to a Qiniu Sandbox template containing the GitHub runner image. Template access is checked against the repository owner's effective Sandbox service shown under **Repositories → Runner readiness** at sandbox creation time.
 
 ## Admin Console
@@ -293,7 +315,14 @@ The built-in web UI provides:
 | --- | --- |
 | `/admin/` | Dashboard with diagnostics, metrics, and recent failures |
 | `/admin/accounts` | Account management — list, search, and change roles |
+| `/admin/runner_requests` | Runner request history, retry/stop controls, and persisted logs |
+| `/admin/runner_specs` | Managed and custom global Runner Spec administration |
+| `/runner-specs` | Read-only platform Runner Spec catalog and workflow labels |
+| `/account/runner-specs` and `/organizations/{login}/runner-specs` | Custom Runner Specs owned by an account or manageable Organization |
 | `/admin/sandbox_service` | Sandbox service configuration |
+| `/admin/match` | Label-match preview against the current enabled Runner Specs |
+| `/admin/audit` | Audit event history |
+| `/admin/diagnostics` | Redacted runtime summary, recent failures, pprof discovery, and expvar |
 
 `/` is always the public Qiniu CI Runner product landing page. `/docs` and its fixed guide routes are public, same-origin, and available in English and Simplified Chinese. The ordinary-user Jobs homepage is `/jobs`; other protected routes include `/repositories`, PR job groups (`/github/pulls/{owner}/{repo}/{number}/jobs`), and account settings (`/account/preferences`, `/account/sandbox-templates`, `/account/sandbox-instances`), with matching `/organizations/{login}/...` routes. Opening a protected route without a session shows a focused GitHub sign-in page and returns to the original URL after OAuth.
 

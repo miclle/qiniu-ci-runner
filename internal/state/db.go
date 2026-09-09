@@ -179,6 +179,7 @@ func (s *DBStore) migrate(db *gorm.DB) error {
 		&accountPreferenceRecord{},
 		&sandboxServiceDefaultRecord{},
 		&sandboxServiceDefaultAudienceRecord{},
+		&scopedRunnerProfileRecord{},
 	)
 	if existingSQLiteRunnerRequests {
 		if err := migrateSQLiteRunnerRequestSchema(db); err != nil {
