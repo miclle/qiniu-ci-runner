@@ -1,11 +1,11 @@
-import { type FormEvent } from "react"
-import { Copy, ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react"
+import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from "react"
+import { Plus, RefreshCw, Search, Trash2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { formatTime, runnerDisplayStatus, runnerStatusLabel } from "@/admin-format"
-import { activeStatuses, logNames, type RunnerDisplayStatus, type RunnerState } from "@/admin-types"
-import { Detail, StatusBadge } from "@/components/admin-shared"
-import type { AppTFunction } from "@/i18n"
+import { activeStatuses, type RunnerDisplayStatus, type RunnerState } from "@/admin-types"
+import { StatusBadge } from "@/components/admin-shared"
+import { stickyTableHeaderOffset } from "@/components/runner-request-table"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -38,20 +38,25 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 
-type LogName = (typeof logNames)[number]
+function verticalScrollContainer(element: HTMLElement) {
+  let ancestor = element.parentElement
+  while (ancestor) {
+    const overflowY = window.getComputedStyle(ancestor).overflowY
+    if (/auto|scroll/.test(overflowY) && ancestor.scrollHeight > ancestor.clientHeight) {
+      return ancestor
+    }
+    ancestor = ancestor.parentElement
+  }
+  return null
+}
 
 export function RunnerRequestsSection({
   hasAccess,
   loading,
   runners,
   filteredRunners,
-  selected,
-  selectedID,
-  selectedLog,
-  logText,
   createID,
   createRepository,
   createRunnerSpec,
@@ -73,21 +78,15 @@ export function RunnerRequestsSection({
   onStatusFilterChange,
   onRepositoryFilterChange,
   onRunnerSpecFilterChange,
-  onSelectRunner,
+  onLookupRunnerRequest,
+  onOpenRunnerRequest,
   onRetryRunner,
   onStopRunner,
-  onCopySelectedID,
-  onLoadLog,
-  onSelectedLogChange,
 }: {
   hasAccess: boolean
   loading: boolean
   runners: RunnerState[]
   filteredRunners: RunnerState[]
-  selected?: RunnerState
-  selectedID: string
-  selectedLog: LogName
-  logText: string
   createID: string
   createRepository: string
   createRunnerSpec: string
@@ -109,16 +108,60 @@ export function RunnerRequestsSection({
   onStatusFilterChange: (value: RunnerDisplayStatus | "all") => void
   onRepositoryFilterChange: (value: string) => void
   onRunnerSpecFilterChange: (value: string) => void
-  onSelectRunner: (id: string) => void
+  onLookupRunnerRequest: (identifier: string) => void
+  onOpenRunnerRequest: (identifier: string) => void
   onRetryRunner: (id: string) => void
   onStopRunner: (id: string) => void
-  onCopySelectedID: () => void
-  onLoadLog: (id: string, name: LogName) => void
-  onSelectedLogChange: (name: LogName) => void
 }) {
   const { t, i18n } = useTranslation()
+  const [requestIdentifier, setRequestIdentifier] = useState("")
+  const tableHeaderRef = useRef<HTMLTableSectionElement>(null)
+
+  useEffect(() => {
+    const tableHeader = tableHeaderRef.current
+    const table = tableHeader?.closest("table")
+    if (!tableHeader || !table) return
+
+    const scrollContainer = verticalScrollContainer(table)
+    if (!scrollContainer) return
+
+    let animationFrame = 0
+    const syncTableHeader = () => {
+      window.cancelAnimationFrame(animationFrame)
+      animationFrame = window.requestAnimationFrame(() => {
+        const scrollportTop = scrollContainer.getBoundingClientRect().top
+        const tableBounds = table.getBoundingClientRect()
+        const headerHeight = tableHeader.getBoundingClientRect().height
+        const offset = stickyTableHeaderOffset({
+          scrollportTop,
+          tableTop: tableBounds.top,
+          tableHeight: tableBounds.height,
+          headerHeight,
+        })
+        tableHeader.style.transform = offset > 0 ? `translateY(${offset}px)` : ""
+      })
+    }
+
+    syncTableHeader()
+    scrollContainer.addEventListener("scroll", syncTableHeader, { passive: true })
+    window.addEventListener("resize", syncTableHeader)
+    return () => {
+      window.cancelAnimationFrame(animationFrame)
+      scrollContainer.removeEventListener("scroll", syncTableHeader)
+      window.removeEventListener("resize", syncTableHeader)
+      tableHeader.style.transform = ""
+    }
+  }, [filteredRunners.length])
+
+  const openRunnerRequest = (event: MouseEvent<HTMLAnchorElement>, runner: RunnerState) => {
+    event.stopPropagation()
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    onOpenRunnerRequest(runner.id)
+  }
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(520px,640px)]">
+    <div>
       <Card className="min-w-0 gap-0 py-0">
         <CardHeader className="border-b px-5 py-4">
           <div className="flex flex-col gap-3">
@@ -194,9 +237,12 @@ export function RunnerRequestsSection({
                 </form>
               </DialogContent>
             </Dialog>
-            <div className="grid gap-2 md:grid-cols-[minmax(160px,220px)_minmax(180px,1fr)_minmax(180px,1fr)]">
+            <div
+              data-testid="runner-request-toolbar"
+              className="grid gap-2 md:grid-cols-3 xl:grid-cols-[minmax(140px,180px)_minmax(180px,240px)_minmax(180px,240px)_minmax(360px,1fr)]"
+            >
               <Select value={runnerStatusFilter} onValueChange={(value) => onStatusFilterChange(value as RunnerDisplayStatus | "all")}>
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder={t("common.status")} />
                 </SelectTrigger>
                 <SelectContent>
@@ -209,7 +255,7 @@ export function RunnerRequestsSection({
                 </SelectContent>
               </Select>
               <Select value={runnerRepositoryFilter} onValueChange={onRepositoryFilterChange}>
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder={t("common.repository")} />
                 </SelectTrigger>
                 <SelectContent>
@@ -222,7 +268,7 @@ export function RunnerRequestsSection({
                 </SelectContent>
               </Select>
               <Select value={runnerSpecFilter} onValueChange={onRunnerSpecFilterChange}>
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder={t("common.runnerSpec")} />
                 </SelectTrigger>
                 <SelectContent>
@@ -234,30 +280,52 @@ export function RunnerRequestsSection({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="text-xs text-muted-foreground">
-              {t("admin.requestsShown", { filtered: filteredRunners.length, total: runners.length })}
+              <form
+                className="flex min-w-0 gap-2 md:col-span-3 xl:col-span-1"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  const identifier = requestIdentifier.trim()
+                  if (identifier) onLookupRunnerRequest(identifier)
+                }}
+              >
+                <label className="sr-only" htmlFor="runner-request-lookup">
+                  {t("admin.runnerRequestID")}
+                </label>
+                <Input
+                  id="runner-request-lookup"
+                  value={requestIdentifier}
+                  onChange={(event) => setRequestIdentifier(event.target.value)}
+                  placeholder={t("admin.runnerRequestPlaceholder")}
+                  autoComplete="off"
+                />
+                <Button type="submit" variant="outline" disabled={!requestIdentifier.trim()}>
+                  <Search />
+                  {t("admin.openRunnerRequest")}
+                </Button>
+              </form>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="max-h-[calc(100vh-18rem)] overflow-auto p-0">
-          <Table>
-            <TableHeader className="sticky top-0 z-10 bg-background">
+        <CardContent className="p-0">
+          <Table className="min-w-max">
+            <TableHeader ref={tableHeaderRef} className="relative z-10 bg-background will-change-transform">
               <TableRow>
-                <TableHead>{t("common.status")}</TableHead>
+                <TableHead className="min-w-24">{t("common.status")}</TableHead>
                 <TableHead>{t("common.repository")}</TableHead>
                 <TableHead>{t("common.runnerSpec")}</TableHead>
-                <TableHead>{t("common.runner")}</TableHead>
+                <TableHead>{t("user.requestedLabels")}</TableHead>
+                <TableHead className="min-w-44">{t("common.runner")}</TableHead>
                 <TableHead>{t("common.sandbox")}</TableHead>
-                <TableHead>{t("common.github")}</TableHead>
-                <TableHead>{t("common.updated")}</TableHead>
-                <TableHead className="w-36" />
+                <TableHead className="min-w-32">{t("admin.githubJob")}</TableHead>
+                <TableHead className="min-w-36">{t("common.created")}</TableHead>
+                <TableHead className="min-w-36">{t("common.updated")}</TableHead>
+                <TableHead className="min-w-24" />
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredRunners.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="h-24 text-center text-muted-foreground">
                     {t("admin.noRequestsFound")}
                   </TableCell>
                 </TableRow>
@@ -265,43 +333,58 @@ export function RunnerRequestsSection({
                 filteredRunners.map((runner) => (
                   <TableRow
                     key={runner.id}
-                    data-state={runner.id === selectedID ? "selected" : undefined}
                     className="cursor-pointer"
-                    onClick={() => onSelectRunner(runner.id)}
+                    onClick={() => onOpenRunnerRequest(runner.id)}
                   >
                     <TableCell>
                       <StatusBadge status={runnerDisplayStatus(runner)} />
                     </TableCell>
                     <TableCell>
-                      <div className="max-w-[220px] truncate">{runner.repository_full_name || "-"}</div>
-                    </TableCell>
-                    <TableCell>{runner.runner_spec_name || "-"}</TableCell>
-                    <TableCell className="max-w-[260px]">
-                      <div className="truncate font-medium">{runner.runner_name || runner.id}</div>
-                      <div className="truncate text-xs text-muted-foreground">{runner.id}</div>
+                      <div>{runner.repository_full_name || "-"}</div>
                     </TableCell>
                     <TableCell>
-                      <div className="max-w-[180px] truncate">{runner.sandbox_id || "-"}</div>
+                      {runner.runner_spec_name || "-"}
+                    </TableCell>
+                    <TableCell>
+                      <div
+                        className="font-mono text-xs text-muted-foreground"
+                      >
+                        {runner.requested_labels?.join(", ") || "-"}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <a
+                        className="font-medium text-primary underline-offset-4 hover:underline"
+                        href={`/admin/runner_requests/${encodeURIComponent(runner.id)}`}
+                        onClick={(event) => openRunnerRequest(event, runner)}
+                      >
+                        {runner.runner_name || runner.id}
+                      </a>
+                    </TableCell>
+                    <TableCell>
+                      <div>{runner.sandbox_id || "-"}</div>
                     </TableCell>
                     <TableCell>
                       {runner.github_job_url ? (
-                        <Button
-                          asChild
-                          type="button"
-                          variant="outline"
-                          size="sm"
+                        <a
+                          className="font-mono text-primary underline-offset-4 hover:underline"
+                          href={runner.github_job_url}
+                          target="_blank"
+                          rel="noreferrer"
                           onClick={(event) => event.stopPropagation()}
                         >
-                          <a href={runner.github_job_url} target="_blank" rel="noreferrer">
-                            <ExternalLink />
-                            {t("common.job")}
-                          </a>
-                        </Button>
+                          {runner.workflow_job_id || runner.assigned_job_id || t("common.job")}
+                        </a>
                       ) : (
                         <span className="text-muted-foreground">-</span>
                       )}
                     </TableCell>
-                    <TableCell>{formatTime(runner.updated_at, i18n.resolvedLanguage)}</TableCell>
+                    <TableCell>
+                      {formatTime(runner.created_at, i18n.resolvedLanguage)}
+                    </TableCell>
+                    <TableCell>
+                      {formatTime(runner.updated_at, i18n.resolvedLanguage)}
+                    </TableCell>
                     <TableCell>
                       <div className="flex gap-2">
                         {runnerDisplayStatus(runner) === "failed" ? (
@@ -339,132 +422,11 @@ export function RunnerRequestsSection({
               )}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
-
-      <Card className="min-w-0 gap-0 py-0">
-        <CardHeader className="border-b px-5 py-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle>{t("admin.requestDetails")}</CardTitle>
-              <CardDescription>{selected?.runner_name || t("admin.selectRequest")}</CardDescription>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={onCopySelectedID}
-              disabled={!selected}
-              title={t("admin.copyRunnerID")}
-            >
-              <Copy />
-            </Button>
+          <div className="border-t px-3 py-2 text-xs text-muted-foreground">
+            {t("admin.requestsShown", { filtered: filteredRunners.length, total: runners.length })}
           </div>
-        </CardHeader>
-        {selected ? (
-          <CardContent className="grid gap-5 p-5">
-            <div className="space-y-2">
-              <Detail label="ID" value={selected.id} />
-              <Detail label={t("common.status")} value={runnerStatusLabel(runnerDisplayStatus(selected))} />
-              <Detail label={t("common.repository")} value={selected.repository_full_name || "-"} />
-              <Detail label={t("common.runnerSpec")} value={selected.runner_spec_name || "-"} />
-              <Detail label={t("common.sandbox")} value={selected.sandbox_id || "-"} />
-              <Detail label={t("admin.sandboxConfig")} value={sandboxConfigSourceDisplay(selected.sandbox_config_source, t)} />
-              <Detail label="PID" value={selected.process_pid || "-"} />
-              <Detail
-                label={t("user.jobName")}
-                value={selected.assigned_job_name || selected.assigned_job_id || "-"}
-              />
-              <Detail
-                label={t("admin.githubJob")}
-                value={
-                  selected.github_job_url ? (
-                    <a
-                      className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
-                      href={selected.github_job_url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {t("admin.openJob")}
-                      <ExternalLink className="size-3.5" />
-                    </a>
-                  ) : (
-                    "-"
-                  )
-                }
-              />
-              <Detail label={t("user.workflowRun")} value={selected.workflow_run_id || "-"} />
-              <Detail label={t("user.workflow")} value={selected.workflow_name || "-"} />
-              <Detail label={t("user.workflowAttempt")} value={selected.workflow_run_attempt || "-"} />
-              <Detail label={t("user.pullRequest")} value={selected.pull_request_number || "-"} />
-              <Detail label={t("user.branch")} value={selected.head_branch || "-"} />
-              <Detail label={t("user.commit")} value={selected.head_sha || "-"} />
-              <Detail label={t("common.created")} value={formatTime(selected.created_at, i18n.resolvedLanguage)} />
-              <Detail label={t("common.updated")} value={formatTime(selected.updated_at, i18n.resolvedLanguage)} />
-              <Detail label={t("user.finished")} value={formatTime(selected.completed_at, i18n.resolvedLanguage)} />
-              <Detail label={t("user.retryCount")} value={selected.retry_count || "-"} />
-              <Detail label={t("user.nextRetry")} value={formatTime(selected.next_retry_at, i18n.resolvedLanguage)} />
-              <Detail label={t("user.requestedLabels")} value={selected.requested_labels?.join(", ") || "-"} />
-              <Detail label={t("user.failure")} value={selected.failure_reason || "-"} />
-              <Detail label={t("admin.lastErrorCode")} value={selected.last_error_code || "-"} />
-              <Detail label={t("admin.error")} value={selected.error || "-"} />
-            </div>
-            {runnerDisplayStatus(selected) === "failed" ? (
-              <Button type="button" variant="outline" onClick={() => onRetryRunner(selected.id)}>
-                <RefreshCw />
-                {t("admin.retryRequest")}
-              </Button>
-            ) : null}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium">{t("common.logs")}</div>
-                  <div className="text-xs text-muted-foreground">{t("admin.logsDescription")}</div>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onLoadLog(selected.id, selectedLog)}
-                >
-                  <RefreshCw />
-                  {t("common.refresh")}
-                </Button>
-              </div>
-              <Tabs
-                value={selectedLog}
-                onValueChange={(value) => onSelectedLogChange(value as LogName)}
-              >
-                <TabsList>
-                  {logNames.map((name) => (
-                    <TabsTrigger key={name} value={name}>
-                      {name.replace(".log", "")}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-              <pre className="max-h-[52vh] min-h-80 overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-                {logText}
-              </pre>
-            </div>
-          </CardContent>
-        ) : (
-          <CardContent className="p-8 text-sm text-muted-foreground">
-            {t("admin.noRequestSelected")}
-          </CardContent>
-        )}
+        </CardContent>
       </Card>
     </div>
   )
-}
-
-function sandboxConfigSourceDisplay(source: string | undefined, t: AppTFunction) {
-  switch (source) {
-    case "installation": return t("admin.configInstallation")
-    case "account": return t("admin.configAccount")
-    case "inherited_account": return t("admin.configInheritedAccount")
-    case "admin_default": return t("admin.configAdminDefault")
-    case "request_snapshot": return t("admin.configRequestSnapshot")
-    default: return "-"
-  }
 }

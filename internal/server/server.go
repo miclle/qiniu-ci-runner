@@ -55,6 +55,10 @@ type Server struct {
 	workflowRunCache map[string]cachedWorkflowRun
 	workflowRunGroup singleflight.Group
 
+	diagnosticJobMu    sync.Mutex
+	diagnosticJobCache map[string]cachedDiagnosticJob
+	diagnosticJobGroup singleflight.Group
+
 	userRepositoryAccessMu    sync.Mutex
 	userRepositoryAccessCache map[int64]cachedUserRepositoryAccess
 	userRepositoryAccessEpoch map[int64]uint64
@@ -69,6 +73,11 @@ type cachedPullTitle struct {
 
 type cachedWorkflowRun struct {
 	run       github.WorkflowRun
+	expiresAt time.Time
+}
+
+type cachedDiagnosticJob struct {
+	job       github.WorkflowJob
 	expiresAt time.Time
 }
 
@@ -167,6 +176,7 @@ func New(cfg config.Config, store state.Store, gh *github.Client, sandbox sandbo
 		startedAt:                 time.Now().UTC(),
 		pullTitleCache:            map[string]cachedPullTitle{},
 		workflowRunCache:          map[string]cachedWorkflowRun{},
+		diagnosticJobCache:        map[string]cachedDiagnosticJob{},
 		userRepositoryAccessCache: map[int64]cachedUserRepositoryAccess{},
 		userRepositoryAccessEpoch: map[int64]uint64{},
 	}
@@ -423,7 +433,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /webhooks/github", s.handleGitHubWebhook)
 	s.mux.HandleFunc("POST /runner_requests", s.handleCreateRunner)
 	s.mux.HandleFunc("GET /runner_requests", s.handleListRunners)
+	s.mux.HandleFunc("GET /runner_requests_lookup/{identifier}", s.handleResolveRunnerRequest)
 	s.mux.HandleFunc("GET /runner_requests/{id}", s.handleGetRunner)
+	s.mux.HandleFunc("GET /runner_requests/{id}/diagnostics", s.handleDiagnosticsRunnerRequest)
+	s.mux.HandleFunc("GET /runner_requests/{id}/events", s.handleRunnerRequestEvents)
 	s.mux.HandleFunc("POST /runner_requests/{id}/retry", s.handleRetryRunner)
 	s.mux.HandleFunc("GET /runner_requests/{id}/logs/{name}", s.handleGetRunnerLog)
 	s.mux.HandleFunc("DELETE /runner_requests/{id}", s.handleDeleteRunner)
@@ -436,6 +449,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /runner_specs/{name}", s.handleDeleteProfile)
 	s.mux.HandleFunc("GET /diagnostics/pprof", s.handleDiagnosticsPprof)
 	s.mux.HandleFunc("GET /diagnostics/vars", s.handleDiagnosticsVars)
+	s.mux.HandleFunc("GET /diagnostics/runner-requests/{id}", s.handleLegacyDiagnosticsRunnerRequest)
 }
 
 func (s *Server) handleAdminRedirect(w http.ResponseWriter, r *http.Request) {

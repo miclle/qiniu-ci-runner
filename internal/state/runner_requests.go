@@ -167,7 +167,7 @@ func (s *DBStore) createRequest(req RunnerRequest, payload []byte, status, failu
 	}
 	if result.RowsAffected == 0 {
 		st, err := s.ReadState(req.ID)
-		if errors.Is(err, gorm.ErrRecordNotFound) && req.JobID != 0 {
+		if errors.Is(err, ErrNotFound) && req.JobID != 0 {
 			var conflicting runnerRequestRecord
 			conflictErr := db.First(&conflicting, "workflow_job_id = ?", req.JobID).Error
 			if conflictErr == nil {
@@ -193,6 +193,9 @@ func (s *DBStore) ReadRequest(id string) (RunnerRequest, error) {
 func (s *DBStore) ReadState(id string) (RunnerState, error) {
 	record, err := s.readRecord(id)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return RunnerState{}, ErrNotFound
+		}
 		return RunnerState{}, err
 	}
 	return recordToState(record), nil
@@ -267,33 +270,6 @@ func (s *DBStore) ListStates() ([]RunnerState, error) {
 	if err := db.
 		Select(runnerRequestListSelectColumns).
 		Order("queued_at DESC").
-		Find(&records).Error; err != nil {
-		return nil, err
-	}
-	states := make([]RunnerState, 0, len(records))
-	for _, record := range records {
-		states = append(states, recordToState(record))
-	}
-	return states, nil
-}
-
-func (s *DBStore) ListRecentFailedStates(limit int) ([]RunnerState, error) {
-	db, err := s.dbOrEnsure()
-	if err != nil {
-		return nil, err
-	}
-	if limit <= 0 {
-		limit = 5
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	var records []runnerRequestRecord
-	if err := db.
-		Select(runnerRequestListSelectColumns).
-		Where("status = ?", StatusFailed).
-		Order("queued_at DESC, id ASC").
-		Limit(limit).
 		Find(&records).Error; err != nil {
 		return nil, err
 	}
@@ -809,7 +785,7 @@ func (s *DBStore) AppendLog(id, name string, data []byte) {
 		return
 	}
 	if err := db.Create(&runnerEventRecord{
-		RequestID: id,
+		RequestID: sanitizeID(id),
 		EventType: eventType,
 		Message:   string(data),
 		CreatedAt: time.Now().UTC(),
@@ -845,6 +821,78 @@ func (s *DBStore) ReadLog(id, name string, maxBytes int64) ([]byte, error) {
 		data = data[len(data)-int(maxBytes):]
 	}
 	return append([]byte(nil), data...), nil
+}
+
+func (s *DBStore) ListRunnerEvents(id string, beforeID int64, limit int, eventTypes ...string) ([]RunnerEvent, bool, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return nil, false, err
+	}
+	limit = min(max(limit, 1), 500)
+	var records []runnerEventRecord
+	query := db.Where("request_id = ?", sanitizeID(id))
+	if beforeID > 0 {
+		query = query.Where("id < ?", beforeID)
+	}
+	if len(eventTypes) > 0 {
+		query = query.Where("event_type IN ?", eventTypes)
+	}
+	if err := query.
+		Order("id DESC").
+		Limit(limit + 1).
+		Find(&records).Error; err != nil {
+		return nil, false, err
+	}
+	truncated := len(records) > limit
+	if truncated {
+		records = records[:limit]
+	}
+	events := make([]RunnerEvent, len(records))
+	for i := range records {
+		record := records[len(records)-1-i]
+		events[i] = RunnerEvent{
+			ID:        record.ID,
+			EventType: record.EventType,
+			Stage:     record.Stage,
+			Message:   record.Message,
+			CreatedAt: record.CreatedAt,
+		}
+	}
+	return events, truncated, nil
+}
+
+func (s *DBStore) ListRunnerEventsAfter(id string, afterID int64, limit int, eventTypes ...string) ([]RunnerEvent, bool, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return nil, false, err
+	}
+	limit = min(max(limit, 1), 500)
+	query := db.Where("request_id = ? AND id > ?", sanitizeID(id), afterID)
+	if len(eventTypes) > 0 {
+		query = query.Where("event_type IN ?", eventTypes)
+	}
+	var records []runnerEventRecord
+	if err := query.
+		Order("id ASC").
+		Limit(limit + 1).
+		Find(&records).Error; err != nil {
+		return nil, false, err
+	}
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+	}
+	events := make([]RunnerEvent, len(records))
+	for i, record := range records {
+		events[i] = RunnerEvent{
+			ID:        record.ID,
+			EventType: record.EventType,
+			Stage:     record.Stage,
+			Message:   record.Message,
+			CreatedAt: record.CreatedAt,
+		}
+	}
+	return events, hasMore, nil
 }
 
 func (s *DBStore) readRecord(id string) (runnerRequestRecord, error) {

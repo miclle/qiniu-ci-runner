@@ -100,6 +100,17 @@ type RunnerState struct {
 	Version                int64     `json:"version"`
 }
 
+// RunnerEvent is a bounded, read-only lifecycle or process log event attached
+// to a runner request. PayloadJSON stays private because diagnostics only need
+// the operator-safe event metadata and message.
+type RunnerEvent struct {
+	ID        int64     `json:"id"`
+	EventType string    `json:"event_type"`
+	Stage     string    `json:"stage,omitempty"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type RunnerProfile struct {
 	Name                string    `json:"name"`
 	Labels              []string  `json:"labels"`
@@ -318,7 +329,6 @@ type RunnerRequestStore interface {
 	ReadState(id string) (RunnerState, error)
 	WriteState(st RunnerState) error
 	ListStates() ([]RunnerState, error)
-	ListRecentFailedStates(limit int) ([]RunnerState, error)
 	ListActiveStates() ([]RunnerState, error)
 	ListMismatchedCompletedStates(limit int) ([]RunnerState, error)
 	ListFailedWorkflowJobStates(limit int) ([]RunnerState, error)
@@ -337,6 +347,8 @@ type RunnerRequestStore interface {
 	RetryRequest(id string, now time.Time) (RunnerState, error)
 	AppendLog(id, name string, data []byte)
 	ReadLog(id, name string, maxBytes int64) ([]byte, error)
+	ListRunnerEvents(id string, beforeID int64, limit int, eventTypes ...string) ([]RunnerEvent, bool, error)
+	ListRunnerEventsAfter(id string, afterID int64, limit int, eventTypes ...string) ([]RunnerEvent, bool, error)
 }
 
 type RunnerCatalogStore interface {

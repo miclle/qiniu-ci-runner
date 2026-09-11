@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"expvar"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -172,6 +175,83 @@ func TestIsFailureConclusionReturnsFalseForOther(t *testing.T) {
 		if isFailureConclusion(c) {
 			t.Errorf("isFailureConclusion(%q) should be false", c)
 		}
+	}
+}
+
+func TestDiagnoseRunnerRequestReportsPersistedFailure(t *testing.T) {
+	findings := diagnoseRunnerRequest(state.RunnerState{
+		Status:        state.StatusFailed,
+		FailureStage:  "cleanup",
+		FailureReason: "github_runner_cleanup_failed",
+	}, nil, false, diagnosticGitHubJob{LookupStatus: "ok", Conclusion: "success"})
+
+	if len(findings) != 1 {
+		t.Fatalf("diagnoseRunnerRequest returned %d findings, want 1: %#v", len(findings), findings)
+	}
+	if got := findings[0]; got.Code != "runner_request_failed" || got.Severity != "critical" || !strings.Contains(got.Detail, "cleanup") || !strings.Contains(got.Detail, "github_runner_cleanup_failed") {
+		t.Fatalf("persisted failure finding = %#v, want critical runner_request_failed with stage and reason", got)
+	}
+}
+
+func TestDiagnoseRunnerRequestIncludesFallbackErrorWithFailureStage(t *testing.T) {
+	findings := diagnoseRunnerRequest(state.RunnerState{
+		Status:       state.StatusFailed,
+		FailureStage: "create",
+		Error:        "sandbox request timed out",
+	}, nil, false, diagnosticGitHubJob{LookupStatus: "not_applicable"})
+
+	if len(findings) != 1 || !strings.Contains(findings[0].Detail, "create") || !strings.Contains(findings[0].Detail, "sandbox request timed out") {
+		t.Fatalf("persisted failure finding = %#v, want stage and fallback error", findings)
+	}
+}
+
+func TestDiagnoseRunnerRequestReportsUnmatchedAdmission(t *testing.T) {
+	findings := diagnoseRunnerRequest(state.RunnerState{
+		Status:        state.StatusFailed,
+		FailureStage:  "admission",
+		FailureReason: "profile_labels_not_matched",
+	}, nil, false, diagnosticGitHubJob{LookupStatus: "not_applicable"})
+
+	if len(findings) != 1 {
+		t.Fatalf("diagnoseRunnerRequest returned %d findings, want 1: %#v", len(findings), findings)
+	}
+	if got := findings[0]; got.Code != "runner_request_unmatched" || got.Severity != "warning" {
+		t.Fatalf("unmatched admission finding = %#v, want warning runner_request_unmatched", got)
+	}
+}
+
+func TestDiagnoseRunnerRequestUsesPersistedAssignmentWhenAcceptanceEventIsOutsideTail(t *testing.T) {
+	findings := diagnoseRunnerRequest(state.RunnerState{
+		Status:        state.StatusCompleted,
+		AssignedJobID: 101445685709,
+	}, nil, true, diagnosticGitHubJob{LookupStatus: "ok", Conclusion: "failure"})
+
+	for _, finding := range findings {
+		if finding.Code == "runner_termination_unobserved" && finding.Severity == "critical" {
+			return
+		}
+	}
+	t.Fatalf("findings = %#v, want critical runner_termination_unobserved", findings)
+}
+
+func TestDiagnoseRunnerRequestIgnoresLifecycleMarkersInProcessOutput(t *testing.T) {
+	findings := diagnoseRunnerRequest(state.RunnerState{
+		Status:        state.StatusCompleted,
+		AssignedJobID: 101445685709,
+	}, []state.RunnerEvent{
+		{EventType: "stdout_log", Message: "runner process exited\n"},
+		{EventType: "stderr_log", Message: "sandbox already gone\n"},
+	}, false, diagnosticGitHubJob{LookupStatus: "ok", Conclusion: "failure"})
+
+	gotCodes := make(map[string]bool, len(findings))
+	for _, finding := range findings {
+		gotCodes[finding.Code] = true
+	}
+	if !gotCodes["runner_termination_unobserved"] {
+		t.Fatalf("findings = %#v, want process output to leave runner termination unobserved", findings)
+	}
+	if gotCodes["sandbox_gone_before_cleanup"] {
+		t.Fatalf("findings = %#v, want process output ignored for Sandbox lifecycle evidence", findings)
 	}
 }
 
@@ -557,6 +637,41 @@ func TestGetRunnerReturns404ForMissing(t *testing.T) {
 	}
 }
 
+func TestResolveRunnerRequestPrefersRunnerNameBeforeInternalID(t *testing.T) {
+	store := state.New(t.TempDir())
+	for _, request := range []state.RunnerRequest{
+		{ID: "manual", Source: "manual_api", Labels: []string{"self-hosted"}, RunnerName: "e2b-manual"},
+		{ID: "e2b-manual", Source: "manual_api", Labels: []string{"self-hosted"}, RunnerName: "e2b-e2b-manual"},
+		{ID: "resolve", Source: "manual_api", Labels: []string{"self-hosted"}, RunnerName: "e2b-resolve"},
+	} {
+		if _, _, err := store.CreateRequest(request, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/runner_requests_lookup/e2b-manual", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET runner request resolver: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body state.RunnerState
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ID != "manual" || body.RunnerName != "e2b-manual" {
+		t.Fatalf("state = %#v, want exact Runner Name to take precedence", body)
+	}
+
+	req = adminRequest(http.MethodGet, "/runner_requests/resolve", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET request whose ID is resolve: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // ---------- handleListProfiles ----------
 
 func TestListProfilesEndpointReturnsProfiles(t *testing.T) {
@@ -579,23 +694,28 @@ func TestListProfilesEndpointReturnsProfiles(t *testing.T) {
 	}
 }
 
-type diagnosticsBoundedStore struct {
+type readStateErrorStore struct {
 	state.Store
-	listStatesCalls    int
-	recentFailedCalls  int
-	recentFailedLimit  int
-	recentFailedStates []state.RunnerState
+	err error
+	ids []string
 }
 
-func (s *diagnosticsBoundedStore) ListStates() ([]state.RunnerState, error) {
-	s.listStatesCalls++
-	return nil, errors.New("diagnostics must not scan all runner states")
+func (s *readStateErrorStore) ReadState(id string) (state.RunnerState, error) {
+	s.ids = append(s.ids, id)
+	return state.RunnerState{}, s.err
 }
 
-func (s *diagnosticsBoundedStore) ListRecentFailedStates(limit int) ([]state.RunnerState, error) {
-	s.recentFailedCalls++
-	s.recentFailedLimit = limit
-	return append([]state.RunnerState(nil), s.recentFailedStates...), nil
+type runnerEventsErrorStore struct {
+	state.Store
+	err error
+}
+
+func (s *runnerEventsErrorStore) ListRunnerEvents(string, int64, int, ...string) ([]state.RunnerEvent, bool, error) {
+	return nil, false, s.err
+}
+
+func (s *runnerEventsErrorStore) ListRunnerEventsAfter(string, int64, int, ...string) ([]state.RunnerEvent, bool, error) {
+	return nil, false, s.err
 }
 
 func TestDiagnosticsPprofEndpointRequiresAuth(t *testing.T) {
@@ -630,38 +750,489 @@ func TestDiagnosticsPprofEndpointReturnsJSON(t *testing.T) {
 	if _, ok := body["github"]; !ok {
 		t.Error("GET /diagnostics/pprof: missing 'github' field in response")
 	}
+	if _, ok := body["recent_failures"]; ok {
+		t.Error("GET /diagnostics/pprof: returned request history outside the runtime diagnostics scope")
+	}
 }
 
-func TestDiagnosticsPprofEndpointUsesBoundedRecentFailures(t *testing.T) {
-	store := &diagnosticsBoundedStore{
-		Store: state.New(t.TempDir()),
-		recentFailedStates: []state.RunnerState{
-			{ID: "failed-latest", Status: state.StatusFailed},
-			{ID: "failed-previous", Status: state.StatusFailed},
-		},
-	}
+func TestDiagnosticsRunnerRequestEndpointRequiresAuth(t *testing.T) {
+	store := state.New(t.TempDir())
 	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
 
-	req := adminRequest(http.MethodGet, "/diagnostics/pprof", nil)
+	req := httptest.NewRequest(http.MethodGet, "/diagnostics/runner-requests/101", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET runner request diagnostics without auth: expected 401, got %d", rec.Code)
+	}
+}
+
+func TestDiagnosticsRunnerRequestReportsUnobservedTermination(t *testing.T) {
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/xgo-dev/llgo/actions/jobs/101445685709" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, github.WorkflowJob{
+			ID:         101445685709,
+			Name:       "llgo (ubuntu-latest, LLVM 22, Go current)",
+			Status:     "completed",
+			Conclusion: "failure",
+			RunnerName: "e2b-101445685709",
+		})
+	}))
+	defer githubAPI.Close()
+
+	store := state.New(t.TempDir())
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "101445685709",
+		Source:             "github_webhook",
+		JobID:              101445685709,
+		RepositoryFullName: "xgo-dev/llgo",
+		Labels:             []string{"self-hosted", "qiniu", "ubuntu-24.04"},
+		RunnerName:         "e2b-101445685709",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusCompleted
+	st.AssignedJobID = st.WorkflowJobID
+	st.AssignedJobName = "llgo (ubuntu-latest, LLVM 22, Go current)"
+	st.RunningAt = time.Now().UTC().Add(-20 * time.Minute)
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+	store.AppendLog(st.ID, "control.log", []byte("sandbox runner started sandbox_id=sb-1 pid=903\n"))
+	store.AppendLog(st.ID, "stdout.log", []byte("runner setup output\n"))
+	store.AppendLog(st.ID, "control.log", []byte("runner accepted a job\n"))
+
+	srv := newTestServer(t, store, githubAPI.URL, &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/runner_requests/101445685709/diagnostics", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /diagnostics/pprof: expected 200, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.listStatesCalls != 0 {
-		t.Fatalf("ListStates calls = %d, want 0", store.listStatesCalls)
-	}
-	if store.recentFailedCalls != 1 || store.recentFailedLimit != 5 {
-		t.Fatalf("ListRecentFailedStates calls = %d limit = %d, want 1 call with limit 5", store.recentFailedCalls, store.recentFailedLimit)
+		t.Fatalf("GET runner request diagnostics: expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		RecentFailures []state.RunnerState `json:"recent_failures"`
+		GitHubJob struct {
+			LookupStatus string `json:"lookup_status"`
+			Conclusion   string `json:"conclusion"`
+		} `json:"github_job"`
+		Findings []struct {
+			Code     string `json:"code"`
+			Severity string `json:"severity"`
+		} `json:"findings"`
+		Events []struct {
+			EventType string `json:"event_type"`
+			Message   string `json:"message"`
+		} `json:"events"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("GET /diagnostics/pprof: invalid JSON: %v", err)
+		t.Fatal(err)
 	}
-	if len(body.RecentFailures) != 2 || body.RecentFailures[0].ID != "failed-latest" || body.RecentFailures[1].ID != "failed-previous" {
-		t.Fatalf("recent_failures = %#v, want bounded store result", body.RecentFailures)
+	if body.GitHubJob.LookupStatus != "ok" || body.GitHubJob.Conclusion != "failure" {
+		t.Fatalf("github_job = %#v, want successful failure lookup", body.GitHubJob)
+	}
+	gotCodes := map[string]bool{}
+	for _, finding := range body.Findings {
+		gotCodes[finding.Code] = true
+	}
+	for _, code := range []string{"github_job_failed", "request_completed_after_github_failure", "runner_termination_unobserved"} {
+		if !gotCodes[code] {
+			t.Errorf("missing diagnostic finding %q in %#v", code, body.Findings)
+		}
+	}
+	if len(body.Events) != 2 || body.Events[0].EventType != "control_log" || body.Events[1].EventType != "control_log" || body.Events[1].Message != "runner accepted a job\n" {
+		t.Fatalf("events = %#v, want bounded chronological control events", body.Events)
+	}
+}
+
+func TestRunnerRequestEventsReturnsMixedExclusivePage(t *testing.T) {
+	store := state.New(t.TempDir())
+	_, _, err := store.CreateRequest(state.RunnerRequest{
+		ID:         "101445685709",
+		Source:     "github_webhook",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-101445685709",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []struct {
+		name    string
+		message string
+	}{
+		{name: "control.log", message: "created\n"},
+		{name: "stdout.log", message: "setup output\n"},
+		{name: "stderr.log", message: "setup warning\n"},
+		{name: "control.log", message: "accepted\n"},
+		{name: "stdout.log", message: "job output\n"},
+	} {
+		store.AppendLog("101445685709", entry.name, []byte(entry.message))
+	}
+	allEvents, _, err := store.ListRunnerEvents("101445685709", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, fmt.Sprintf("/runner_requests/101445685709/events?before_id=%d", allEvents[4].ID), nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET runner request events: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Events  []state.RunnerEvent `json:"events"`
+		HasMore bool                `json:"has_more"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.HasMore {
+		t.Fatal("event page unexpectedly reports older records")
+	}
+	if len(page.Events) != 4 {
+		t.Fatalf("events = %#v, want four records before exclusive cursor", page.Events)
+	}
+	wantTypes := []string{"control_log", "stdout_log", "stderr_log", "control_log"}
+	for i, want := range wantTypes {
+		if page.Events[i].EventType != want {
+			t.Fatalf("events[%d].event_type = %q, want %q", i, page.Events[i].EventType, want)
+		}
+	}
+}
+
+func TestRunnerRequestEventsReturnsEventsAfterExclusiveCursor(t *testing.T) {
+	store := state.New(t.TempDir())
+	_, _, err := store.CreateRequest(state.RunnerRequest{
+		ID:         "101445685710",
+		Source:     "github_webhook",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-101445685710",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{"one\n", "two\n", "three\n", "four\n"} {
+		store.AppendLog("101445685710", "stdout.log", []byte(message))
+	}
+	allEvents, _, err := store.ListRunnerEvents("101445685710", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, fmt.Sprintf("/runner_requests/101445685710/events?after_id=%d", allEvents[1].ID), nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET runner request events after cursor: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Events  []state.RunnerEvent `json:"events"`
+		HasMore bool                `json:"has_more"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.HasMore {
+		t.Fatal("event page unexpectedly reports newer records")
+	}
+	if len(page.Events) != 2 || page.Events[0].Message != "three\n" || page.Events[1].Message != "four\n" {
+		t.Fatalf("events = %#v, want records after exclusive cursor", page.Events)
+	}
+}
+
+func TestRunnerRequestEventsRejectsBothCursorDirections(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/runner_requests/request-1/events?after_id=1&before_id=2", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("conflicting cursors: expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRunnerRequestEventsRejectsInvalidCursor(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/runner_requests/request-1/events?before_id=not-a-number", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cursor: expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRunnerRequestEventsRequiresAdmin(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := httptest.NewRequest(http.MethodGet, "/runner_requests/request-1/events", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated event page: expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDiagnosticsRunnerRequestAcceptsRunnerName(t *testing.T) {
+	store := state.New(t.TempDir())
+	_, _, err := store.CreateRequest(state.RunnerRequest{
+		ID:         "101445685709",
+		Source:     "github_webhook",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-101445685709",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/diagnostics/runner-requests/e2b-101445685709", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET runner request diagnostics by runner name: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		State state.RunnerState `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.State.ID != "101445685709" || body.State.RunnerName != "e2b-101445685709" {
+		t.Fatalf("state = %#v, want request resolved from runner name", body.State)
+	}
+}
+
+func TestDiagnosticsRunnerRequestReturnsInternalErrorWithoutExactIDFallback(t *testing.T) {
+	store := &readStateErrorStore{
+		Store: state.New(t.TempDir()),
+		err:   errors.New("database unavailable"),
+	}
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/diagnostics/runner-requests/e2b-101445685709", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET runner request diagnostics on DB error: expected 500, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(store.ids) != 1 || store.ids[0] != "101445685709" {
+		t.Fatalf("ReadState ids = %#v, want no exact-ID fallback after Runner Name lookup DB error", store.ids)
+	}
+}
+
+func TestRunnerRequestEventErrorsDoNotLeakStoreDetails(t *testing.T) {
+	baseStore := state.New(t.TempDir())
+	_, _, err := baseStore.CreateRequest(state.RunnerRequest{
+		ID:         "event-store-error",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-event-store-error",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &runnerEventsErrorStore{Store: baseStore, err: errors.New("database password leaked")}
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+
+	for _, path := range []string{
+		"/diagnostics/runner-requests/event-store-error",
+		"/runner_requests/event-store-error/events?after_id=0",
+	} {
+		req := adminRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("GET %s: expected 500, got %d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "database password leaked") {
+			t.Fatalf("GET %s leaked the raw store error: %s", path, rec.Body.String())
+		}
+	}
+}
+
+func TestDiagnosticsRunnerRequestCachesGitHubJobLookup(t *testing.T) {
+	githubCalls := 0
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		githubCalls++
+		if r.URL.Path != "/repos/o/r/actions/jobs/42" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, github.WorkflowJob{
+			ID:         42,
+			Status:     "completed",
+			Conclusion: "success",
+			RunnerName: "e2b-cache-github-job",
+		})
+	}))
+	defer githubAPI.Close()
+
+	store := state.New(t.TempDir())
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "cache-github-job",
+		Source:             "github_webhook",
+		JobID:              42,
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-cache-github-job",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusCompleted
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTestServer(t, store, githubAPI.URL, &fakeSandbox{})
+	for range 2 {
+		req := adminRequest(http.MethodGet, "/diagnostics/runner-requests/cache-github-job", nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET runner request diagnostics: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	if githubCalls != 1 {
+		t.Fatalf("GitHub workflow job calls = %d, want 1 within diagnostics cache TTL", githubCalls)
+	}
+}
+
+func TestDiagnosticWorkflowJobCoalescesConcurrentLookups(t *testing.T) {
+	var githubCalls atomic.Int32
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		githubCalls.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		writeJSON(w, http.StatusOK, github.WorkflowJob{ID: 42, Status: "completed", Conclusion: "success"})
+	}))
+	defer githubAPI.Close()
+
+	srv := newTestServer(t, state.New(t.TempDir()), githubAPI.URL, &fakeSandbox{})
+	const callers = 8
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			job, err := srv.diagnosticWorkflowJob(context.Background(), "o/r", 42)
+			if err == nil && job.ID != 42 {
+				err = fmt.Errorf("workflow job ID = %d, want 42", job.ID)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls := githubCalls.Load(); calls != 1 {
+		t.Fatalf("concurrent GitHub workflow job calls = %d, want 1", calls)
+	}
+}
+
+func TestDiagnosticsRunnerRequestPrefersExactInternalIDWithRunnerPrefix(t *testing.T) {
+	store := state.New(t.TempDir())
+	for _, request := range []state.RunnerRequest{
+		{ID: "manual", Source: "manual_api", Labels: []string{"self-hosted"}, RunnerName: "e2b-manual"},
+		{ID: "e2b-manual", Source: "manual_api", Labels: []string{"self-hosted"}, RunnerName: "e2b-e2b-manual"},
+	} {
+		if _, _, err := store.CreateRequest(request, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/runner_requests/e2b-manual/diagnostics", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET runner request diagnostics by exact internal ID: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		State state.RunnerState `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.State.ID != "e2b-manual" || body.State.RunnerName != "e2b-e2b-manual" {
+		t.Fatalf("state = %#v, want exact internal request ID to take precedence", body.State)
+	}
+}
+
+func TestLegacyDiagnosticsRunnerRequestPrefersRunnerNameBeforeInternalID(t *testing.T) {
+	store := state.New(t.TempDir())
+	for _, request := range []state.RunnerRequest{
+		{ID: "manual", Source: "manual_api", Labels: []string{"self-hosted"}, RunnerName: "e2b-manual"},
+		{ID: "e2b-manual", Source: "manual_api", Labels: []string{"self-hosted"}, RunnerName: "e2b-e2b-manual"},
+	} {
+		if _, _, err := store.CreateRequest(request, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/diagnostics/runner-requests/e2b-manual", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET legacy runner request diagnostics: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		State state.RunnerState `json:"state"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.State.ID != "manual" || body.State.RunnerName != "e2b-manual" {
+		t.Fatalf("state = %#v, want legacy lookup to prefer exact Runner Name", body.State)
+	}
+}
+
+func TestDiagnosticsRunnerRequestKeepsLocalEvidenceWhenGitHubIsUnavailable(t *testing.T) {
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusServiceUnavailable, "temporarily unavailable")
+	}))
+	defer githubAPI.Close()
+
+	store := state.New(t.TempDir())
+	_, _, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "github-unavailable",
+		Source:             "github_webhook",
+		JobID:              42,
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-github-unavailable",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.AppendLog("github-unavailable", "control.log", []byte("runner request created\n"))
+
+	srv := newTestServer(t, store, githubAPI.URL, &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/diagnostics/runner-requests/github-unavailable", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET runner request diagnostics: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"lookup_status":"unavailable"`) ||
+		!strings.Contains(rec.Body.String(), `"code":"github_lookup_unavailable"`) ||
+		!strings.Contains(rec.Body.String(), `"message":"runner request created\n"`) {
+		t.Fatalf("diagnostics did not preserve local evidence: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "temporarily unavailable") {
+		t.Fatalf("diagnostics exposed provider error details: %s", rec.Body.String())
 	}
 }
 

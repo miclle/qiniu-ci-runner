@@ -104,7 +104,40 @@ export type DiagnosticsSummary = {
   pprof: Array<{ address: string; address_file: string; dump_script: string }>
   state: { backend: string; database: string }
   github: { auth_mode: string; installation_id?: number; api_base_url: string }
-  recent_failures: RunnerState[]
+}
+
+export type RunnerDiagnosticEvent = {
+  id: number
+  event_type: "control_log" | "stdout_log" | "stderr_log" | string
+  stage?: string
+  message: string
+  created_at: string
+}
+
+export type RunnerEventPage = {
+  events: RunnerDiagnosticEvent[]
+  has_more: boolean
+}
+
+export type RunnerDiagnosticFinding = {
+  code: string
+  severity: "critical" | "warning" | "ok" | string
+  detail?: string
+}
+
+export type RunnerRequestDiagnosis = {
+  state: RunnerState
+  github_job: {
+    lookup_status: "ok" | "unavailable" | "not_applicable" | string
+    id?: number
+    name?: string
+    status?: string
+    conclusion?: string
+    runner_name?: string
+  }
+  findings: RunnerDiagnosticFinding[]
+  events: RunnerDiagnosticEvent[]
+  events_truncated: boolean
 }
 
 export type AuditEvent = {
@@ -303,7 +336,19 @@ export const adminSections = [
 
 export type AdminSection = (typeof adminSections)[number]
 
+export function runnerRequestIdentifierFromAdminPath(path: string): string {
+  const match = path.match(/^\/admin\/runner_requests\/([^/]+)$/)
+  if (!match) return ""
+  try {
+    const identifier = decodeURIComponent(match[1])
+    return identifier.trim() && !identifier.includes("/") ? identifier : ""
+  } catch {
+    return ""
+  }
+}
+
 export function sectionFromPath(): AdminSection {
+  if (runnerRequestIdentifierFromAdminPath(window.location.pathname)) return "runner_requests"
   const slug = window.location.pathname.replace(/^\/admin\/?/, "") || "overview"
   return adminSections.includes(slug as AdminSection) ? (slug as AdminSection) : "overview"
 }

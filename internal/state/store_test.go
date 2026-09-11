@@ -2203,6 +2203,89 @@ func TestMigrateAddsGitHubInstallationLookupIndex(t *testing.T) {
 	}
 }
 
+func TestMigrateAddsRunnerEventCursorIndexes(t *testing.T) {
+	databaseURL := t.TempDir() + "/runnerd.db"
+	store := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseDSN:    databaseURL,
+		MigrateOnStart: false,
+	}).(*DBStore)
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE runner_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		request_id TEXT NOT NULL,
+		event_type TEXT NOT NULL,
+		stage TEXT,
+		message TEXT,
+		payload_json TEXT,
+		created_at TIMESTAMP NOT NULL
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE INDEX idx_runner_events_request_created ON runner_events (request_id, created_at)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	closeTestDB(t, db)
+
+	migrated := NewWithOptions(Options{
+		Backend:        BackendSQLite,
+		DatabaseDSN:    databaseURL,
+		MigrateOnStart: true,
+	}).(*DBStore)
+	migratedDB, err := migrated.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, indexName := range []string{"idx_runner_events_request_id", "idx_runner_events_request_type_id"} {
+		if !migratedDB.Migrator().HasIndex(&runnerEventRecord{}, indexName) {
+			t.Fatalf("expected runner event cursor index %s after migration", indexName)
+		}
+	}
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		args      []any
+		indexName string
+	}{
+		{
+			name:      "mixed event page",
+			query:     `EXPLAIN QUERY PLAN SELECT * FROM runner_events WHERE request_id = ? AND id < ? ORDER BY id DESC LIMIT 201`,
+			args:      []any{"request-1", 5000},
+			indexName: "idx_runner_events_request_id",
+		},
+		{
+			name:      "filtered control tail",
+			query:     `EXPLAIN QUERY PLAN SELECT * FROM runner_events WHERE request_id = ? AND event_type IN (?) ORDER BY id DESC LIMIT 201`,
+			args:      []any{"request-1", "control_log"},
+			indexName: "idx_runner_events_request_type_id",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var plan []struct {
+				Detail string
+			}
+			if err := migratedDB.Raw(tc.query, tc.args...).Scan(&plan).Error; err != nil {
+				t.Fatal(err)
+			}
+			var details []string
+			for _, step := range plan {
+				details = append(details, step.Detail)
+			}
+			joined := strings.Join(details, "\n")
+			if !strings.Contains(joined, tc.indexName) {
+				t.Fatalf("expected query to use %s, plan:\n%s", tc.indexName, joined)
+			}
+			if strings.Contains(joined, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Fatalf("runner event query still sorts through a temporary B-tree, plan:\n%s", joined)
+			}
+		})
+	}
+}
+
 func TestLargePayloadColumnsUseTextType(t *testing.T) {
 	store := New(t.TempDir()).(*DBStore)
 	db, err := store.dbOrEnsure()
@@ -2396,65 +2479,6 @@ func TestListStatesPage(t *testing.T) {
 	}
 	if paged[0].ID != "runner-3" || paged[1].ID != "runner-2" {
 		t.Fatalf("unexpected page order: %#v", []string{paged[0].ID, paged[1].ID})
-	}
-}
-
-func TestListRecentFailedStatesBoundsOrdersAndProjects(t *testing.T) {
-	store := New(t.TempDir())
-	base := time.Date(2026, time.August, 20, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 7; i++ {
-		_, st, err := store.CreateRequest(RunnerRequest{
-			ID:                     fmt.Sprintf("failed-%d", i),
-			Source:                 "test",
-			Labels:                 []string{"self-hosted"},
-			RunnerName:             fmt.Sprintf("e2b-failed-%d", i),
-			SandboxAPIURL:          "https://sandbox-secret.example.test",
-			SandboxAPIKeyEncrypted: "encrypted-secret",
-			CreatedAt:              base.Add(time.Duration(i) * time.Minute),
-		}, []byte(`{"workflow_job":{"id":123}}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		st.Status = StatusFailed
-		st.FailureStage = "runner_registration"
-		st.FailureReason = fmt.Sprintf("fixture-%d", i)
-		if err := store.WriteState(st); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_, completed, err := store.CreateRequest(RunnerRequest{
-		ID:         "newest-completed",
-		Source:     "test",
-		Labels:     []string{"self-hosted"},
-		RunnerName: "e2b-newest-completed",
-		CreatedAt:  base.Add(8 * time.Minute),
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	completed.Status = StatusCompleted
-	if err := store.WriteState(completed); err != nil {
-		t.Fatal(err)
-	}
-
-	states, err := store.ListRecentFailedStates(5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantIDs := []string{"failed-6", "failed-5", "failed-4", "failed-3", "failed-2"}
-	if len(states) != len(wantIDs) {
-		t.Fatalf("len = %d, want %d", len(states), len(wantIDs))
-	}
-	for i, wantID := range wantIDs {
-		if states[i].ID != wantID {
-			t.Fatalf("states[%d].ID = %q, want %q", i, states[i].ID, wantID)
-		}
-		if states[i].Status != StatusFailed {
-			t.Fatalf("states[%d].Status = %q, want %q", i, states[i].Status, StatusFailed)
-		}
-		if states[i].SandboxAPIURL != "" || states[i].SandboxAPIKeyEncrypted != "" {
-			t.Fatalf("states[%d] loaded secret columns: %#v", i, states[i])
-		}
 	}
 }
 
@@ -3165,6 +3189,13 @@ func TestListActiveStatesExcludesTerminalStates(t *testing.T) {
 	}
 }
 
+func TestReadStateReturnsErrNotFound(t *testing.T) {
+	store := New(t.TempDir())
+	if _, err := store.ReadState("missing-request"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ReadState missing request error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestReadLogCanReturnTail(t *testing.T) {
 	store := New(t.TempDir())
 	if _, _, err := store.CreateRequest(RunnerRequest{
@@ -3183,6 +3214,165 @@ func TestReadLogCanReturnTail(t *testing.T) {
 	}
 	if string(data) != "line-2\n" {
 		t.Fatalf("unexpected log tail: %q", string(data))
+	}
+}
+
+func TestAppendLogSanitizesRequestIDConsistentlyWithReaders(t *testing.T) {
+	store := New(t.TempDir())
+	requestID := " ../unsafe/request "
+	store.AppendLog(requestID, "stdout.log", []byte("runner output\n"))
+
+	events, _, err := store.ListRunnerEvents(requestID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Message != "runner output\n" {
+		t.Fatalf("events = %#v, want the event written under the sanitized request ID", events)
+	}
+	logData, err := store.ReadLog(requestID, "stdout.log", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(logData) != "runner output\n" {
+		t.Fatalf("log = %q, want runner output", logData)
+	}
+}
+
+func TestListRunnerEventsReturnsBoundedChronologicalTail(t *testing.T) {
+	store := New(t.TempDir())
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID:         "diagnostic-events",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-diagnostic-events",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	store.AppendLog("diagnostic-events", "control.log", []byte("created\n"))
+	store.AppendLog("diagnostic-events", "stdout.log", []byte("connected\n"))
+	store.AppendLog("diagnostic-events", "control.log", []byte("accepted\n"))
+
+	events, truncated, err := store.ListRunnerEvents("diagnostic-events", 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Fatal("expected truncated event history")
+	}
+	if len(events) != 2 || events[0].Message != "connected\n" || events[1].Message != "accepted\n" {
+		t.Fatalf("events = %#v, want chronological two-event tail", events)
+	}
+}
+
+func TestListRunnerEventsFiltersBeforeApplyingLimit(t *testing.T) {
+	store := New(t.TempDir())
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID:         "diagnostic-control-events",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-diagnostic-control-events",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	store.AppendLog("diagnostic-control-events", "control.log", []byte("created\n"))
+	store.AppendLog("diagnostic-control-events", "stdout.log", []byte("noisy output 1\n"))
+	store.AppendLog("diagnostic-control-events", "stdout.log", []byte("noisy output 2\n"))
+	store.AppendLog("diagnostic-control-events", "control.log", []byte("accepted\n"))
+	store.AppendLog("diagnostic-control-events", "control.log", []byte("completed\n"))
+
+	events, truncated, err := store.ListRunnerEvents("diagnostic-control-events", 0, 2, "control_log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Fatal("expected filtered control event history to be truncated")
+	}
+	if len(events) != 2 || events[0].Message != "accepted\n" || events[1].Message != "completed\n" {
+		t.Fatalf("events = %#v, want chronological control-event tail", events)
+	}
+}
+
+func TestListRunnerEventsUsesExclusiveBeforeIDCursor(t *testing.T) {
+	store := New(t.TempDir())
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID:         "diagnostic-event-pages",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-diagnostic-event-pages",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range []struct {
+		name    string
+		message string
+	}{
+		{name: "control.log", message: "one\n"},
+		{name: "stdout.log", message: "two\n"},
+		{name: "stderr.log", message: "three\n"},
+		{name: "control.log", message: "four\n"},
+		{name: "stdout.log", message: "five\n"},
+	} {
+		store.AppendLog("diagnostic-event-pages", entry.name, []byte(entry.message))
+	}
+
+	allEvents, _, err := store.ListRunnerEvents("diagnostic-event-pages", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allEvents) != 5 {
+		t.Fatalf("all events = %#v, want five records", allEvents)
+	}
+
+	events, hasMore, err := store.ListRunnerEvents("diagnostic-event-pages", allEvents[4].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMore {
+		t.Fatal("expected older event page to report more records")
+	}
+	if len(events) != 2 || events[0].Message != "three\n" || events[1].Message != "four\n" {
+		t.Fatalf("events = %#v, want chronological page before exclusive cursor", events)
+	}
+}
+
+func TestListRunnerEventsAfterUsesExclusiveCursor(t *testing.T) {
+	store := New(t.TempDir())
+	if _, _, err := store.CreateRequest(RunnerRequest{
+		ID:         "diagnostic-forward-event-pages",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-diagnostic-forward-event-pages",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{"one\n", "two\n", "three\n", "four\n", "five\n"} {
+		store.AppendLog("diagnostic-forward-event-pages", "stdout.log", []byte(message))
+	}
+
+	allEvents, _, err := store.ListRunnerEvents("diagnostic-forward-event-pages", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, hasMore, err := store.ListRunnerEventsAfter("diagnostic-forward-event-pages", allEvents[1].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMore {
+		t.Fatal("expected newer event page to report more records")
+	}
+	if len(events) != 2 || events[0].Message != "three\n" || events[1].Message != "four\n" {
+		t.Fatalf("events = %#v, want first chronological page after exclusive cursor", events)
+	}
+
+	events, hasMore, err = store.ListRunnerEventsAfter("diagnostic-forward-event-pages", events[1].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore {
+		t.Fatal("final newer event page unexpectedly reports more records")
+	}
+	if len(events) != 1 || events[0].Message != "five\n" {
+		t.Fatalf("events = %#v, want final chronological event", events)
 	}
 }
 
