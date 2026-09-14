@@ -54,6 +54,8 @@ type fakeSandbox struct {
 	recoverInput       sandboxrunner.RecoverInput
 	recoverInFlight    int
 	maxRecoverInFlight int
+	stopBlock          chan struct{}
+	stopStarted        chan struct{}
 	stopErr            error
 	commandContext     context.Context
 	repositoryURL      string
@@ -209,9 +211,25 @@ func (f *fakeSandbox) RecoverRunner(ctx context.Context, input sandboxrunner.Rec
 
 func (f *fakeSandbox) StopRunner(ctx context.Context, sandboxID string, pid uint32) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.stopped++
-	return f.stopErr
+	block := f.stopBlock
+	started := f.stopStarted
+	err := f.stopErr
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 func (f *fakeSandbox) StartTerminal(ctx context.Context, sandboxID string, size sandboxrunner.PtySize, onData func([]byte)) (sandboxrunner.TerminalSession, error) {
@@ -4689,6 +4707,13 @@ func TestWebhookQueuedSkipsSandboxWhenGitHubJobNoLongerQueued(t *testing.T) {
 	if fake.startedCount() != 0 {
 		t.Fatalf("expected no sandbox start, got %d", fake.startedCount())
 	}
+	completed, err := store.ReadState("1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !completed.StoppingAt.IsZero() {
+		t.Fatalf("expected no cleanup start for a job completed before sandbox creation, got %s", completed.StoppingAt)
+	}
 }
 
 func TestWebhookQueuedUsesEventRepositoryForRepoRunner(t *testing.T) {
@@ -4757,7 +4782,14 @@ func TestWebhookCompletedStopsActualRunnerAndRecordsJob(t *testing.T) {
 	defer ghServer.Close()
 
 	store := state.New(t.TempDir())
-	fake := &fakeSandbox{}
+	stopBlock := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(stopBlock)
+		}
+	}()
+	fake := &fakeSandbox{stopBlock: stopBlock, stopStarted: make(chan struct{}, 1)}
 	srv := newTestServer(t, store, ghServer.URL, fake)
 
 	queued := []byte(`{"action":"queued","repository":{"full_name":"o/r"},"workflow_job":{"id":1001,"labels":["self-hosted","e2b"]}}`)
@@ -4776,7 +4808,31 @@ func TestWebhookCompletedStopsActualRunnerAndRecordsJob(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "workflow_job")
 	req.Header.Set("X-Hub-Signature-256", sign("secret", completed))
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, req)
+	done := make(chan struct{})
+	go func() {
+		srv.ServeHTTP(rec, req)
+		close(done)
+	}()
+	select {
+	case <-fake.stopStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sandbox stop did not start")
+	}
+	duringCleanup, err := store.ReadState("1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duringCleanup.Status != state.StatusStopping || duringCleanup.StoppingAt.IsZero() || !duringCleanup.CompletedAt.IsZero() {
+		t.Fatalf("expected persisted stopping state during webhook cleanup, got %#v", duringCleanup)
+	}
+	cleanupStartedAt := duringCleanup.StoppingAt
+	close(stopBlock)
+	released = true
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("webhook completion did not finish")
+	}
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("unexpected completed status: %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -4793,6 +4849,12 @@ func TestWebhookCompletedStopsActualRunnerAndRecordsJob(t *testing.T) {
 	}
 	if fake.stoppedCount() != 1 {
 		t.Fatalf("expected one sandbox stop, got %d", fake.stoppedCount())
+	}
+	if !st.StoppingAt.Equal(cleanupStartedAt) {
+		t.Fatalf("StoppingAt = %s, want preserved cleanup start %s", st.StoppingAt, cleanupStartedAt)
+	}
+	if st.CompletedAt.Before(st.StoppingAt) {
+		t.Fatalf("CompletedAt = %s before StoppingAt = %s", st.CompletedAt, st.StoppingAt)
 	}
 }
 
@@ -5072,6 +5134,8 @@ func TestCompletedWebhookWithRunnerNameStopsRunnerBeforeInProgressEvent(t *testi
 			t.Errorf("control log missing %q:\n%s", message, controlLog)
 		}
 	}
+	requireRunnerEventStageMessage(t, store, st.ID, "sandbox_cleanup", "sandbox stop completed")
+	requireRunnerEventStageMessage(t, store, st.ID, "runner_cleanup", "runner cleanup completed")
 }
 
 func TestWorkflowJobMismatchRequeuesOriginalJob(t *testing.T) {
@@ -6392,6 +6456,11 @@ func TestStopRunnerSchedulesGitHubCleanupRetry(t *testing.T) {
 	if got.Status != state.StatusStopping || got.FailureStage != "cleanup" || !got.LastErrorRetryable || got.NextRetryAt.IsZero() {
 		t.Fatalf("expected stopping cleanup retry state, got %#v", got)
 	}
+	if got.StoppingAt.IsZero() {
+		t.Fatal("expected cleanup retry to retain its first stopping timestamp")
+	}
+	requireRunnerEventStageMessage(t, store, st.ID, "github_cleanup", "github runner cleanup failed")
+	cleanupStartedAt := got.StoppingAt
 
 	got.NextRetryAt = time.Now().UTC().Add(-time.Second)
 	if err := store.WriteState(got); err != nil {
@@ -6407,6 +6476,10 @@ func TestStopRunnerSchedulesGitHubCleanupRetry(t *testing.T) {
 	if got.FailureStage != "" || got.LastErrorMessage != "" || !got.NextRetryAt.IsZero() {
 		t.Fatalf("expected cleanup retry metadata to be cleared after success, got %#v", got)
 	}
+	if !got.StoppingAt.Equal(cleanupStartedAt) {
+		t.Fatalf("StoppingAt = %s after retry, want original cleanup start %s", got.StoppingAt, cleanupStartedAt)
+	}
+	requireRunnerEventStageMessage(t, store, st.ID, "github_cleanup", "github runner registration removed")
 }
 
 func TestStopRunnerPreservesFailureAfterCleanupRetrySuccess(t *testing.T) {
@@ -6510,6 +6583,9 @@ func TestSweeperMarksTimedOutRunningRunnerFailed(t *testing.T) {
 	}
 	if fake.stoppedCount() != 1 {
 		t.Fatalf("expected sandbox stop, got %d", fake.stoppedCount())
+	}
+	if got.StoppingAt.IsZero() || got.FailedAt.Before(got.StoppingAt) {
+		t.Fatalf("expected forced-stop cleanup to precede failure, stopping_at=%s failed_at=%s", got.StoppingAt, got.FailedAt)
 	}
 }
 
