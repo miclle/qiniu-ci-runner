@@ -816,6 +816,7 @@ func TestDiagnosticsRunnerRequestReportsUnobservedTermination(t *testing.T) {
 	var body struct {
 		GitHubJob struct {
 			LookupStatus string `json:"lookup_status"`
+			Source       string `json:"source"`
 			Conclusion   string `json:"conclusion"`
 		} `json:"github_job"`
 		Findings []struct {
@@ -830,7 +831,7 @@ func TestDiagnosticsRunnerRequestReportsUnobservedTermination(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.GitHubJob.LookupStatus != "ok" || body.GitHubJob.Conclusion != "failure" {
+	if body.GitHubJob.LookupStatus != "ok" || body.GitHubJob.Source != "live" || body.GitHubJob.Conclusion != "failure" {
 		t.Fatalf("github_job = %#v, want successful failure lookup", body.GitHubJob)
 	}
 	gotCodes := map[string]bool{}
@@ -844,6 +845,66 @@ func TestDiagnosticsRunnerRequestReportsUnobservedTermination(t *testing.T) {
 	}
 	if len(body.Events) != 2 || body.Events[0].EventType != "control_log" || body.Events[1].EventType != "control_log" || body.Events[1].Message != "runner accepted a job\n" {
 		t.Fatalf("events = %#v, want bounded chronological control events", body.Events)
+	}
+}
+
+func TestDiagnosticsRunnerRequestUsesRetainedGitHubJobResultWithoutLiveLookup(t *testing.T) {
+	liveLookups := 0
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		liveLookups++
+		writeError(w, http.StatusServiceUnavailable, "must not query GitHub for a retained result")
+	}))
+	defer githubAPI.Close()
+
+	store := state.New(t.TempDir())
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "retained-job-result",
+		Source:             "github_webhook",
+		JobID:              42,
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted"},
+		RunnerName:         "e2b-retained-job-result",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedAt := time.Date(2026, 9, 14, 7, 15, 32, 0, time.UTC)
+	st.Status = state.StatusCompleted
+	st.GitHubJobName = "test"
+	st.GitHubJobStatus = "completed"
+	st.GitHubJobConclusion = "cancelled"
+	st.GitHubJobRunnerName = "e2b-retained-job-result"
+	st.GitHubJobObservedAt = observedAt
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newTestServer(t, store, githubAPI.URL, &fakeSandbox{})
+	req := adminRequest(http.MethodGet, "/runner_requests/retained-job-result/diagnostics", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET runner request diagnostics: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		GitHubJob struct {
+			LookupStatus string    `json:"lookup_status"`
+			Source       string    `json:"source"`
+			Status       string    `json:"status"`
+			Conclusion   string    `json:"conclusion"`
+			ObservedAt   time.Time `json:"observed_at"`
+		} `json:"github_job"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if liveLookups != 0 {
+		t.Fatalf("retained result triggered %d live GitHub lookups", liveLookups)
+	}
+	if body.GitHubJob.LookupStatus != "retained" || body.GitHubJob.Source != "retained" ||
+		body.GitHubJob.Status != "completed" || body.GitHubJob.Conclusion != "cancelled" ||
+		!body.GitHubJob.ObservedAt.Equal(observedAt) {
+		t.Fatalf("unexpected retained GitHub Job result: %#v", body.GitHubJob)
 	}
 }
 
@@ -1089,6 +1150,7 @@ func TestDiagnosticsRunnerRequestCachesGitHubJobLookup(t *testing.T) {
 	}
 
 	srv := newTestServer(t, store, githubAPI.URL, &fakeSandbox{})
+	var observedTimes []time.Time
 	for range 2 {
 		req := adminRequest(http.MethodGet, "/diagnostics/runner-requests/cache-github-job", nil)
 		rec := httptest.NewRecorder()
@@ -1096,9 +1158,22 @@ func TestDiagnosticsRunnerRequestCachesGitHubJobLookup(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET runner request diagnostics: expected 200, got %d body=%s", rec.Code, rec.Body.String())
 		}
+		var body struct {
+			GitHubJob struct {
+				ObservedAt time.Time `json:"observed_at"`
+			} `json:"github_job"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		observedTimes = append(observedTimes, body.GitHubJob.ObservedAt)
+		time.Sleep(time.Millisecond)
 	}
 	if githubCalls != 1 {
 		t.Fatalf("GitHub workflow job calls = %d, want 1 within diagnostics cache TTL", githubCalls)
+	}
+	if observedTimes[0].IsZero() || !observedTimes[0].Equal(observedTimes[1]) {
+		t.Fatalf("cached GitHub observation times = %v, want one stable fetch time", observedTimes)
 	}
 }
 
@@ -1121,7 +1196,7 @@ func TestDiagnosticWorkflowJobCoalescesConcurrentLookups(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			job, err := srv.diagnosticWorkflowJob(context.Background(), "o/r", 42)
+			job, _, err := srv.diagnosticWorkflowJob(context.Background(), "o/r", 42)
 			if err == nil && job.ID != 42 {
 				err = fmt.Errorf("workflow job ID = %d, want 42", job.ID)
 			}
@@ -1711,6 +1786,93 @@ func TestRunnerExitedWithExitCode0TransitionsToCompleted(t *testing.T) {
 	requireRunnerEventStageMessage(t, store, st.ID, "sandbox_cleanup", "sandbox cleaned after runner exit")
 }
 
+func TestRunnerExitedRetainsTerminalWorkflowJobResult(t *testing.T) {
+	jobLookupStarted := make(chan struct{}, 1)
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/actions/runners":
+			w.Write([]byte(`{"runners":[]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/actions/jobs/1001":
+			jobLookupStarted <- struct{}{}
+			w.Write([]byte(`{"id":1001,"name":"test","status":"completed","conclusion":"success","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}`))
+		default:
+			t.Fatalf("unexpected github request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ghServer.Close()
+
+	store := state.New(t.TempDir())
+	stopBlock := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(stopBlock)
+		}
+	}()
+	fake := &fakeSandbox{stopBlock: stopBlock, stopStarted: make(chan struct{}, 1)}
+	srv := newTestServer(t, store, ghServer.URL, fake)
+	srv.Close()
+
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:                 "exited-retained-job",
+		Source:             "test",
+		JobID:              1001,
+		RepositoryFullName: "o/r",
+		Labels:             []string{"self-hosted", "e2b"},
+		ProfileName:        "default",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusRunning
+	st.SandboxID = "sb-exited-retained-job"
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		srv.runnerExited(st.ID, sandboxrunner.ExitResult{ExitCode: 0}, nil)
+		close(done)
+	}()
+	select {
+	case <-fake.stopStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sandbox cleanup after runner exit did not start")
+	}
+	select {
+	case <-jobLookupStarted:
+		t.Fatal("terminal GitHub Job lookup started before sandbox cleanup completed")
+	default:
+	}
+	close(stopBlock)
+	released = true
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner exit did not finish")
+	}
+	select {
+	case <-jobLookupStarted:
+	default:
+		t.Fatal("runner exit did not look up the terminal GitHub Job after cleanup")
+	}
+
+	got, err := store.ReadState(st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.StatusCompleted {
+		t.Fatalf("runner exit status = %s, want completed", got.Status)
+	}
+	if got.GitHubJobName != "test" || got.GitHubJobStatus != "completed" ||
+		got.GitHubJobConclusion != "success" || got.GitHubJobRunnerName != "e2b-1001" ||
+		got.GitHubJobObservedAt.IsZero() {
+		t.Fatalf("runner exit did not retain terminal GitHub Job result: %#v", got)
+	}
+}
+
 func TestRunnerExitedWithNonZeroExitCodeTransitionsToFailed(t *testing.T) {
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1929,6 +2091,11 @@ func TestReconcileMismatchedCompletedJobsRequeuesOriginalJob(t *testing.T) {
 	st.Status = state.StatusCompleted
 	st.AssignedJobID = 2002
 	st.AssignedJobName = "prepare"
+	st.GitHubJobName = "stale original job"
+	st.GitHubJobStatus = "completed"
+	st.GitHubJobConclusion = "cancelled"
+	st.GitHubJobRunnerName = "e2b-1001"
+	st.GitHubJobObservedAt = time.Now().UTC().Add(-time.Minute)
 	st.CompletedAt = time.Now().UTC()
 	if err := store.WriteState(st); err != nil {
 		t.Fatal(err)
@@ -1946,6 +2113,10 @@ func TestReconcileMismatchedCompletedJobsRequeuesOriginalJob(t *testing.T) {
 	if got.AssignedJobID != 0 || got.AssignedJobName != "" {
 		t.Fatalf("expected assigned job to be cleared, got id=%d name=%q", got.AssignedJobID, got.AssignedJobName)
 	}
+	if got.GitHubJobName != "" || got.GitHubJobStatus != "" || got.GitHubJobConclusion != "" ||
+		got.GitHubJobRunnerName != "" || !got.GitHubJobObservedAt.IsZero() {
+		t.Fatalf("expected retained GitHub Job result to be cleared when requeued, got %#v", got)
+	}
 }
 
 func TestReconcileCompletedWorkflowJobsMarksFailedRecoveryCompleted(t *testing.T) {
@@ -1953,7 +2124,7 @@ func TestReconcileCompletedWorkflowJobsMarksFailedRecoveryCompleted(t *testing.T
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/o/r/actions/jobs/1001":
-			w.Write([]byte(`{"id":1001,"name":"check","status":"completed","conclusion":"success","labels":["self-hosted","e2b"]}`))
+			w.Write([]byte(`{"id":1001,"name":"check","status":"completed","conclusion":"success","runner_name":"e2b-1001","labels":["self-hosted","e2b"]}`))
 		default:
 			t.Fatalf("unexpected github request: %s %s", r.Method, r.URL.String())
 		}
@@ -1995,6 +2166,11 @@ func TestReconcileCompletedWorkflowJobsMarksFailedRecoveryCompleted(t *testing.T
 	}
 	if got.FailureStage != "" || got.Error != "" || got.CompletedAt.IsZero() {
 		t.Fatalf("expected failure metadata cleared and completed_at set, got %#v", got)
+	}
+	if got.GitHubJobName != "check" || got.GitHubJobStatus != "completed" ||
+		got.GitHubJobConclusion != "success" || got.GitHubJobRunnerName != "e2b-1001" ||
+		got.GitHubJobObservedAt.IsZero() {
+		t.Fatalf("expected reconciler-observed GitHub Job result to be retained, got %#v", got)
 	}
 }
 

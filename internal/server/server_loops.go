@@ -312,6 +312,11 @@ func (s *Server) requeueMismatchedWorkflowJob(st state.RunnerState, observed git
 	next.StoppingAt = time.Time{}
 	next.CompletedAt = time.Time{}
 	next.FailedAt = time.Time{}
+	next.GitHubJobName = ""
+	next.GitHubJobStatus = ""
+	next.GitHubJobConclusion = ""
+	next.GitHubJobRunnerName = ""
+	next.GitHubJobObservedAt = time.Time{}
 	if err := s.store.WriteState(next); err != nil {
 		return false, state.RunnerState{}, fmt.Errorf("write mismatched workflow job requeue: %w", err)
 	}
@@ -402,7 +407,9 @@ func (s *Server) completeIfWorkflowJobCompleted(ctx context.Context, id string) 
 	latest.NextRetryAt = time.Time{}
 	latest.LeaseOwner = ""
 	latest.LeaseExpiresAt = time.Time{}
-	latest.CompletedAt = time.Now().UTC()
+	completedAt := time.Now().UTC()
+	retainWorkflowJobResult(&latest, job, completedAt)
+	latest.CompletedAt = completedAt
 	if err := s.store.WriteState(latest); err != nil {
 		return err
 	}
