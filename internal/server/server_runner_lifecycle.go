@@ -589,6 +589,17 @@ func (s *Server) startRunner(ctx context.Context, id, workerID string) {
 	st = current
 	st.Status = state.StatusRunning
 	st.SandboxID = result.SandboxID
+	sandboxAPIURL := strings.TrimSpace(sandboxConfig.APIURL)
+	if sandboxAPIURL == "" {
+		sandboxAPIURL = strings.TrimSpace(req.SandboxAPIURL)
+	}
+	st.SandboxRegion = s.sandboxRegionForAPIURL(sandboxAPIURL)
+	st.ResolvedTemplateID = strings.TrimSpace(result.ResolvedTemplateID)
+	if st.ResolvedTemplateID == "" {
+		st.ResolvedTemplateID = strings.TrimSpace(templateID)
+	}
+	st.TemplateVersion = strings.TrimSpace(result.TemplateVersion)
+	st.RunnerVersion = strings.TrimSpace(result.RunnerVersion)
 	st.ProcessPID = result.PID
 	st.Error = ""
 	st.LeaseOwner = ""
@@ -1180,6 +1191,18 @@ func (s *Server) recoverActiveRunner(ctx context.Context, st state.RunnerState, 
 	}
 	latest.Status = state.StatusRunning
 	latest.SandboxID = result.SandboxID
+	if latest.SandboxRegion == "" {
+		latest.SandboxRegion = s.sandboxRegionForAPIURL(req.SandboxAPIURL)
+	}
+	if latest.ResolvedTemplateID == "" && result.ResolvedTemplateID != "" {
+		latest.ResolvedTemplateID = strings.TrimSpace(result.ResolvedTemplateID)
+	}
+	if latest.TemplateVersion == "" && result.TemplateVersion != "" {
+		latest.TemplateVersion = strings.TrimSpace(result.TemplateVersion)
+	}
+	if latest.RunnerVersion == "" && result.RunnerVersion != "" {
+		latest.RunnerVersion = strings.TrimSpace(result.RunnerVersion)
+	}
 	latest.ProcessPID = result.PID
 	latest.LeaseOwner = ""
 	latest.LeaseExpiresAt = time.Time{}
@@ -1599,6 +1622,13 @@ type failureResult struct {
 	logLine      string
 }
 
+func clearRunnerEnvironmentSnapshot(st *state.RunnerState) {
+	st.SandboxRegion = ""
+	st.ResolvedTemplateID = ""
+	st.TemplateVersion = ""
+	st.RunnerVersion = ""
+}
+
 func (s *Server) applyFailure(st *state.RunnerState, stage string, err error, allowRetry bool) failureResult {
 	now := time.Now().UTC()
 	code, retryable := classifyRetryableError(stage, err)
@@ -1615,6 +1645,7 @@ func (s *Server) applyFailure(st *state.RunnerState, stage string, err error, al
 	st.CompletedAt = time.Time{}
 	if allowRetry && retryable && isQueueDeferFailure(code) {
 		st.Status = state.StatusQueued
+		clearRunnerEnvironmentSnapshot(st)
 		if st.RetryCount < s.cfg.RetryMaxAttempts {
 			st.RetryCount++
 		}
@@ -1630,6 +1661,7 @@ func (s *Server) applyFailure(st *state.RunnerState, stage string, err error, al
 	}
 	if allowRetry && retryable && st.RetryCount < s.cfg.RetryMaxAttempts {
 		st.Status = state.StatusQueued
+		clearRunnerEnvironmentSnapshot(st)
 		st.RetryCount++
 		st.NextRetryAt = s.nextRetryAt(st.RetryCount, now)
 		st.CreatingAt = time.Time{}
