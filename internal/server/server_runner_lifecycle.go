@@ -22,10 +22,25 @@ import (
 const (
 	workflowRunCacheTTL                 = 30 * time.Second
 	runnerEventStageRunnerExit          = "runner_exit"
+	runnerEventStageRunnerHook          = "runner_hook"
 	runnerEventStageSandboxCleanup      = "sandbox_cleanup"
 	runnerEventStageGitHubRunnerCleanup = "github_cleanup"
 	runnerEventStageRunnerCleanup       = "runner_cleanup"
 )
+
+type runnerAttemptIdentity struct {
+	sandboxID  string
+	processPID uint32
+}
+
+func (a runnerAttemptIdentity) specified() bool {
+	return strings.TrimSpace(a.sandboxID) != "" || a.processPID != 0
+}
+
+func (a runnerAttemptIdentity) matches(st state.RunnerState) bool {
+	return strings.TrimSpace(a.sandboxID) != "" && a.processPID != 0 &&
+		a.sandboxID == st.SandboxID && a.processPID == st.ProcessPID
+}
 
 func (s *Server) workflowRunForCache(ctx context.Context, repository string, runID int64) (github.WorkflowRun, error) {
 	key := fmt.Sprintf("%s#%d", repository, runID)
@@ -478,6 +493,7 @@ func (s *Server) startRunner(ctx context.Context, id, workerID string) {
 	s.logger.Info("starting sandbox runner", "id", id, "runner_name", req.RunnerName)
 	s.store.AppendLog(id, "control.log", []byte("starting sandbox runner\n"))
 	exitCh := make(chan struct{})
+	exitWatchAttempt := make(chan runnerAttemptIdentity, 1)
 	startStage := "sandbox_start"
 	result, err := func() (sandboxrunner.StartResult, error) {
 		createCtx, cancel := context.WithTimeout(ctx, s.cfg.SandboxCreateTimeout)
@@ -504,7 +520,10 @@ func (s *Server) startRunner(ctx context.Context, id, workerID string) {
 			OnStderr:          func(data []byte) { s.store.AppendLog(id, "stderr.log", data) },
 			OnExit: func(result sandboxrunner.ExitResult, err error) {
 				defer close(exitCh)
-				s.runnerExited(id, result, err)
+				attempt := <-exitWatchAttempt
+				if attempt.specified() {
+					s.runnerExitedForAttempt(id, attempt, result, err)
+				}
 			},
 		}
 
@@ -546,6 +565,7 @@ func (s *Server) startRunner(ctx context.Context, id, workerID string) {
 		return sandboxService.StartRunner(createCtx, input)
 	}()
 	if err != nil {
+		exitWatchAttempt <- runnerAttemptIdentity{}
 		s.failStart(id, st, startStage, err)
 		return
 	}
@@ -553,12 +573,14 @@ func (s *Server) startRunner(ctx context.Context, id, workerID string) {
 	unlock = s.lockRunner(id)
 	current, err := s.store.ReadState(id)
 	if err != nil {
+		exitWatchAttempt <- runnerAttemptIdentity{}
 		unlock()
 		s.logger.Error("read state before running update", "id", id, "error", err)
 		s.cleanupStartedSandbox(id, result)
 		return
 	}
 	if current.Status != state.StatusCreating {
+		exitWatchAttempt <- runnerAttemptIdentity{}
 		unlock()
 		s.logger.Info("runner status changed before running update", "id", id, "status", current.Status)
 		s.cleanupStartedSandbox(id, result)
@@ -572,12 +594,14 @@ func (s *Server) startRunner(ctx context.Context, id, workerID string) {
 	st.LeaseOwner = ""
 	st.LeaseExpiresAt = time.Time{}
 	if err := s.store.WriteState(st); err != nil {
+		exitWatchAttempt <- runnerAttemptIdentity{}
 		unlock()
 		s.logger.Error("write running state", "id", id, "error", err)
 		s.store.AppendLog(id, "control.log", []byte("write running state failed: "+err.Error()+"\n"))
 		s.cleanupStartedSandbox(id, result)
 		return
 	}
+	exitWatchAttempt <- runnerAttemptIdentity{sandboxID: result.SandboxID, processPID: result.PID}
 	unlock()
 	s.logger.Info("sandbox runner started", "id", id, "sandbox_id", result.SandboxID, "pid", result.PID)
 	s.store.AppendLog(id, "control.log", []byte(fmt.Sprintf("sandbox runner started sandbox_id=%s pid=%d\n", result.SandboxID, result.PID)))
@@ -691,7 +715,7 @@ func (s *Server) appendRunnerStdout(id string, data []byte) {
 		s.markRunnerJobStarted(id)
 	}
 	if strings.Contains(text, "RUNNERD_JOB_COMPLETED") {
-		s.store.AppendLog(id, "control.log", []byte("runner completed job hook received\n"))
+		s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerHook, []byte("runner completed job hook received\n"))
 	}
 }
 
@@ -745,7 +769,7 @@ func (s *Server) failStart(id string, st state.RunnerState, stage string, err er
 	s.refreshMetrics()
 }
 
-func (s *Server) runnerExited(id string, result sandboxrunner.ExitResult, err error) {
+func (s *Server) runnerExitedForAttempt(id string, attempt runnerAttemptIdentity, result sandboxrunner.ExitResult, err error) {
 	unlock := s.lockRunner(id)
 
 	st, readErr := s.store.ReadState(id)
@@ -754,15 +778,26 @@ func (s *Server) runnerExited(id string, result sandboxrunner.ExitResult, err er
 		s.logger.Error("read state after runner exit", "id", id, "error", readErr)
 		return
 	}
+	if attempt.specified() && !attempt.matches(st) {
+		unlock()
+		s.logger.Info(
+			"runner exit ignored for stale attempt",
+			"id", id,
+			"expected_sandbox_id", attempt.sandboxID,
+			"expected_pid", attempt.processPID,
+			"current_sandbox_id", st.SandboxID,
+			"current_pid", st.ProcessPID,
+		)
+		return
+	}
 	if st.Status != state.StatusCreating && st.Status != state.StatusRunning {
+		s.recordLateRunnerExitEvidence(id, &st, attempt, result, err)
 		unlock()
 		return
 	}
 	if shouldCheckGitHubBusyAfterRunnerExit(result, err) {
 		unlock()
-		if s.keepRunnerRunningWhenGitHubBusy(id, st, result, err) {
-			return
-		}
+		busy, busyErr := s.githubRunnerBusy(context.Background(), st)
 		unlock = s.lockRunner(id)
 		st, readErr = s.store.ReadState(id)
 		if readErr != nil {
@@ -770,15 +805,60 @@ func (s *Server) runnerExited(id string, result sandboxrunner.ExitResult, err er
 			s.logger.Error("read state after runner exit busy check", "id", id, "error", readErr)
 			return
 		}
-		if st.Status != state.StatusCreating && st.Status != state.StatusRunning {
+		if !attempt.matches(st) {
 			unlock()
 			return
+		}
+		if st.Status != state.StatusCreating && st.Status != state.StatusRunning {
+			s.recordLateRunnerExitEvidence(id, &st, attempt, result, err)
+			unlock()
+			return
+		}
+		if busyErr != nil {
+			s.logger.Warn("could not verify github runner busy state after runner exit", "id", id, "runner_name", st.RunnerName, "error", busyErr)
+			s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte("could not verify github runner busy state after runner exit: "+busyErr.Error()+"\n"))
+		} else if busy {
+			message := "runner process stream ended while GitHub still reports the runner is busy"
+			if err != nil {
+				message += ": " + err.Error()
+			} else {
+				message += ": " + runnerExitMessage(result)
+			}
+			st.Status = state.StatusRunning
+			st.LastErrorCode = "github_runner_busy"
+			st.LastErrorMessage = message
+			st.LastErrorRetryable = true
+			st.Error = message
+			if st.AssignedJobName == "" {
+				st.AssignedJobName = runnerJobStartedMarker
+			}
+			if writeErr := s.store.WriteState(st); writeErr != nil {
+				s.logger.Error("write running state after busy runner exit", "id", id, "error", writeErr)
+				s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte("write running state after busy runner exit failed: "+writeErr.Error()+"\n"))
+				st, readErr = s.store.ReadState(id)
+				if readErr != nil {
+					unlock()
+					s.logger.Error("read state after busy runner exit write failure", "id", id, "error", readErr)
+					return
+				}
+				if !attempt.matches(st) || (st.Status != state.StatusCreating && st.Status != state.StatusRunning) {
+					unlock()
+					return
+				}
+			} else {
+				s.logger.Warn("runner process stream ended while github runner is busy; keeping sandbox running", "id", id, "runner_name", st.RunnerName, "sandbox_id", st.SandboxID, "error", st.Error)
+				s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte(message+"; keeping sandbox running\n"))
+				s.refreshMetrics()
+				unlock()
+				return
+			}
 		}
 	}
 	defer func() {
 		unlock()
 		s.retainWorkflowJobResultAfterRunnerExit(id)
 	}()
+	setTerminationSource(&st, state.TerminationSourceProcessExit)
 	if err != nil {
 		st.Status = state.StatusFailed
 		st.Error = err.Error()
@@ -806,6 +886,8 @@ func (s *Server) runnerExited(id string, result sandboxrunner.ExitResult, err er
 		s.writeStateOrLog(id, st, "write failed exit state")
 		return
 	}
+	exitCode := result.ExitCode
+	st.RunnerExitCode = &exitCode
 	if result.ExitCode == 0 {
 		s.logger.Info("runner process exited", "id", id, "exit_code", result.ExitCode)
 		s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte("runner process exited cleanly\n"))
@@ -847,6 +929,24 @@ func (s *Server) runnerExited(id string, result sandboxrunner.ExitResult, err er
 	}
 	s.writeStateOrLog(id, st, "write exited state")
 	s.refreshMetrics()
+}
+
+func (s *Server) recordLateRunnerExitEvidence(id string, st *state.RunnerState, attempt runnerAttemptIdentity, result sandboxrunner.ExitResult, err error) {
+	if !attempt.matches(*st) || err != nil || st.RunnerExitCode != nil ||
+		(st.Status != state.StatusStopping && !isTerminalRunnerStatus(st.Status)) {
+		return
+	}
+	exitCode := result.ExitCode
+	st.RunnerExitCode = &exitCode
+	if writeErr := s.store.WriteState(*st); writeErr != nil {
+		s.logger.Error("write late runner exit code", "id", id, "exit_code", result.ExitCode, "error", writeErr)
+		return
+	}
+	s.logger.Info("runner process exit observed after cleanup started", "id", id, "exit_code", result.ExitCode)
+	s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte(fmt.Sprintf(
+		"runner process exited after cleanup started with code %d\n",
+		result.ExitCode,
+	)))
 }
 
 func (s *Server) retainWorkflowJobResultAfterRunnerExit(id string) {
@@ -899,55 +999,6 @@ func shouldCheckGitHubBusyAfterRunnerExit(result sandboxrunner.ExitResult, err e
 	if err == nil && result.ExitCode == 0 {
 		return false
 	}
-	return true
-}
-
-func (s *Server) keepRunnerRunningWhenGitHubBusy(id string, st state.RunnerState, result sandboxrunner.ExitResult, err error) bool {
-	busy, busyErr := s.githubRunnerBusy(context.Background(), st)
-	if busyErr != nil {
-		s.logger.Warn("could not verify github runner busy state after runner exit", "id", id, "runner_name", st.RunnerName, "error", busyErr)
-		s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte("could not verify github runner busy state after runner exit: "+busyErr.Error()+"\n"))
-		return false
-	}
-	if !busy {
-		return false
-	}
-	unlock := s.lockRunner(id)
-	defer unlock()
-	latest, readErr := s.store.ReadState(id)
-	if readErr != nil {
-		s.logger.Error("read state after busy runner exit check", "id", id, "error", readErr)
-		return false
-	}
-	if latest.Status != state.StatusCreating && latest.Status != state.StatusRunning {
-		return true
-	}
-	if latest.RunnerName != st.RunnerName || latest.SandboxID != st.SandboxID {
-		s.logger.Info("busy runner exit ignored because runner identity changed", "id", id, "runner_name", st.RunnerName, "sandbox_id", st.SandboxID)
-		return true
-	}
-	message := "runner process stream ended while GitHub still reports the runner is busy"
-	if err != nil {
-		message += ": " + err.Error()
-	} else {
-		message += ": " + runnerExitMessage(result)
-	}
-	latest.Status = state.StatusRunning
-	latest.LastErrorCode = "github_runner_busy"
-	latest.LastErrorMessage = message
-	latest.LastErrorRetryable = true
-	latest.Error = message
-	if latest.AssignedJobName == "" {
-		latest.AssignedJobName = runnerJobStartedMarker
-	}
-	if writeErr := s.store.WriteState(latest); writeErr != nil {
-		s.logger.Error("write running state after busy runner exit", "id", id, "error", writeErr)
-		s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte("write running state after busy runner exit failed: "+writeErr.Error()+"\n"))
-		return false
-	}
-	s.logger.Warn("runner process stream ended while github runner is busy; keeping sandbox running", "id", id, "runner_name", latest.RunnerName, "sandbox_id", latest.SandboxID, "error", latest.Error)
-	s.store.AppendStagedLog(id, "control.log", runnerEventStageRunnerExit, []byte(message+"; keeping sandbox running\n"))
-	s.refreshMetrics()
 	return true
 }
 
@@ -1015,7 +1066,7 @@ func (s *Server) recoverRunner(ctx context.Context, id string) error {
 		return nil
 	case state.StatusStopping:
 		unlock()
-		_, _, err := s.stopRunner(ctx, id, github.WorkflowJob{})
+		_, _, err := s.stopRunner(ctx, id, github.WorkflowJob{}, state.TerminationSourceRecoveryCleanup)
 		return err
 	case state.StatusCreating, state.StatusRunning:
 		stateVersion := st.Version
@@ -1035,7 +1086,7 @@ func (s *Server) recoverActiveRunner(ctx context.Context, st state.RunnerState, 
 		hasJob = false
 	}
 	if hasJob && strings.EqualFold(strings.TrimSpace(job.Status), "completed") {
-		latest, _, err := s.stopRunner(ctx, st.ID, job)
+		latest, _, err := s.stopRunner(ctx, st.ID, job, state.TerminationSourceRecoveryCleanup)
 		if err != nil {
 			return err
 		}
@@ -1062,7 +1113,7 @@ func (s *Server) recoverActiveRunner(ctx context.Context, st state.RunnerState, 
 	// Keep this gate buffered and signal it exactly once after RecoverRunner
 	// returns: false on error or a deferred version-guard decision on success.
 	// That prevents an attached OnExit watcher from owning rejected state.
-	exitWatchAccepted := make(chan bool, 1)
+	exitWatchAccepted := make(chan runnerAttemptIdentity, 1)
 	result, err := sandboxService.RecoverRunner(ctx, sandboxrunner.RecoverInput{
 		RequestID:      st.ID,
 		SandboxID:      st.SandboxID,
@@ -1070,13 +1121,14 @@ func (s *Server) recoverActiveRunner(ctx context.Context, st state.RunnerState, 
 		Timeout:        timeout,
 		CommandContext: s.loopCtx,
 		OnExit: func(result sandboxrunner.ExitResult, err error) {
-			if <-exitWatchAccepted {
-				s.runnerExited(st.ID, result, err)
+			attempt := <-exitWatchAccepted
+			if attempt.specified() {
+				s.runnerExitedForAttempt(st.ID, attempt, result, err)
 			}
 		},
 	})
 	if err != nil {
-		exitWatchAccepted <- false
+		exitWatchAccepted <- runnerAttemptIdentity{}
 		if st.Status == state.StatusRunning && errors.Is(err, sandboxrunner.ErrSandboxNotFound) {
 			s.failAndStopRunnerVersion(ctx, st.ID, stateVersion, "recovery", "sandbox_not_found", "runner sandbox no longer exists after restart")
 			return nil
@@ -1105,7 +1157,7 @@ func (s *Server) recoverActiveRunner(ctx context.Context, st state.RunnerState, 
 		return fmt.Errorf("reconnect runner: %w", err)
 	}
 
-	acceptExitWatch := false
+	acceptExitWatch := runnerAttemptIdentity{}
 	defer func() {
 		exitWatchAccepted <- acceptExitWatch
 	}()
@@ -1140,7 +1192,7 @@ func (s *Server) recoverActiveRunner(ctx context.Context, st state.RunnerState, 
 	if err := s.store.WriteState(latest); err != nil {
 		return fmt.Errorf("write recovered runner state: %w", err)
 	}
-	acceptExitWatch = true
+	acceptExitWatch = runnerAttemptIdentity{sandboxID: result.SandboxID, processPID: result.PID}
 	s.logger.Info("runner reconnected after restart", "id", st.ID, "sandbox_id", result.SandboxID, "pid", result.PID)
 	s.store.AppendLog(st.ID, "control.log", []byte(fmt.Sprintf("runner reconnected after restart sandbox_id=%s pid=%d\n", result.SandboxID, result.PID)))
 	s.recordAudit("recovery", "runner.reconnected", "runner_request", latest.ID, map[string]any{
@@ -1209,17 +1261,17 @@ func (s *Server) requeueInterruptedCreation(id string, stateVersion int64) error
 	return nil
 }
 
-func (s *Server) stopIfExists(ctx context.Context, id string, job github.WorkflowJob) {
+func (s *Server) stopIfExists(ctx context.Context, id string, job github.WorkflowJob, source string) {
 	if _, err := s.store.ReadState(id); err != nil {
 		s.logger.Info("stop skipped because runner state does not exist", "id", id)
 		return
 	}
-	if _, _, err := s.stopRunner(ctx, id, job); err != nil {
+	if _, _, err := s.stopRunner(ctx, id, job, source); err != nil {
 		s.logger.Error("stop runner", "id", id, "error", err)
 	}
 }
 
-func (s *Server) stopRunner(ctx context.Context, id string, job github.WorkflowJob) (state.RunnerState, bool, error) {
+func (s *Server) stopRunner(ctx context.Context, id string, job github.WorkflowJob, source string) (state.RunnerState, bool, error) {
 	unlock := s.lockRunner(id)
 	defer unlock()
 
@@ -1282,6 +1334,7 @@ func (s *Server) stopRunner(ctx context.Context, id string, job github.WorkflowJ
 			workflowConclusion(job),
 		)))
 	}
+	setTerminationSource(&st, source)
 	stopStartedAt := time.Now()
 	markRunnerCleanupStarted(&st, stopStartedAt)
 	if err := s.store.WriteState(st); err != nil {
@@ -1431,6 +1484,7 @@ func (s *Server) failAndStopRunnerVersion(ctx context.Context, id string, expect
 	}
 	stopStartedAt := time.Now()
 	markRunnerCleanupStarted(&st, stopStartedAt)
+	setTerminationSource(&st, state.TerminationSourceFailureCleanup)
 	st.FailureStage = stage
 	st.FailureReason = reason
 	st.Error = message
@@ -1481,6 +1535,13 @@ func (s *Server) failAndStopRunnerVersion(ctx context.Context, id string, expect
 	metrics.RecordWorkflowFailure(st.RepositoryFullName, "unknown", workflowJobName(st, github.WorkflowJob{}), st.ProfileName, stage, reason)
 	s.recordWorkflowRunDuration(st, "", workflowJobName(st, github.WorkflowJob{}), "failure")
 	s.refreshMetrics()
+}
+
+func setTerminationSource(st *state.RunnerState, source string) {
+	if st == nil || strings.TrimSpace(st.TerminationSource) != "" {
+		return
+	}
+	st.TerminationSource = strings.TrimSpace(source)
 }
 
 func (s *Server) cleanupGitHubRunner(ctx context.Context, st state.RunnerState) error {
