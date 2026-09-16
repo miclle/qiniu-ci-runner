@@ -48,7 +48,9 @@ import {
   appRouteAccess,
   authRouteViewState,
   createLatestUserLoadGate,
+  createScopedRequestGate,
   loadOptionalUserResource,
+  mergeUserRunnerPages,
   shouldPollAdminSection,
   shouldPollUserRoute,
   userDataResources,
@@ -150,11 +152,13 @@ function App() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
   const [userRunners, setUserRunners] = useState<RunnerState[]>([])
   const [userRunnerTotal, setUserRunnerTotal] = useState(0)
+  const [userJobsLoad, setUserJobsLoad] = useState<{ account: string; status: "ready" | "error" } | null>(null)
+  const [githubAppLoad, setGithubAppLoad] = useState<{ account: string; status: "ready" | "error" } | null>(null)
+  const userRunnerRequestGate = useRef(createScopedRequestGate()).current
   const [loadingUserRunnerHistory, setLoadingUserRunnerHistory] = useState(false)
   const [githubApp, setGitHubApp] = useState<GitHubAppConfig | null>(null)
-  const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null)
-  const [userPreferencesScope, setUserPreferencesScope] = useState("")
-  const [productTourOnboarding, setProductTourOnboarding] = useState<ProductTourOnboarding | null>(null)
+  const [scopedUserPreferences, setScopedUserPreferences] = useState<{ account: string; scope: string; value: UserPreferences } | null>(null)
+  const [scopedProductTourOnboarding, setScopedProductTourOnboarding] = useState<{ account: string; value: ProductTourOnboarding } | null>(null)
   const [authorizedRepositories, setAuthorizedRepositories] = useState<Record<number, string[]>>({})
   const [repositoryErrors, setRepositoryErrors] = useState<Record<number, string>>({})
   const [loadingRepositoriesFor, setLoadingRepositoriesFor] = useState<number | null>(null)
@@ -165,6 +169,11 @@ function App() {
   const runnerRequestLookupGeneration = useRef(0)
   const [sandboxRegions, setSandboxRegions] = useState<SandboxRegion[]>([])
   const runnerRequestIdentifier = runnerRequestIdentifierFromAdminPath(locationPath)
+  const currentAccount = authSession.login ?? ""
+  const currentGithubApp = githubAppLoad?.account === currentAccount ? githubApp : null
+  const userPreferences = scopedUserPreferences?.account === currentAccount ? scopedUserPreferences.value : null
+  const userPreferencesScope = scopedUserPreferences?.account === currentAccount ? scopedUserPreferences.scope : ""
+  const productTourOnboarding = scopedProductTourOnboarding?.account === currentAccount ? scopedProductTourOnboarding.value : null
 
   useEffect(() => {
     void fetchSandboxRegions().then((regions) => {
@@ -292,7 +301,7 @@ function App() {
   const accountSettingsTab = accountSettingsRoute?.tab
   const selectedRepositoryAccountLogin = repositoryAccountLogin(locationPath, authSession.login)
   const selectedRepositoryInstallation = selectRepositoryInstallation(
-    githubApp?.installations ?? [],
+    currentGithubApp?.installations ?? [],
     selectedRepositoryAccountLogin,
     authSession.login,
   )
@@ -426,62 +435,15 @@ function App() {
     const loadID = userLoadGate.begin(`${authSession.login ?? ""}:${locationPath}`)
     if (!authSession.authenticated || (hasAccess && isAdminRoute)) return
     const resources = polling ? userPollingResources(locationPath) : userDataResources(locationPath)
-    if (resources.length === 0) {
-      setLoading(false)
-      return
+    if (resources.length === 0) return
+    const account = authSession.login ?? ""
+    if (!polling && resources.includes("runner_requests")) {
+      setUserJobsLoad((current) => current?.account === account && current.status === "error" ? null : current)
     }
-    setLoading(true)
-    try {
-      const [appData, runnerPage, onboardingData] = await Promise.all([
-        resources.includes("github_app")
-          ? request(userGitHubAppPath(locationPath))
-          : Promise.resolve(null),
-        resources.includes("runner_requests")
-          ? requestUserRunnerPage(userRunnerRequestLimit(locationPath, polling), 0)
-          : Promise.resolve(null),
-        resources.includes("onboarding")
-          ? loadOptionalUserResource(request("/user/onboarding/product-tour"))
-          : Promise.resolve(null),
-      ])
-      const nextApp = appData as GitHubAppConfig | null
-      let nextPreferences: UserPreferences | null = null
-      let nextPreferencesScope = ""
-      if (resources.includes("preferences") && nextApp) {
-        const nextRoute = parseAccountSettingsRoute(locationPath, authSession.login)
-        const repositoryLogin = repositoryAccountLogin(locationPath, authSession.login)
-        const repositoryInstallation = repositoryLogin
-          ? selectRepositoryInstallation(
-              nextApp.installations,
-              repositoryLogin,
-              authSession.login,
-            )
-          : undefined
-        const installationID = repositoryLogin
-          ? repositoryInstallation?.account_login?.toLowerCase() ===
-            authSession.login?.toLowerCase()
-            ? undefined
-            : repositoryInstallation?.id
-          : settingsPreferenceInstallationID(
-              nextApp.installations,
-              nextRoute?.accountLogin,
-              authSession.login,
-            )
-        const preferencesPath = userPreferencesPath(installationID)
-        const preferencesData = await request(preferencesPath)
-        nextPreferences = preferencesData as UserPreferences
-        nextPreferencesScope = installationID ? `github_installation:${installationID}` : "account"
-      }
-      if (!userLoadGate.isCurrent(loadID)) return
-      if (nextApp) setGitHubApp(nextApp)
-      if (runnerPage) {
-        setUserRunnerTotal(runnerPage.total)
-        setUserRunners((current) => polling ? mergeUserRunnerPages(runnerPage.items, current) : runnerPage.items)
-        if (runnerPage.total === 0) setUserSelectedKey("")
-      }
-      if (onboardingData) setProductTourOnboarding(onboardingData as ProductTourOnboarding)
-      if (nextPreferences) setUserPreferences(nextPreferences)
-      if (nextPreferencesScope) setUserPreferencesScope(nextPreferencesScope)
-    } catch (error) {
+    if (resources.includes("github_app")) {
+      setGithubAppLoad((current) => current?.account === account && current.status === "error" ? null : current)
+    }
+    const reportError = (error: unknown) => {
       if (!userLoadGate.isCurrent(loadID)) return
       if (requiresGitHubReauthentication(error)) {
         if (beginGitHubReauthentication()) {
@@ -490,20 +452,99 @@ function App() {
         }
         return
       }
-      toast.error(error instanceof Error ? error.message : appI18n.t("app.workspaceLoadFailed"))
-    } finally {
-      if (userLoadGate.isCurrent(loadID)) setLoading(false)
+      if (!polling) toast.error(error instanceof Error ? error.message : appI18n.t("app.workspaceLoadFailed"))
     }
-  }, [authSession.authenticated, authSession.login, beginGitHubReauthentication, hasAccess, isAdminRoute, locationPath, refreshGitHubOAuthLogin, request, requestUserRunnerPage, userLoadGate])
+    const tasks: Promise<unknown>[] = []
+
+    const runnerRequest = resources.includes("runner_requests")
+      ? userRunnerRequestGate.begin(`${account}:${locationPath}`)
+      : null
+    if (runnerRequest) {
+      tasks.push(requestUserRunnerPage(userRunnerRequestLimit(locationPath, polling), 0)
+        .then((runnerPage) => {
+          if (!userLoadGate.isCurrent(loadID)) return
+          setUserRunnerTotal(runnerPage.total)
+          setUserRunners((current) => polling ? mergeUserRunnerPages(runnerPage.items, current) : runnerPage.items)
+          setUserJobsLoad({ account, status: "ready" })
+          if (runnerPage.total === 0) setUserSelectedKey("")
+        })
+        .catch((error) => {
+          if (userLoadGate.isCurrent(loadID) && !polling) {
+            setUserJobsLoad((current) => current?.account === account && current.status === "ready"
+              ? current
+              : { account, status: "error" })
+          }
+          reportError(error)
+        })
+        .finally(() => {
+          userRunnerRequestGate.finish(runnerRequest)
+        }))
+    }
+
+    if (resources.includes("github_app")) {
+      tasks.push(request(userGitHubAppPath(locationPath))
+        .then(async (data) => {
+          const nextApp = data as GitHubAppConfig
+          if (!userLoadGate.isCurrent(loadID)) return
+          setGitHubApp(nextApp)
+          setGithubAppLoad({ account, status: "ready" })
+          if (!resources.includes("preferences")) return
+          const nextRoute = parseAccountSettingsRoute(locationPath, authSession.login)
+          const repositoryLogin = repositoryAccountLogin(locationPath, authSession.login)
+          const repositoryInstallation = repositoryLogin
+            ? selectRepositoryInstallation(nextApp.installations, repositoryLogin, authSession.login)
+            : undefined
+          const installationID = repositoryLogin
+            ? repositoryInstallation?.account_login?.toLowerCase() === authSession.login?.toLowerCase()
+              ? undefined
+              : repositoryInstallation?.id
+            : settingsPreferenceInstallationID(nextApp.installations, nextRoute?.accountLogin, authSession.login)
+          return request(userPreferencesPath(installationID))
+            .then((preferencesData) => {
+              if (!userLoadGate.isCurrent(loadID)) return
+              setScopedUserPreferences({
+                account,
+                scope: installationID ? `github_installation:${installationID}` : "account",
+                value: preferencesData as UserPreferences,
+              })
+            })
+            .catch((error) => {
+              if (!userLoadGate.isCurrent(loadID)) return
+              if (requiresGitHubReauthentication(error)) {
+                reportError(error)
+              } else {
+                toast.error(appI18n.t("app.preferencesLoadFailed"))
+              }
+            })
+        })
+        .catch((error) => {
+          if (userLoadGate.isCurrent(loadID)) {
+            setGithubAppLoad((current) => current?.account === account && current.status === "ready"
+              ? current
+              : { account, status: "error" })
+          }
+          reportError(error)
+        }))
+    }
+
+    if (resources.includes("onboarding")) {
+      tasks.push(loadOptionalUserResource(request("/user/onboarding/product-tour"))
+        .then((data) => {
+          if (data && userLoadGate.isCurrent(loadID)) setScopedProductTourOnboarding({ account, value: data as ProductTourOnboarding })
+        }))
+    }
+    await Promise.all(tasks)
+  }, [authSession.authenticated, authSession.login, beginGitHubReauthentication, hasAccess, isAdminRoute, locationPath, refreshGitHubOAuthLogin, request, requestUserRunnerPage, userLoadGate, userRunnerRequestGate])
 
   const saveProductTourOnboarding = useCallback(async (state: ProductTourOnboarding) => {
+    const account = authSession.login ?? ""
     const saved = (await request("/user/onboarding/product-tour", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(state),
     })) as ProductTourOnboarding
-    setProductTourOnboarding(saved)
-  }, [request])
+    setScopedProductTourOnboarding({ account, value: saved })
+  }, [authSession.login, request])
 
   const loadUserRunnerHistory = useCallback(async () => {
     if (!authSession.authenticated || loadingUserRunnerHistory) return
@@ -611,42 +652,42 @@ function App() {
     mode: "custom" | "inherit" = "custom",
     replaceInheritedSource = false,
   ) => {
+    const account = authSession.login ?? ""
     const preferences = (await request(userPreferencesPath(installationID, "/user/preferences/sandbox"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode, api_url: apiURL, api_key: apiKey, replace_inherited_source: replaceInheritedSource }),
     })) as UserPreferences
-    setUserPreferences(preferences)
-    setUserPreferencesScope(installationID ? `github_installation:${installationID}` : "account")
+    setScopedUserPreferences({ account, scope: installationID ? `github_installation:${installationID}` : "account", value: preferences })
     toast.success(appI18n.t("app.sandboxSaved"))
-  }, [request])
+  }, [authSession.login, request])
 
   const saveCacheConfig = useCallback(async (input: { bucket: string; prefix: string; access_key_id: string; secret_access_key: string }, installationID?: number) => {
+    const account = authSession.login ?? ""
     const preferences = (await request(userPreferencesPath(installationID, "/user/preferences/cache"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     })) as UserPreferences
-    setUserPreferences(preferences)
-    setUserPreferencesScope(installationID ? `github_installation:${installationID}` : "account")
+    setScopedUserPreferences({ account, scope: installationID ? `github_installation:${installationID}` : "account", value: preferences })
     toast.success(t("user.cacheS3SettingsSaved"))
-  }, [request])
+  }, [authSession.login, request, t])
 
   const deleteCacheConfig = useCallback(async (installationID?: number) => {
+    const account = authSession.login ?? ""
     const preferences = (await request(userPreferencesPath(installationID, "/user/preferences/cache"), { method: "DELETE" })) as UserPreferences
-    setUserPreferences(preferences)
-    setUserPreferencesScope(installationID ? `github_installation:${installationID}` : "account")
+    setScopedUserPreferences({ account, scope: installationID ? `github_installation:${installationID}` : "account", value: preferences })
     toast.success(t("user.cacheS3SettingsRemoved"))
-  }, [request])
+  }, [authSession.login, request, t])
 
   const deleteSandboxAPIKey = useCallback(async (installationID?: number) => {
+    const account = authSession.login ?? ""
     const preferences = (await request(userPreferencesPath(installationID, "/user/preferences/sandbox-api-key"), {
       method: "DELETE",
     })) as UserPreferences
-    setUserPreferences(preferences)
-    setUserPreferencesScope(installationID ? `github_installation:${installationID}` : "account")
+    setScopedUserPreferences({ account, scope: installationID ? `github_installation:${installationID}` : "account", value: preferences })
     toast.success(appI18n.t("app.apiKeyRemoved"))
-  }, [request])
+  }, [authSession.login, request])
 
   const {
     runnerSpecOpen,
@@ -758,10 +799,14 @@ function App() {
   useEffect(() => {
     if (!authSession.authenticated || (hasAccess && isAdminRoute)) return
     void loadUserAll()
-    if (!shouldPollUserRoute(locationPath)) return
-    const timer = window.setInterval(() => void loadUserAll(true), 5000)
-    return () => window.clearInterval(timer)
-  }, [authSession.authenticated, hasAccess, isAdminRoute, loadUserAll, locationPath])
+    const timer = shouldPollUserRoute(locationPath)
+      ? window.setInterval(() => void loadUserAll(true), 5000)
+      : null
+    return () => {
+      if (timer !== null) window.clearInterval(timer)
+      userRunnerRequestGate.reset()
+    }
+  }, [authSession.authenticated, hasAccess, isAdminRoute, loadUserAll, locationPath, userRunnerRequestGate])
 
   useEffect(() => {
     const showsRepositoryReadiness = Boolean(
@@ -826,6 +871,12 @@ function App() {
     setAuditEvents([])
     setUserRunners([])
     setUserRunnerTotal(0)
+    setUserJobsLoad(null)
+    setGithubAppLoad(null)
+    setScopedUserPreferences(null)
+    setScopedProductTourOnboarding(null)
+    userLoadGate.begin("")
+    userRunnerRequestGate.reset()
     setGitHubApp(null)
     setAuthorizedRepositories({})
     setRepositoryErrors({})
@@ -1029,13 +1080,18 @@ function App() {
       <>
         <UserDashboard
           authSession={authSession}
-          githubApp={githubApp}
+          githubApp={currentGithubApp}
           locationPath={locationPath}
           productTourOnboarding={productTourOnboarding}
           userPreferences={userPreferences}
           userPreferencesScope={userPreferencesScope}
-          runners={userRunners}
-          runnerTotal={userRunnerTotal}
+          runners={userJobsLoad?.account === (authSession.login ?? "") ? userRunners : []}
+          runnerTotal={userJobsLoad?.account === (authSession.login ?? "") ? userRunnerTotal : 0}
+          loadingJobs={userJobsLoad?.account !== (authSession.login ?? "")}
+          jobsLoadFailed={userJobsLoad?.account === (authSession.login ?? "") && userJobsLoad.status === "error"}
+          loadingGitHubApp={githubAppLoad?.account !== (authSession.login ?? "")}
+          accountsLoadFailed={githubAppLoad?.account === (authSession.login ?? "") && githubAppLoad.status === "error"}
+          onRetryJobs={() => void loadUserAll()}
           loadingRunnerHistory={loadingUserRunnerHistory}
           selectedKey={userSelectedKey}
           selectedJobID={userSelectedJobID}
@@ -1430,17 +1486,6 @@ function withSearchParam(path: string, key: string, value: string) {
 function withPreservedJobSearch(path: string, search: string) {
   const job = new URLSearchParams(search).get("job")
   return job ? withSearchParam(path, "job", job) : path
-}
-
-function mergeUserRunnerPages(primary: RunnerState[], existing: RunnerState[]): RunnerState[] {
-  const merged: RunnerState[] = []
-  const seen = new Set<string>()
-  for (const runner of [...primary, ...existing]) {
-    if (seen.has(runner.id)) continue
-    seen.add(runner.id)
-    merged.push(runner)
-  }
-  return merged
 }
 
 function decodeRepositoryPath(ownerSegment: string, repoSegment: string) {

@@ -100,6 +100,11 @@ export function UserDashboard({
   userPreferencesScope,
   runners,
   runnerTotal,
+  loadingJobs,
+  jobsLoadFailed,
+  loadingGitHubApp,
+  accountsLoadFailed,
+  onRetryJobs,
   loadingRunnerHistory,
   selectedKey,
   selectedJobID,
@@ -136,6 +141,11 @@ export function UserDashboard({
   userPreferencesScope: string
   runners: RunnerState[]
   runnerTotal: number
+  loadingJobs: boolean
+  jobsLoadFailed: boolean
+  loadingGitHubApp: boolean
+  accountsLoadFailed: boolean
+  onRetryJobs: () => void
   loadingRunnerHistory: boolean
   selectedKey: string
   selectedJobID: string
@@ -371,6 +381,11 @@ export function UserDashboard({
           request={request}
           runnerCount={runners.length}
           runnerTotal={runnerTotal}
+          loadingJobs={loadingJobs}
+          jobsLoadFailed={jobsLoadFailed}
+          loadingGitHubApp={loadingGitHubApp}
+          accountsLoadFailed={accountsLoadFailed}
+          onRetryJobs={onRetryJobs}
           loadingRunnerHistory={loadingRunnerHistory}
           onLoadRunnerHistory={onLoadRunnerHistory}
         />
@@ -1170,6 +1185,11 @@ function PullRequestsPage({
   request,
   runnerCount,
   runnerTotal,
+  loadingJobs,
+  jobsLoadFailed,
+  loadingGitHubApp,
+  accountsLoadFailed,
+  onRetryJobs,
   loadingRunnerHistory,
   onLoadRunnerHistory,
 }: {
@@ -1186,6 +1206,11 @@ function PullRequestsPage({
   request: (url: string, options?: RequestInit) => Promise<unknown>
   runnerCount: number
   runnerTotal: number
+  loadingJobs: boolean
+  jobsLoadFailed: boolean
+  loadingGitHubApp: boolean
+  accountsLoadFailed: boolean
+  onRetryJobs: () => void
   loadingRunnerHistory: boolean
   onLoadRunnerHistory: () => void
 }) {
@@ -1214,6 +1239,12 @@ function PullRequestsPage({
       <div className="grid min-h-0 flex-1 xl:grid-cols-[360px_minmax(0,1fr)] xl:overflow-hidden">
         <aside className="min-h-0 border-r bg-muted/20">
           <div className="flex h-full flex-col">
+            {accountsLoadFailed && !loadingJobs && !jobsLoadFailed ? (
+              <div className="flex items-center justify-between gap-2 border-b p-3 text-sm text-muted-foreground" role="alert">
+                <span>{t("user.accountsLoadFailed")}</span>
+                <Button type="button" size="sm" variant="outline" onClick={onRetryJobs}>{t("user.tryAgain")}</Button>
+              </div>
+            ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto">
               {groups.length ? (
                 <>
@@ -1253,9 +1284,22 @@ function PullRequestsPage({
                     </div>
                   ) : null}
                 </>
+              ) : jobsLoadFailed ? (
+                <div className="space-y-3 p-4 text-sm text-muted-foreground">
+                  <p>{t("user.jobsLoadFailed")}</p>
+                  <Button type="button" size="sm" variant="outline" onClick={onRetryJobs}>{t("user.tryAgain")}</Button>
+                </div>
+              ) : loadingJobs || loadingGitHubApp ? (
+                <div className="space-y-3 p-4" role="status" aria-label={t(loadingJobs ? "user.loadingJobs" : "user.loadingAccounts")}>
+                  <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
+                    {loadingJobs ? t("user.loadingJobs") : t("user.loadingAccounts")}
+                  </span>
+                  {[0, 1, 2].map((item) => <div key={item} className="h-14 rounded-md bg-muted/60 motion-safe:animate-pulse" aria-hidden="true" />)}
+                </div>
               ) : (
                 <div className="p-4 text-sm text-muted-foreground">
-                  {hasInstallations ? (
+                  {hasInstallations || accountsLoadFailed ? (
                     t("user.noJobsYet")
                   ) : (
                     t("user.syncToTrackJobs")
@@ -1321,12 +1365,22 @@ function PullRequestsPage({
                     </section>
                   </div>
                 </div>
-                {selectedJob ? <RunnerJobLogPanel job={selectedJob} request={request} /> : (
+                {selectedJob ? <RunnerJobLogPanel key={selectedJob.id} job={selectedJob} request={request} /> : (
                   <div className="rounded-lg border bg-muted/30 p-6 text-sm text-muted-foreground">
                     {t("user.selectJob")}
                   </div>
                 )}
               </div>
+            </div>
+          ) : jobsLoadFailed ? (
+            <div className="p-4 lg:p-6"><div className="rounded-lg border bg-muted/30 p-6 text-sm text-muted-foreground">
+              {t("user.jobsLoadFailed")}
+            </div></div>
+          ) : loadingJobs || loadingGitHubApp ? (
+            <div className="space-y-5 p-4 lg:p-6" aria-hidden="true">
+              <div className="h-8 w-2/5 rounded-md bg-muted/60 motion-safe:animate-pulse" />
+              <div className="h-5 w-3/5 rounded-md bg-muted/50 motion-safe:animate-pulse" />
+              <div className="h-48 rounded-lg border bg-muted/20 motion-safe:animate-pulse" />
             </div>
           ) : (
             <div className="p-4 lg:p-6">
@@ -1334,7 +1388,7 @@ function PullRequestsPage({
                 <div className="rounded-lg border bg-muted/30 p-6 text-sm text-muted-foreground">
                   {t("user.groupNotFound")}
                 </div>
-              ) : hasInstallations ? (
+              ) : hasInstallations || accountsLoadFailed ? (
                 <div className="rounded-lg border bg-muted/30 p-6 text-sm text-muted-foreground">
                   {t("user.noRunnerJobs")}
                 </div>
@@ -1475,6 +1529,7 @@ function RunnerJobLogPanel({
 }) {
   const { t, i18n } = useTranslation()
   const [selectedLog, setSelectedLog] = useState<(typeof logNames)[number]>("control.log")
+  const [activeTab, setActiveTab] = useState("github-logs")
   const [runnerLogText, setRunnerLogText] = useState<LocalizedLogText>({ kind: "message", key: "user.loadingRunnerLog" })
   const [githubLog, setGithubLog] = useState<GitHubLogState>({ kind: "log", text: { kind: "message", key: "user.loadingGitHubLog" } })
   const [githubLogLoading, setGithubLogLoading] = useState(false)
@@ -1495,6 +1550,7 @@ function RunnerJobLogPanel({
   }, [endpoint])
 
   useEffect(() => {
+    if (activeTab !== "runner-logs") return
     let active = true
     queueMicrotask(() => {
       if (active) {
@@ -1517,7 +1573,7 @@ function RunnerJobLogPanel({
     return () => {
       active = false
     }
-  }, [endpoint, request, selectedLog])
+  }, [activeTab, endpoint, request, selectedLog])
 
   useEffect(() => {
     let active = true
@@ -1586,7 +1642,7 @@ function RunnerJobLogPanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Tabs defaultValue="github-logs" className="flex min-h-0 flex-1 flex-col gap-0">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col gap-0">
         <TabsList className={jobLogTabsListClassName}>
           <TabsTrigger className={jobLogTabsTriggerClassName} value="github-logs">{t("user.githubLogs")}</TabsTrigger>
           <TabsTrigger className={jobLogTabsTriggerClassName} value="runner-logs">{t("user.runnerLogs")}</TabsTrigger>
