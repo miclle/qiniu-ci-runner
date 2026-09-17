@@ -79,7 +79,7 @@ Use `task smee` for standalone GitHub webhook forwarding. It reads `.smee-url` a
 
 Use `task build` when verifying production embedded UI behavior because it rebuilds `internal/server/ui/` before compiling `bin/runnerd`.
 
-Public runner templates are built with `qiniu/qshell` 2.19.10 or newer.
+Public runner templates are built with `qiniu/qshell` 2.19.13 or newer.
 All eight public builds use `templates/` as their Docker context. Shared setup
 functions, helper scripts, and the sole Actions Runner version/SHA-256/size pin
 live in `templates/common/`; retain per-Ubuntu setup differences and keep the
@@ -87,7 +87,11 @@ Runner pin COPY after provisioning so upgrades preserve earlier cache layers.
 Keep the host-side archive checksum, sixteen small COPY chunks, and remote full
 checksum in the same Docker `RUN` as runtime installation; qshell does not
 restore cached `/tmp` outputs. Keep every qshell `path = ".."` and the `-large`
-source links aligned. Build tasks stage ignored archive chunks under
+source links aligned. Keep `disk_size_mb = 20480` in the four standard TOML
+files and `81920` in the four `-large` files; these values apply only at
+creation, so a same-name template with a different disk size needs an explicit
+physical-template migration. Build tasks
+stage ignored archive chunks under
 `templates/common/.build/`; reuse verified chunks without replacing them so
 parallel qshell uploads read stable files. Never commit the archive or chunks.
 `task template-build-ubuntu-*` performs the real remote template build and

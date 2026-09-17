@@ -19,16 +19,24 @@ registration remained. See
 [`templates/README.md`](../templates/README.md) for pinned upstream provenance,
 the compatibility contract, and per-image differences.
 
+The four standard build configs now request `disk_size_mb = 20480` (20 GiB)
+for new templates. The previously verified regional templates keep their
+original disk size until their physical IDs/names are migrated; rebuilding a
+same-name template cannot resize it. Build, publish, and catalog checks enforce
+20,480 MiB before promoting this revision.
+
 The four `-large` variants reuse the standard Dockerfiles and scripts through
-repository links and use distinct physical template names. They are public
-operator-configured default Runner Specs: operators enable them through the
+repository links and use distinct physical template names. They are documented
+operator-configured Runner Specs: operators enable them through the
 custom-spec path with explicit template IDs. They are not runnerd-managed
 defaults, but all allowed workflows may use their documented labels when the
-corresponding specs are enabled. Their 80-GiB root
-disk is supplied by the Sandbox provider's team/tier build allocation, not a
-field in `qshell.sandbox.toml` or a qshell CLI flag. Configure that allocation
-to 81,920 MiB before building the large variants and verify the resulting
-catalog `disk_size_mb` before publication.
+corresponding specs are enabled. Each large `qshell.sandbox.toml` requests an
+80-GiB disk with `disk_size_mb = 81920` when creating a new template; the
+provider must accept the requested allocation. Qshell ignores this setting
+when rebuilding an existing same-name template. The build and publish helpers
+reject a template whose actual disk size differs from its tracked config, and
+the catalog check repeats that verification before release.
+[Qshell v2.19.13 documents the create-only disk option](https://github.com/qiniu/qshell/blob/v2.19.13/docs/sandbox_template_build.md#L29-L48).
 
 All eight qshell configurations use `templates/` as the build context. The
 Dockerfiles copy shared setup functions and helper scripts from
@@ -151,10 +159,10 @@ warning and continues registration so non-Docker jobs can still run.
 ## Software compatibility
 
 These templates track the pinned `actions/runner-images` reports item by item,
-but they are not byte-for-byte GitHub-hosted runner images. The current Qiniu
-Sandbox public-template build allocation exposes a 22,222-MiB root disk, while
-the complete GitHub-hosted runner inventory requires more space. The three
-versioned templates guarantee the Ubuntu Slim-compatible core on the requested
+but they are not byte-for-byte GitHub-hosted runner images. Earlier standard
+regional templates have roughly 22,222-MiB root disks; this revision requests
+20,480 MiB. The complete GitHub-hosted runner inventory requires more space.
+The three versioned templates guarantee the Ubuntu Slim-compatible core on the requested
 Ubuntu release, plus Apache, Podman, Buildah, Skopeo, Ninja, Docker support,
 pinned Pester for installer validation, the preinstalled Actions runner, and
 the runner filesystem contract.
@@ -168,7 +176,7 @@ dependency, but workflows must not rely on it.
 
 ## Requirements
 
-- `qiniu/qshell` 2.19.10 or newer;
+- `qiniu/qshell` 2.19.13 or newer;
 - `task`, `jq`, `curl`, `sha256sum`, and `split` on the build host;
 - a `QINIU_API_KEY` for the selected Sandbox region;
 - `QINIU_SANDBOX_API_URL` set to that region's endpoint.
@@ -218,10 +226,16 @@ task template-build-ubuntu-24-04-large
 task template-build-ubuntu-26-04-large
 ```
 
-Before running a large build target, configure the Sandbox provider's build
-allocation to 81,920 MiB. Qshell does not carry a per-template disk parameter,
-so the operator must verify the resulting template's catalog `disk_size_mb`
-before publication and smoke testing.
+Standard and large build targets request 20,480 MiB and 81,920 MiB,
+respectively, from their tracked TOML files when creating new templates.
+Qshell does not apply disk size to a same-name rebuild. If an existing name
+has a different disk size, the public build helper fails before downloading
+the Runner archive; replacing that physical template needs a planned ID/name
+migration. A named standard development build remains separate from this
+public-name check. Do not remove an old template while a Runner Spec still
+references its ID. After creating the replacement, check its actual catalog
+`disk_size_mb`, run release smoke, and only then switch the referencing specs
+and publish it. A provider quota can still reject the requested allocation.
 
 The Dockerfiles keep `bootstrap`, `platform`, `node`, `toolchain`, and
 `runtime` work in separate qshell-compatible cache layers where applicable.
@@ -266,7 +280,9 @@ task template-defaults-check
 
 `template-defaults-check` requires exactly one public `ready` or `uploaded`
 template with a nonempty ID for every physical name, including the four large
-variants. It rejects missing and duplicate catalog entries.
+variants. It rejects missing and duplicate catalog entries, a standard
+template whose `diskSizeMB` is not 20,480 MiB, or a large template whose
+`diskSizeMB` is not 81,920 MiB.
 
 Retain each ID printed by the catalog check, then run actual Sandbox smoke:
 
@@ -302,9 +318,12 @@ Complete the whole build, publish, catalog, and smoke sequence in this order:
 1. Export
    `QINIU_SANDBOX_API_URL=https://cn-yangzhou-1-sandbox.qiniuapi.com` and the
    Yangzhou `QINIU_API_KEY`.
-2. Build and publish the four standard templates. After the provider
-   disk-allocation gate is available, build and publish the four large variants,
-   then run `task template-defaults-check` and smoke all eight returned IDs.
+2. Plan the ID/name transition for existing standard and large templates
+   whose disk size differs from the tracked request, keeping old referenced
+   IDs available. Build and publish the four standard replacements. After
+   the provider accepts an 81,920-MiB request, build and publish the four
+   large replacements; then run `task template-defaults-check` and smoke all
+   eight returned IDs.
 3. Retain the build output, catalog IDs, smoke JSON, and relevant workflow URL.
 4. Export
    `QINIU_SANDBOX_API_URL=https://us-south-1-sandbox.qiniuapi.com` and the

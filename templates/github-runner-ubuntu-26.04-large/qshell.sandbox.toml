@@ -4,4 +4,5 @@ dockerfile = "../github-runner-ubuntu-26.04/Dockerfile"
 path = ".."
 cpu_count = 8
 memory_mb = 8192
+disk_size_mb = 81920
 no_cache = false

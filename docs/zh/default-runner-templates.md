@@ -17,13 +17,20 @@ Managed Runner Spec rollout 已于 2026-08-04（CST）通过
 上游版本来源、兼容性契约和各镜像差异见
 [`templates/README.md`](../../templates/README.md)。
 
+4 份标准模板的构建配置现为新模板请求 `disk_size_mb = 20480`（20 GiB）。
+此前已验证的区域模板会保留原磁盘大小，直到完成物理 ID／名称迁移；同名重建不能
+调整磁盘。构建、发布与 catalog 检查会在本次配置发布前要求实际值为
+20,480 MiB。
+
 4 个 `-large` 变体通过仓库软链复用标准 Dockerfile 和脚本，并使用不同的物理
-模板名称。它们是对外可用的 operator 配置默认 Runner Spec：operator 通过自定义
+模板名称。它们是已文档化的 operator 配置 Runner Spec：operator 通过自定义
 spec 路径在 Admin 中创建并启用带显式 template ID 的条目。它们不属于 runnerd
 managed defaults，但对应 spec 启用后，所有允许的 workflow 都可以使用文档中的
-labels。其 80 GiB 根磁盘来自 Sandbox provider 的 team/tier 构建配额，不是
-`qshell.sandbox.toml` 字段或 qshell CLI 参数。构建 large 变体前应把该配额配置为
-81,920 MiB，并在发布前验证 catalog 返回的 `disk_size_mb`。
+labels。每份 large 模板的 `qshell.sandbox.toml` 都设置了
+`disk_size_mb = 81920`，用于创建新模板时请求 80 GiB 磁盘；provider 仍需接受该
+配额。qshell 在重建同名模板时会忽略此字段。构建和发布脚本会拒绝实际磁盘
+大小与配置不符的模板，发布前的 catalog 检查也会再次验证。
+[qshell v2.19.13 文档说明了磁盘参数仅在创建时生效](https://github.com/qiniu/qshell/blob/v2.19.13/docs/sandbox_template_build.md#L29-L48)。
 
 8 份 qshell 配置均以 `templates/` 为构建上下文。Dockerfile 从
 `templates/common/` 复制共用的安装函数和辅助脚本；各标准模板仍保留对应
@@ -131,9 +138,9 @@ runnerd 记录 warning 后继续注册，使不依赖 Docker 的 jobs 仍可运�
 ## 软件兼容性
 
 这些模板会逐项跟踪固定版本的 `actions/runner-images` 软件报告，但并非与 GitHub
-托管 Runner 镜像逐字节一致。当前 Qiniu Sandbox 公共模板构建配额提供
-22,222 MiB 根磁盘，而完整 GitHub 托管 Runner 软件清单需要更大空间。因此，3 个
-版本化模板保证在对应 Ubuntu 版本上提供与 Ubuntu Slim 兼容的核心工具，并额外
+托管 Runner 镜像逐字节一致。此前的标准区域模板约有 22,222 MiB 根磁盘；
+本次配置请求 20,480 MiB。完整 GitHub 托管 Runner 软件清单需要更大空间。
+因此，3 个版本化模板保证在对应 Ubuntu 版本上提供与 Ubuntu Slim 兼容的核心工具，并额外
 提供 Apache、Podman、Buildah、Skopeo、Ninja、Docker 支持、预装 Actions
 Runner、用于 installer 验证的固定版本 Pester，以及 Runner 文件系统契约。
 
@@ -145,7 +152,7 @@ Runner、用于 installer 验证的固定版本 Pester，以及 Runner 文件系
 
 ## 环境要求
 
-- `qiniu/qshell` 2.19.10 或更高版本；
+- `qiniu/qshell` 2.19.13 或更高版本；
 - 构建机器上的 `task`、`jq`、`curl`、`sha256sum` 和 `split`；
 - 当前 Sandbox 区域的 `QINIU_API_KEY`；
 - 指向当前区域端点的 `QINIU_SANDBOX_API_URL`。
@@ -190,9 +197,13 @@ task template-build-ubuntu-24-04-large
 task template-build-ubuntu-26-04-large
 ```
 
-运行 large 构建目标前，必须把 Sandbox provider 的构建配额配置为 81,920 MiB。
-Qshell 不携带单模板磁盘参数，因此 operator 必须在发布和 smoke 前验证模板 catalog
-返回的 `disk_size_mb`。
+标准和 large 构建目标分别通过已追踪的 TOML 为新模板请求 20,480 MiB 和
+81,920 MiB，但 qshell 不会将该值应用于同名模板的 rebuild。如果同名公共模板
+的实际磁盘大小与配置不符，构建脚本会在下载 Runner 归档前失败；使用自定义名称
+构建的标准开发模板不受此公共名称检查限制。需规划物理模板 ID／名称迁移，仍有
+Runner Spec 引用旧 ID 时不得移除旧模板。新模板创建后，先核对 catalog 的实际
+`disk_size_mb`，完成 release smoke，再切换引用它的 spec 并发布。provider 配额
+仍可能拒绝请求。
 
 Dockerfile 会按需将 `bootstrap`、`platform`、`node`、`toolchain` 和
 `runtime` 工作保留为独立的 qshell 兼容缓存层。模板版本元数据会在预置工作
@@ -232,7 +243,8 @@ task template-defaults-check
 ```
 
 `template-defaults-check` 要求每个物理名称（包括 4 个 large 变体）都恰好对应 1 个
-公共的 `ready` 或 `uploaded` 模板，且 template ID 非空；缺失或重复条目都会失败。
+公共的 `ready` 或 `uploaded` 模板，且 template ID 非空；缺失、重复、标准模板的
+实际 `diskSizeMB` 不等于 20,480 MiB，或 large 模板不等于 81,920 MiB 都会失败。
 
 保留 catalog 检查输出的 template ID，然后执行真实的 Sandbox smoke：
 
@@ -265,9 +277,10 @@ qshell 模板构建或 Sandbox smoke。
 1. 导出
    `QINIU_SANDBOX_API_URL=https://cn-yangzhou-1-sandbox.qiniuapi.com`，并设置
    扬州区域的 `QINIU_API_KEY`。
-2. 使用 qshell 构建并发布 4 个标准模板。provider 磁盘配额门禁可用后，再构建并发布
-   4 个 large 变体，然后运行 `task template-defaults-check`，并对全部 8 个 ID 做
-   smoke 验证。
+2. 为实际磁盘大小与配置不符的标准和 large 模板规划物理 ID／名称迁移，并保留
+   仍被引用的旧 ID。构建并发布 4 个标准替代模板；provider 接受 81,920 MiB 请求
+   后，再构建并发布 4 个 large 替代模板。随后运行
+   `task template-defaults-check`，并对全部 8 个 ID 做 smoke 验证。
 3. 保存构建输出、catalog ID、smoke JSON 和相关 workflow URL。
 4. 导出
    `QINIU_SANDBOX_API_URL=https://us-south-1-sandbox.qiniuapi.com`，并设置

@@ -148,6 +148,11 @@ Keep `SMEE_TARGET` aligned with the runnerd port when testing webhook forwarding
   an offline archive split/reassembly, checksum, reuse, and concurrent preparation
   test. Real template proof
   still requires qshell `Status: ready` and the regional `template-smoke` gates.
+- Template builds require qshell 2.19.13 or newer; public build/publish helpers
+  check the actual disk size. Standard and large TOML files request 20,480 and
+  81,920 MiB, respectively, only at creation; a same-name rebuild cannot resize
+  an older template. The regional catalog check must confirm both sizes before
+  promoting this revision.
 
 ## Deployment Smoke
 

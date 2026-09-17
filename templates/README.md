@@ -30,12 +30,22 @@ labels were end-to-end verified by
 [GitHub Actions run 30858489153](https://github.com/miclle/qiniu-ci-runner-test/actions/runs/30858489153)
 on 2026-08-04 CST; every request completed and its Sandbox was cleaned.
 
+The four standard `qshell.sandbox.toml` files now request
+`disk_size_mb = 20480` (20 GiB) at creation. Earlier published templates
+retain their original roughly 22-GiB disks: qshell ignores this setting on a
+same-name rebuild. The build, publish, and catalog gates check the actual
+20-GiB disk before this revision can replace those templates. Migrating an
+existing stable name requires a planned ID/name transition.
+
 The four `-large` variants reuse the standard Dockerfiles and scripts through
-in-repository links, but use distinct provider template names and an 80-GiB
-provider allocation. Disk size is controlled by the Sandbox provider's
-team/tier build allocation rather than qshell configuration. Set it to 81,920
-MiB before building, verify catalog `disk_size_mb`, and keep these variants in
-`development` until they reach the same regional smoke gate.
+in-repository links, but use distinct provider template names. Their tracked
+`qshell.sandbox.toml` files request `disk_size_mb = 81920` (80 GiB) when
+creating a new template. The provider must accept this allocation. Qshell
+ignores the field when rebuilding an existing same-name template, so an older
+smaller template must be replaced through a separately planned ID/name
+migration; rebuilding it cannot resize it. The build and publish helpers check
+the actual disk size, and these variants remain in `development` until they
+pass the same regional catalog and smoke gates.
 
 All eight builds use `templates/` as their Docker context. The four standard
 Dockerfiles copy shared setup functions and helper programs directly from
@@ -74,8 +84,9 @@ The contract has no compatibility percentage. Every upstream item is either
 `provided` with an executable verification command or `excluded` with a
 specific Qiniu Sandbox limitation.
 
-The current public-template build allocation exposes a 22,222-MiB root disk.
-The complete GitHub-hosted runner image exceeds that allocation. The three
+The earlier standard public-template build allocation exposed a roughly
+22,222-MiB root disk; the new standard request is 20,480 MiB. The complete
+GitHub-hosted runner image exceeds either allocation. The three
 versioned templates therefore guarantee the pinned Ubuntu Slim-compatible
 core on the requested Ubuntu release, plus Apache, Podman, Buildah, Skopeo,
 Ninja, pinned Pester for build-time validation, and the Qiniu runner contract.
@@ -179,7 +190,7 @@ Sandbox conformance runs it in the actual Qiniu template runtime.
 ## Build and verification
 
 Qiniu Sandbox templates are officially built and published with
-`qiniu/qshell` 2.19.10 or newer.
+`qiniu/qshell` 2.19.13 or newer.
 Docker builds are local conformance inputs only: a successful Docker build does
 not create, rebuild, or publish a Qiniu Sandbox template.
 
