@@ -186,7 +186,7 @@ Then build the actual Sandbox templates with qshell. Each target waits for
 qshell to report terminal `Status: ready`; a zero process exit without that
 status is treated as a failed build.
 
-The source gate rejects Actions Runner versions below `2.336.0`. Release smoke
+The source gate rejects Actions Runner versions below `2.337.0`. Release smoke
 checks the exact common-pinned Runner version and the template name/version
 persisted into the Sandbox runtime environment. It also loads NVM as the
 `runner` user and requires `/home/runner/.nvm` to be writable, preventing a

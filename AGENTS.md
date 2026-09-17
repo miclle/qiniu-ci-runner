@@ -80,6 +80,11 @@ Use `task smee` for standalone GitHub webhook forwarding. It reads `.smee-url` a
 Use `task build` when verifying production embedded UI behavior because it rebuilds `internal/server/ui/` before compiling `bin/runnerd`.
 
 Public runner templates are built with `qiniu/qshell` 2.19.10 or newer.
+All eight public builds use `templates/` as their Docker context. Shared setup
+functions, helper scripts, and the sole Actions Runner version/SHA-256 pin live
+in `templates/common/`; retain per-Ubuntu setup differences and keep the Runner
+pin COPY immediately before the runtime phase so upgrades preserve provisioning
+cache layers. Keep every qshell `path = ".."` and the `-large` source links aligned.
 `task template-build-ubuntu-*` performs the real remote template build and
 requires `QINIU_SANDBOX_API_URL` plus `QINIU_API_KEY`. A local Docker build is
 diagnostic only and does not prove that a Sandbox template exists or is

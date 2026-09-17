@@ -232,7 +232,7 @@ HTTPS, the exact Cloudflare resolver configuration, Docker, a runner-owned
 writable NVM home, writable work/tool-cache paths, and cleanup. Full
 per-inventory runtime conformance and local Docker builds remain optional
 diagnostics; neither is a substitute for the remote usability gate.
-The source gate rejects an Actions Runner version below `2.336.0`, while the
+The source gate rejects an Actions Runner version below `2.337.0`, while the
 compatibility contract checks the exact version in the common pin. Update the
 runner version, official archive checksum, and compatibility verification
 together. Python and pipx upstream installers use bounded retries

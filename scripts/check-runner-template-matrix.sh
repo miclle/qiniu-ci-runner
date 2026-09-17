@@ -4,7 +4,7 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 templates_readme="${RUNNER_TEMPLATES_README:-templates/README.md}"
-minimum_runner_version="${MINIMUM_ACTIONS_RUNNER_VERSION:-2.336.0}"
+minimum_runner_version="${MINIMUM_ACTIONS_RUNNER_VERSION:-2.337.0}"
 runner_env="templates/common/actions-runner.env"
 
 fail() {

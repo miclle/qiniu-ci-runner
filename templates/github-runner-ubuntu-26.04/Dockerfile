@@ -193,7 +193,7 @@ RUN set -eux; \
 COPY common/actions-runner.env /usr/local/share/qiniu-sandbox-runner-template/actions-runner.env
 RUN TEMPLATE_FLAVOR=versioned RUNNER_TEMPLATE_PHASE=runtime bash /usr/local/share/qiniu-sandbox-runner-template/setup-template.sh
 
-ARG TEMPLATE_VERSION=20260817.1
+ARG TEMPLATE_VERSION=20260917.1
 ENV ImageVersion=$TEMPLATE_VERSION \
     IMAGE_VERSION=$TEMPLATE_VERSION
 

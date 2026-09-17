@@ -1571,6 +1571,24 @@ esac
 		len(result.Results) != 9 {
 		t.Fatalf("release smoke result = %#v, want nine passing usability and identity checks plus cleanup", result)
 	}
+	runnerEnv, err := os.ReadFile(filepath.Join(repositoryRoot(t), "templates", "common", "actions-runner.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerVersionMatch := regexp.MustCompile(`(?m)^RUNNER_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$`).FindSubmatch(runnerEnv)
+	if len(runnerVersionMatch) != 2 {
+		t.Fatal("shared Actions Runner version is missing")
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(repositoryRoot(t), "templates", "github-runner-ubuntu-26.04", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateVersionMatch := regexp.MustCompile(`(?m)^ARG TEMPLATE_VERSION=([0-9.]+)$`).FindSubmatch(dockerfile)
+	if len(templateVersionMatch) != 2 {
+		t.Fatal("Ubuntu 26.04 template version is missing")
+	}
+	runnerVersion := string(runnerVersionMatch[1])
+	templateVersion := string(templateVersionMatch[1])
 	runnerVersionChecked := false
 	runtimeMetadataChecked := false
 	nvmHomeChecked := false
@@ -1581,12 +1599,12 @@ esac
 		}
 		if check.Name == "preinstalled Actions runner" {
 			runnerVersionChecked = strings.Contains(check.Command, "Runner.Listener --version") &&
-				strings.Contains(check.Command, `= "2.336.0"`)
+				strings.Contains(check.Command, `= "`+runnerVersion+`"`)
 		}
 		if check.Name == "runtime image metadata" {
 			runtimeMetadataChecked = strings.Contains(check.Command, `"$IMAGE_TEMPLATE" = "github-runner-ubuntu-26-04"`) &&
-				strings.Contains(check.Command, `"$ImageVersion" = "20260817.1"`) &&
-				strings.Contains(check.Command, `"$IMAGE_VERSION" = "20260817.1"`)
+				strings.Contains(check.Command, `"$ImageVersion" = "`+templateVersion+`"`) &&
+				strings.Contains(check.Command, `"$IMAGE_VERSION" = "`+templateVersion+`"`)
 		}
 		if check.Name == "Cloudflare DNS" {
 			cloudflareDNSChecked = strings.Contains(check.Command, `nameserver 1.1.1.1`) &&

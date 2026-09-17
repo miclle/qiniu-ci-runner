@@ -165,7 +165,7 @@ task template-check-all
 然后使用 qshell 构建真正的 Sandbox 模板。每个任务都会等待 qshell 输出终态
 `Status: ready`；如果进程退出码为 0，却没有出现该状态，任务仍会判定构建失败。
 
-源码门槛会拒绝低于 `2.336.0` 的 Actions Runner。Release smoke 会检查
+源码门槛会拒绝低于 `2.337.0` 的 Actions Runner。Release smoke 会检查
 common 文件固定的 Runner 精确版本，以及持久化到 Sandbox 运行时环境中的模板名和
 模板版本。它还会以 `runner` 用户加载 NVM，并要求 `/home/runner/.nvm` 可写，
 防止 root 所有的构建 skeleton 错误通过发布门禁。完整 runtime conformance 还会

@@ -4,6 +4,7 @@ This file tracks active project work. Completed behavior should move into `READM
 
 ## Active Roadmap
 
+- Complete [Issue #93](https://github.com/qiniu/ci-runner/issues/93) release promotion after the shared-source Actions Runner 2.337.0 change: record a ready Ubuntu 24.04 Sandbox build canary, rebuild the maintained standard and `-large` templates with the required provider disk allocations, run release smoke in `cn-yangzhou-1` and `us-south-1`, verify representative workflows and cleanup, then publish and check the regional catalogs. Source checks and local tests alone do not establish this release gate.
 - If the original llgo network failure recurs, capture comparable live GitHub API, Ubuntu archive, and LLVM APT evidence from the same running Sandbox before changing diagnostics again. The original root cause remains unverified without that same-window evidence.
 - Keep a separate downloadable diagnostic bundle out of the active roadmap unless a real need emerges for cross-team handoff without UI access, long-term offline archiving, or repeated manual evidence assembly. The Admin Runner request page and its retained timeline remain the single diagnostic surface.
 - Plan separately authorized cleanup of historical `runner_requests.github_payload_json` after verifying GitHub context and installation-ID backfills on a backup. New requests no longer store raw webhook bodies; existing payloads, the legacy column, and startup backfill remain. Historical request/log retention and repeated-log limits are still undecided.
