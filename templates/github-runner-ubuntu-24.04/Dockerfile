@@ -86,9 +86,28 @@ RUN set -eux; \
     cp -a /etc/skel/.nvm /home/runner/.nvm; \
     chown -R runner:runner /home/runner/.nvm
 COPY common/actions-runner.env /usr/local/share/qiniu-sandbox-runner-template/actions-runner.env
-RUN TEMPLATE_FLAVOR=versioned RUNNER_TEMPLATE_PHASE=runtime bash /usr/local/share/qiniu-sandbox-runner-template/setup-template.sh
+COPY common/scripts/assemble-runner-archive /usr/local/share/qiniu-sandbox-runner-template/assemble-runner-archive
+RUN install -d -m 0755 /opt/qiniu-runner-build-cache/actions-runner
+COPY common/.build/actions-runner/part-000 /opt/qiniu-runner-build-cache/actions-runner/part-000
+COPY common/.build/actions-runner/part-001 /opt/qiniu-runner-build-cache/actions-runner/part-001
+COPY common/.build/actions-runner/part-002 /opt/qiniu-runner-build-cache/actions-runner/part-002
+COPY common/.build/actions-runner/part-003 /opt/qiniu-runner-build-cache/actions-runner/part-003
+COPY common/.build/actions-runner/part-004 /opt/qiniu-runner-build-cache/actions-runner/part-004
+COPY common/.build/actions-runner/part-005 /opt/qiniu-runner-build-cache/actions-runner/part-005
+COPY common/.build/actions-runner/part-006 /opt/qiniu-runner-build-cache/actions-runner/part-006
+COPY common/.build/actions-runner/part-007 /opt/qiniu-runner-build-cache/actions-runner/part-007
+COPY common/.build/actions-runner/part-008 /opt/qiniu-runner-build-cache/actions-runner/part-008
+COPY common/.build/actions-runner/part-009 /opt/qiniu-runner-build-cache/actions-runner/part-009
+COPY common/.build/actions-runner/part-010 /opt/qiniu-runner-build-cache/actions-runner/part-010
+COPY common/.build/actions-runner/part-011 /opt/qiniu-runner-build-cache/actions-runner/part-011
+COPY common/.build/actions-runner/part-012 /opt/qiniu-runner-build-cache/actions-runner/part-012
+COPY common/.build/actions-runner/part-013 /opt/qiniu-runner-build-cache/actions-runner/part-013
+COPY common/.build/actions-runner/part-014 /opt/qiniu-runner-build-cache/actions-runner/part-014
+COPY common/.build/actions-runner/part-015 /opt/qiniu-runner-build-cache/actions-runner/part-015
+RUN bash /usr/local/share/qiniu-sandbox-runner-template/assemble-runner-archive && \
+    TEMPLATE_FLAVOR=versioned RUNNER_TEMPLATE_PHASE=runtime bash /usr/local/share/qiniu-sandbox-runner-template/setup-template.sh
 
-ARG TEMPLATE_VERSION=20260917.1
+ARG TEMPLATE_VERSION=20260917.3
 ENV ImageVersion=$TEMPLATE_VERSION \
     IMAGE_VERSION=$TEMPLATE_VERSION
 

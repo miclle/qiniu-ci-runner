@@ -380,6 +380,10 @@ task release-check # 验证发布构建
 远程构建超时后的缓存续跑、发布与 smoke 命令见
 [公共 Runner 模板](docs/zh/default-runner-templates.md)。公共安装代码和
 Actions Runner 版本固定值位于 `templates/common/`。
+构建命令先在本机下载并校验官方 Runner 归档，再以较小的 COPY 分片上传，
+远端拼接后会再次校验完整归档。
+2.337.0 候选版已通过一次开发模板构建与 Sandbox smoke，发布前仍需完成文档中的
+双区域 release gate。
 
 ## 文档
 

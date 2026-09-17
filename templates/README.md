@@ -43,10 +43,11 @@ Dockerfiles copy shared setup functions and helper programs directly from
 base image, and tool pins. The `-large` variants use the same source through
 their standard-template links. Keep the tracked `path = ".."` setting in each
 qshell config so remote builds include `common/`. The single Actions Runner
-version and Linux x64 archive SHA-256 live in
-`templates/common/actions-runner.env`. Each Dockerfile copies that file just
-before its `runtime` phase, so a Runner upgrade retains the earlier provisioned
-layers. This is a shared source directory, not another physical Sandbox
+version, Linux x64 archive SHA-256, and archive size live in
+`templates/common/actions-runner.env`. Each Dockerfile copies that file after
+provisioning and before cached archive downloads and runtime installation, so
+a Runner upgrade retains the earlier provisioned layers. This is a shared
+source directory, not another physical Sandbox
 template or provider-side inheritance layer.
 
 Publication state is restricted to `development`, `published`, or `verified`.
@@ -210,7 +211,16 @@ its Pester contract. Large emoji-font, ICU, RPM, Tk, Xvfb, binutils, and
 `systemd-coredump` dependency sets are isolated, and the final batch is
 open-ended so appended pinned packages are not skipped; this keeps slow
 Resolute mirrors from trapping the whole package set in one non-cacheable
-timeout. If the remote builder hits its hard
+timeout. The build task downloads the official Actions Runner archive on the
+operator's machine and verifies its pinned version, size, and SHA-256. It then
+stages sixteen ignored chunks of at most 16 MiB each for separate qshell COPY
+layers. Concurrent build tasks reuse verified chunks without replacing files
+during upload. The remote builder verifies each chunk size and the complete
+archive SHA-256 in the same `RUN` as runtime installation, so a cache-resumed
+build does not depend on restoring `/tmp`. If a new Runner archive exceeds
+256 MiB,
+increase the Dockerfile chunk count and its matrix gate when updating the
+common pin. If the remote builder hits its hard
 time limit after one or more phases finish, rerun the same
 `template-build-*` task with cache enabled; completed phases are reused. Do not
 use `--no-cache` for that recovery, and do not publish until one build reaches

@@ -34,8 +34,18 @@ All eight qshell configurations use `templates/` as the build context. The
 Dockerfiles copy shared setup functions and helper scripts from
 `templates/common/`, while each standard image retains its Ubuntu-specific
 steps. `templates/common/actions-runner.env` is the single source for the
-Actions Runner version and Linux x64 archive checksum. It is copied only before
-the runtime phase so version upgrades reuse earlier provisioning layers.
+Actions Runner version, Linux x64 archive checksum, and archive size. It is
+copied only before the runtime phase so version upgrades reuse earlier
+provisioning layers. Build tasks download and verify the official archive on
+the operator's machine, then qshell uploads sixteen small COPY chunks. Verified
+chunks remain stable across concurrent build tasks. The remote builder
+reassembles them and verifies the complete SHA-256 in the same `RUN` as runtime
+installation, including cache-resumed builds. The checked local archive is
+cached under `.build/`; the chunks under `templates/common/.build/` are ignored
+by Git.
+The 2.337.0 branch candidate has one ready Ubuntu 24.04 development build and
+smoke in the configured Sandbox environment; the full two-region, eight-template
+promotion gate remains open.
 `common/` is source code, not a physical Sandbox template.
 
 ## Public catalog API
@@ -159,7 +169,7 @@ dependency, but workflows must not rely on it.
 ## Requirements
 
 - `qiniu/qshell` 2.19.10 or newer;
-- `task`, `jq`, and `curl`;
+- `task`, `jq`, `curl`, `sha256sum`, and `split` on the build host;
 - a `QINIU_API_KEY` for the selected Sandbox region;
 - `QINIU_SANDBOX_API_URL` set to that region's endpoint.
 

@@ -30,11 +30,16 @@ test -f "$templates_readme" || fail "missing templates README $templates_readme"
 test -f "$runner_env" || fail "missing shared Actions Runner pin $runner_env"
 runner_version="$(sed -n 's/^RUNNER_VERSION=//p' "$runner_env")"
 runner_archive_sha256="$(sed -n 's/^RUNNER_ARCHIVE_SHA256=//p' "$runner_env")"
+runner_archive_size="$(sed -n 's/^RUNNER_ARCHIVE_SIZE=//p' "$runner_env")"
 [[ "$runner_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid shared Actions Runner version"
 [[ "$runner_archive_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid shared Actions Runner SHA-256"
+[[ "$runner_archive_size" =~ ^[0-9]+$ ]] && [ "$runner_archive_size" -gt 0 ] ||
+  fail "invalid shared Actions Runner archive size"
+[ "$runner_archive_size" -le $((16 * 16777216)) ] ||
+  fail "Actions Runner archive exceeds the sixteen COPY chunks"
 version_at_least "$runner_version" "$minimum_runner_version" ||
   fail "Actions Runner $runner_version is below required $minimum_runner_version"
-for shared_script in setup-common.sh ensure-docker download-checked-range curl; do
+for shared_script in setup-common.sh ensure-docker download-checked-range assemble-runner-archive curl; do
   test -f "templates/common/scripts/$shared_script" || fail "missing common script $shared_script"
   bash -n "templates/common/scripts/$shared_script" || fail "invalid common script $shared_script"
 done
@@ -107,10 +112,12 @@ for image_key in ubuntu-slim ubuntu-22.04 ubuntu-24.04 ubuntu-26.04 ubuntu-slim-
     test -f "$directory/$required_file" || fail "missing $directory/$required_file"
   done
 
-  ! grep -Eq '^ARG RUNNER_(VERSION|ARCHIVE_SHA256)=' "$directory/Dockerfile" ||
+  ! grep -Eq '^ARG RUNNER_(VERSION|ARCHIVE_SHA256|ARCHIVE_SIZE)=' "$directory/Dockerfile" ||
     fail "$image_key duplicates the shared Actions Runner pin"
   grep -Fq 'COPY common/actions-runner.env /usr/local/share/qiniu-sandbox-runner-template/actions-runner.env' "$directory/Dockerfile" ||
     fail "$image_key must copy the shared Actions Runner pin"
+  grep -Fq 'COPY common/scripts/assemble-runner-archive /usr/local/share/qiniu-sandbox-runner-template/assemble-runner-archive' "$directory/Dockerfile" ||
+    fail "$image_key must copy the shared Runner archive assembler"
   grep -Fq 'COPY common/scripts/setup-common.sh /usr/local/share/qiniu-sandbox-runner-template/setup-common.sh' "$directory/Dockerfile" ||
     fail "$image_key must copy common setup functions"
   grep -Fq 'source /usr/local/share/qiniu-sandbox-runner-template/setup-common.sh' "$directory/scripts/setup-template.sh" ||
@@ -198,10 +205,22 @@ for image_key in ubuntu-slim ubuntu-22.04 ubuntu-24.04 ubuntu-26.04 ubuntu-slim-
   runtime_phase_line="$(grep -nF "RUNNER_TEMPLATE_PHASE=runtime" "$directory/Dockerfile" | cut -d: -f1)"
   toolchain_phase_line="$(grep -nF "RUNNER_TEMPLATE_PHASE=toolchain" "$directory/Dockerfile" | cut -d: -f1)"
   runner_pin_line="$(grep -nF 'COPY common/actions-runner.env ' "$directory/Dockerfile" | cut -d: -f1)"
+  runner_assembler_copy_line="$(grep -nF 'COPY common/scripts/assemble-runner-archive ' "$directory/Dockerfile" | cut -d: -f1)"
+  previous_runner_line="$runner_assembler_copy_line"
+  for ((index = 0; index < 16; index++)); do
+    printf -v part_name 'part-%03d' "$index"
+    part_line="$(grep -nFx "COPY common/.build/actions-runner/$part_name /opt/qiniu-runner-build-cache/actions-runner/$part_name" "$directory/Dockerfile" | cut -d: -f1)"
+    test -n "$part_line" && test "$previous_runner_line" -lt "$part_line" ||
+      fail "$image_key must COPY checked Runner archive chunk $part_name in order"
+    previous_runner_line="$part_line"
+  done
+  runner_assemble_line="$(grep -nFx 'RUN bash /usr/local/share/qiniu-sandbox-runner-template/assemble-runner-archive && \' "$directory/Dockerfile" | cut -d: -f1)"
   user_line="$(grep -nE '^USER[[:space:]]+' "$directory/Dockerfile" | cut -d: -f1)"
   test "$toolchain_phase_line" -lt "$runner_pin_line" &&
-    test "$runner_pin_line" -lt "$runtime_phase_line" ||
-    fail "$image_key must copy the Runner pin only after provisioning and before runtime"
+    test "$runner_pin_line" -lt "$runner_assembler_copy_line" &&
+    test "$previous_runner_line" -lt "$runner_assemble_line" &&
+    test "$runtime_phase_line" -eq "$((runner_assemble_line + 1))" ||
+    fail "$image_key must assemble the checked Runner archive in the runtime RUN after provisioning"
   test -n "$cloudflare_primary_line" && test -n "$cloudflare_secondary_line" && test -n "$resolv_conf_line" ||
     fail "$image_key must configure Cloudflare nameservers 1.1.1.1 and 1.0.0.1"
   test "$runtime_phase_line" -lt "$cloudflare_primary_line" &&

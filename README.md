@@ -395,7 +395,10 @@ Run `task template-check-all`, then use the eight
 [Public Runner Templates](docs/default-runner-templates.md) for publication and
 cache-resume guidance after a remote build time limit, plus publication and
 smoke commands. Shared setup code and the Actions Runner version pin live in
-`templates/common/`.
+`templates/common/`. Build tasks verify the official Runner archive locally,
+upload it as small COPY chunks, and verify it again before installation.
+The 2.337.0 candidate has passed one development Sandbox build and smoke; it
+still needs the documented two-region release gate before publication.
 
 ## Documentation
 

@@ -270,6 +270,7 @@ tasks:
     desc: Check the public runner template matrix, compatibility manifest, and Dockerfiles
     cmds:
       - bash scripts/check-runner-template-matrix.sh
+      - bash scripts/test-prepare-runner-archive.sh
       - bash scripts/check-runner-image-compatibility.sh
       - for: [github-runner-ubuntu-slim, github-runner-ubuntu-22.04, github-runner-ubuntu-24.04, github-runner-ubuntu-26.04, github-runner-ubuntu-slim-large, github-runner-ubuntu-22.04-large, github-runner-ubuntu-24.04-large, github-runner-ubuntu-26.04-large]
         cmd: |

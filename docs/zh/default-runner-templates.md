@@ -28,9 +28,15 @@ labels。其 80 GiB 根磁盘来自 Sandbox provider 的 team/tier 构建配额�
 8 份 qshell 配置均以 `templates/` 为构建上下文。Dockerfile 从
 `templates/common/` 复制共用的安装函数和辅助脚本；各标准模板仍保留对应
 Ubuntu 版本的安装步骤。`templates/common/actions-runner.env` 统一固定
-Actions Runner 版本和 Linux x64 归档校验和，仅在 `runtime` 阶段前复制，
-升级 Runner 时可复用此前的安装层。`common/` 是共享源码目录，并非新的
+Actions Runner 版本、Linux x64 归档校验和及归档大小，仅在 `runtime` 阶段前
+复制，升级 Runner 时可复用此前的安装层。构建命令先在本机下载并校验官方归档，
+再由 qshell 上传 16 个较小的 COPY 分片；并行构建会复用已校验的分片，不会在
+上传期间替换文件。远端在同一个 `RUN` 中拼接、校验完整 SHA-256 并完成 runtime
+安装，缓存续跑无需恢复 `/tmp` 中间文件。本机已校验的归档缓存在 `.build/`，
+分片位于被 Git 忽略的 `templates/common/.build/`。`common/` 是共享源码目录，并非新的
 Sandbox 物理模板。
+2.337.0 分支候选版已有一份就绪的 Ubuntu 24.04 开发模板，并在当前配置的
+Sandbox 环境通过 smoke；双区域、8 个模板的完整发布门槛仍未完成。
 
 ## 公共 Catalog API
 
@@ -140,7 +146,7 @@ Runner、用于 installer 验证的固定版本 Pester，以及 Runner 文件系
 ## 环境要求
 
 - `qiniu/qshell` 2.19.10 或更高版本；
-- `task`、`jq` 和 `curl`；
+- 构建机器上的 `task`、`jq`、`curl`、`sha256sum` 和 `split`；
 - 当前 Sandbox 区域的 `QINIU_API_KEY`；
 - 指向当前区域端点的 `QINIU_SANDBOX_API_URL`。
 

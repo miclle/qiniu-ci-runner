@@ -58,6 +58,7 @@ trap cleanup EXIT
 
 case "$operation" in
   build)
+    bash "$script_root/scripts/prepare-runner-archive.sh"
     (
       cd "$template_dir"
       tmp_config="$(mktemp .qshell-sandbox.XXXXXX)"
