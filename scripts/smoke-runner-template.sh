@@ -111,10 +111,11 @@ case "$image_key" in
 esac
 
 template_dockerfile="$repository_root/templates/$template_directory/Dockerfile"
-expected_runner_version="$(awk -F= '$1 == "ARG RUNNER_VERSION" {print $2; exit}' "$template_dockerfile")"
+runner_env="$repository_root/templates/common/actions-runner.env"
+expected_runner_version="$(sed -n 's/^RUNNER_VERSION=//p' "$runner_env")"
 expected_template_version="$(awk -F= '$1 == "ARG TEMPLATE_VERSION" {print $2; exit}' "$template_dockerfile")"
 test -n "$expected_runner_version" || {
-  echo "could not determine RUNNER_VERSION from $template_dockerfile" >&2
+  echo "could not determine RUNNER_VERSION from $runner_env" >&2
   exit 65
 }
 test -n "$expected_template_version" || {

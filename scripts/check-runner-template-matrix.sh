@@ -5,6 +5,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 templates_readme="${RUNNER_TEMPLATES_README:-templates/README.md}"
 minimum_runner_version="${MINIMUM_ACTIONS_RUNNER_VERSION:-2.336.0}"
+runner_env="templates/common/actions-runner.env"
 
 fail() {
   echo "runner template matrix: $*" >&2
@@ -26,6 +27,17 @@ version_at_least() {
 }
 
 test -f "$templates_readme" || fail "missing templates README $templates_readme"
+test -f "$runner_env" || fail "missing shared Actions Runner pin $runner_env"
+runner_version="$(sed -n 's/^RUNNER_VERSION=//p' "$runner_env")"
+runner_archive_sha256="$(sed -n 's/^RUNNER_ARCHIVE_SHA256=//p' "$runner_env")"
+[[ "$runner_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid shared Actions Runner version"
+[[ "$runner_archive_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid shared Actions Runner SHA-256"
+version_at_least "$runner_version" "$minimum_runner_version" ||
+  fail "Actions Runner $runner_version is below required $minimum_runner_version"
+for shared_script in setup-common.sh ensure-docker download-checked-range curl; do
+  test -f "templates/common/scripts/$shared_script" || fail "missing common script $shared_script"
+  bash -n "templates/common/scripts/$shared_script" || fail "invalid common script $shared_script"
+done
 
 expected_name() {
   case "$1" in
@@ -95,10 +107,30 @@ for image_key in ubuntu-slim ubuntu-22.04 ubuntu-24.04 ubuntu-26.04 ubuntu-slim-
     test -f "$directory/$required_file" || fail "missing $directory/$required_file"
   done
 
-  runner_version="$(awk -F= '$1 == "ARG RUNNER_VERSION" {print $2; exit}' "$directory/Dockerfile")"
-  test -n "$runner_version" || fail "$image_key does not pin RUNNER_VERSION"
-  version_at_least "$runner_version" "$minimum_runner_version" ||
-    fail "$image_key Actions Runner $runner_version is below required $minimum_runner_version"
+  ! grep -Eq '^ARG RUNNER_(VERSION|ARCHIVE_SHA256)=' "$directory/Dockerfile" ||
+    fail "$image_key duplicates the shared Actions Runner pin"
+  grep -Fq 'COPY common/actions-runner.env /usr/local/share/qiniu-sandbox-runner-template/actions-runner.env' "$directory/Dockerfile" ||
+    fail "$image_key must copy the shared Actions Runner pin"
+  grep -Fq 'COPY common/scripts/setup-common.sh /usr/local/share/qiniu-sandbox-runner-template/setup-common.sh' "$directory/Dockerfile" ||
+    fail "$image_key must copy common setup functions"
+  grep -Fq 'source /usr/local/share/qiniu-sandbox-runner-template/setup-common.sh' "$directory/scripts/setup-template.sh" ||
+    fail "$image_key must source common setup functions"
+  bash -n "$directory/scripts/setup-template.sh" || fail "invalid setup script for $image_key"
+  while IFS= read -r shared_function; do
+    ! grep -Fq "$shared_function() {" "$directory/scripts/setup-template.sh" ||
+      fail "$image_key duplicates common function $shared_function"
+  done < <(sed -nE 's/^([a-z_][a-z0-9_]*)\(\) \{/\1/p' templates/common/scripts/setup-common.sh)
+  for helper in ensure-docker download-checked-range curl; do
+    test -L "$directory/scripts/$helper" || fail "$image_key $helper must link to common"
+    test "$(readlink "$directory/scripts/$helper")" = "../../common/scripts/$helper" ||
+      fail "$image_key $helper has an unexpected common link"
+    grep -Fq "COPY common/scripts/$helper " "$directory/Dockerfile" ||
+      fail "$image_key must copy common $helper"
+  done
+  grep -Fq "COPY $base_dir_name/scripts/setup-template.sh " "$directory/Dockerfile" ||
+    fail "$image_key must copy its variant setup script from the shared context"
+  grep -Fq 'path = ".."' "$directory/qshell.sandbox.toml" ||
+    fail "$image_key build context must include templates/common"
 
   template_name="$(
     awk -F= '/^[[:space:]]*name[[:space:]]*=/ {
@@ -164,7 +196,12 @@ for image_key in ubuntu-slim ubuntu-22.04 ubuntu-24.04 ubuntu-26.04 ubuntu-slim-
   cloudflare_secondary_line="$(grep -nF "'nameserver 1.0.0.1'" "$directory/Dockerfile" | cut -d: -f1 || true)"
   resolv_conf_line="$(grep -nF '>/etc/resolv.conf' "$directory/Dockerfile" | cut -d: -f1 || true)"
   runtime_phase_line="$(grep -nF "RUNNER_TEMPLATE_PHASE=runtime" "$directory/Dockerfile" | cut -d: -f1)"
+  toolchain_phase_line="$(grep -nF "RUNNER_TEMPLATE_PHASE=toolchain" "$directory/Dockerfile" | cut -d: -f1)"
+  runner_pin_line="$(grep -nF 'COPY common/actions-runner.env ' "$directory/Dockerfile" | cut -d: -f1)"
   user_line="$(grep -nE '^USER[[:space:]]+' "$directory/Dockerfile" | cut -d: -f1)"
+  test "$toolchain_phase_line" -lt "$runner_pin_line" &&
+    test "$runner_pin_line" -lt "$runtime_phase_line" ||
+    fail "$image_key must copy the Runner pin only after provisioning and before runtime"
   test -n "$cloudflare_primary_line" && test -n "$cloudflare_secondary_line" && test -n "$resolv_conf_line" ||
     fail "$image_key must configure Cloudflare nameservers 1.1.1.1 and 1.0.0.1"
   test "$runtime_phase_line" -lt "$cloudflare_primary_line" &&
@@ -175,7 +212,8 @@ for image_key in ubuntu-slim ubuntu-22.04 ubuntu-24.04 ubuntu-26.04 ubuntu-slim-
   if grep -Eq "['\"]nameserver[[:space:]]+8\\.8\\.(8\\.8|4\\.4)['\"]" "$directory/Dockerfile"; then
     fail "$image_key must not retain Google Public DNS in the final template configuration"
   fi
-  if grep -Fq 'Acquire::https::Verify-Peer=false' "$directory/scripts/setup-template.sh"; then
+  if grep -Fq 'Acquire::https::Verify-Peer=false' "$directory/scripts/setup-template.sh" ||
+    grep -Fq 'Acquire::https::Verify-Peer=false' templates/common/scripts/setup-common.sh; then
     fail "$image_key setup must not disable apt HTTPS peer verification"
   fi
   if [ "$base_key" != ubuntu-22.04 ]; then
@@ -240,7 +278,7 @@ for image_key in ubuntu-slim ubuntu-22.04 ubuntu-24.04 ubuntu-26.04 ubuntu-slim-
         fail "$image_key $shared_entry must point to $base_dir_name/$shared_entry"
     done
     expected_dockerfile="../$base_dir_name/Dockerfile"
-    expected_path="../$base_dir_name"
+    expected_path=".."
     grep -Fq "dockerfile = \"$expected_dockerfile\"" "$directory/qshell.sandbox.toml" ||
       fail "$image_key qshell config must use the in-context Dockerfile $expected_dockerfile"
     grep -Fq "path = \"$expected_path\"" "$directory/qshell.sandbox.toml" ||

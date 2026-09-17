@@ -37,6 +37,18 @@ team/tier build allocation rather than qshell configuration. Set it to 81,920
 MiB before building, verify catalog `disk_size_mb`, and keep these variants in
 `development` until they reach the same regional smoke gate.
 
+All eight builds use `templates/` as their Docker context. The four standard
+Dockerfiles copy shared setup functions and helper programs directly from
+`templates/common/`; each variant keeps its own Ubuntu-specific setup flow,
+base image, and tool pins. The `-large` variants use the same source through
+their standard-template links. Keep the tracked `path = ".."` setting in each
+qshell config so remote builds include `common/`. The single Actions Runner
+version and Linux x64 archive SHA-256 live in
+`templates/common/actions-runner.env`. Each Dockerfile copies that file just
+before its `runtime` phase, so a Runner upgrade retains the earlier provisioned
+layers. This is a shared source directory, not another physical Sandbox
+template or provider-side inheritance layer.
+
 Publication state is restricted to `development`, `published`, or `verified`.
 `published` means the physical template is public in both supported regions.
 `verified` additionally requires Task 10 to attach successful two-region smoke
@@ -214,16 +226,16 @@ The checksum-pinned AWS SAM Range layers sit between `bootstrap` and
 `platform`; rerunning the identical source reuses every completed chunk rather
 than restarting the whole archive. The platform installer runs in the same
 layer as reassembly instead of depending on a cached oversized archive.
-Release smoke checks the OS, architecture, the exact Dockerfile-pinned Actions
+Release smoke checks the OS, architecture, the exact common-pinned Actions
 Runner version, persisted runtime template name/version metadata, outbound
 HTTPS, the exact Cloudflare resolver configuration, Docker, a runner-owned
 writable NVM home, writable work/tool-cache paths, and cleanup. Full
 per-inventory runtime conformance and local Docker builds remain optional
 diagnostics; neither is a substitute for the remote usability gate.
 The source gate rejects an Actions Runner version below `2.336.0`, while the
-compatibility contract checks the exact version pinned by each Dockerfile.
-Update the runner version, official archive checksum, and compatibility
-verification together. Python and pipx upstream installers use bounded retries
+compatibility contract checks the exact version in the common pin. Update the
+runner version, official archive checksum, and compatibility verification
+together. Python and pipx upstream installers use bounded retries
 and longer pip read timeouts because remote template builds must tolerate
 transient package-index failures without retrying unrelated installers.
 The Docker check imports a minimal root filesystem from the Sandbox itself and

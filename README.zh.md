@@ -378,7 +378,8 @@ task release-check # 验证发布构建
 先运行 `task template-check-all`，再通过 8 个
 `task template-build-ubuntu-*` targets 执行真实 qshell Sandbox 构建。发布与
 远程构建超时后的缓存续跑、发布与 smoke 命令见
-[公共 Runner 模板](docs/zh/default-runner-templates.md)。
+[公共 Runner 模板](docs/zh/default-runner-templates.md)。公共安装代码和
+Actions Runner 版本固定值位于 `templates/common/`。
 
 ## 文档
 

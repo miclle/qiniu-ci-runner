@@ -30,6 +30,14 @@ field in `qshell.sandbox.toml` or a qshell CLI flag. Configure that allocation
 to 81,920 MiB before building the large variants and verify the resulting
 catalog `disk_size_mb` before publication.
 
+All eight qshell configurations use `templates/` as the build context. The
+Dockerfiles copy shared setup functions and helper scripts from
+`templates/common/`, while each standard image retains its Ubuntu-specific
+steps. `templates/common/actions-runner.env` is the single source for the
+Actions Runner version and Linux x64 archive checksum. It is copied only before
+the runtime phase so version upgrades reuse earlier provisioning layers.
+`common/` is source code, not a physical Sandbox template.
+
 ## Public catalog API
 
 `GET /api/public/runner-templates` is available to signed-out and signed-in
@@ -179,7 +187,7 @@ qshell to report terminal `Status: ready`; a zero process exit without that
 status is treated as a failed build.
 
 The source gate rejects Actions Runner versions below `2.336.0`. Release smoke
-checks the exact Dockerfile-pinned Runner version and the template name/version
+checks the exact common-pinned Runner version and the template name/version
 persisted into the Sandbox runtime environment. It also loads NVM as the
 `runner` user and requires `/home/runner/.nvm` to be writable, preventing a
 root-owned build skeleton from passing the release gate. Full runtime

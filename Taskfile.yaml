@@ -248,7 +248,7 @@ tasks:
     desc: Check Dockerfiles without building image layers
     cmds:
       - docker build --check -f Dockerfile .
-      - docker build --check --platform=linux/amd64 -f {{.TEMPLATE_DIR}}/Dockerfile {{.TEMPLATE_DIR}}
+      - docker build --check --platform=linux/amd64 -f {{.TEMPLATE_DIR}}/Dockerfile templates
 
   template-deps:
     desc: Check Qiniu sandbox template build dependencies
@@ -275,7 +275,7 @@ tasks:
         cmd: |
           template_dir="{{.ITEM}}"
           base_dir="${template_dir%-large}"
-          docker build --check --platform=linux/amd64 -f "templates/${base_dir}/Dockerfile" "templates/${base_dir}"
+          docker build --check --platform=linux/amd64 -f "templates/${base_dir}/Dockerfile" templates
 
   _template-build:
     internal: true

@@ -25,6 +25,13 @@ labels。其 80 GiB 根磁盘来自 Sandbox provider 的 team/tier 构建配额�
 `qshell.sandbox.toml` 字段或 qshell CLI 参数。构建 large 变体前应把该配额配置为
 81,920 MiB，并在发布前验证 catalog 返回的 `disk_size_mb`。
 
+8 份 qshell 配置均以 `templates/` 为构建上下文。Dockerfile 从
+`templates/common/` 复制共用的安装函数和辅助脚本；各标准模板仍保留对应
+Ubuntu 版本的安装步骤。`templates/common/actions-runner.env` 统一固定
+Actions Runner 版本和 Linux x64 归档校验和，仅在 `runtime` 阶段前复制，
+升级 Runner 时可复用此前的安装层。`common/` 是共享源码目录，并非新的
+Sandbox 物理模板。
+
 ## 公共 Catalog API
 
 未登录和已登录客户端都可以访问 `GET /api/public/runner-templates`，并取得相同的、
@@ -159,7 +166,7 @@ task template-check-all
 `Status: ready`；如果进程退出码为 0，却没有出现该状态，任务仍会判定构建失败。
 
 源码门槛会拒绝低于 `2.336.0` 的 Actions Runner。Release smoke 会检查
-Dockerfile 固定的 Runner 精确版本，以及持久化到 Sandbox 运行时环境中的模板名和
+common 文件固定的 Runner 精确版本，以及持久化到 Sandbox 运行时环境中的模板名和
 模板版本。它还会以 `runner` 用户加载 NVM，并要求 `/home/runner/.nvm` 可写，
 防止 root 所有的构建 skeleton 错误通过发布门禁。完整 runtime conformance 还会
 检查固定的 Azure CLI 精确版本，因此 Dockerfile 中的版本、官方校验和与

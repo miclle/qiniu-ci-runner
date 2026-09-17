@@ -34,6 +34,15 @@ func repositoryRoot(t *testing.T) string {
 	return root
 }
 
+func commonTemplateSetup(t *testing.T) []byte {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(repositoryRoot(t), "templates", "common", "scripts", "setup-common.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(content, '\n')
+}
+
 func writeExecutable(t *testing.T, name, contents string) {
 	t.Helper()
 	if err := os.WriteFile(name, []byte(contents), 0o755); err != nil {
@@ -2487,7 +2496,7 @@ func TestRunnerTemplateDockerfilesSplitSetupIntoCacheablePhases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			if strings.Contains(script, "/tmp/runner-images/") ||
 				strings.Contains(script, "mkdir -p /tmp/runner-images") ||
 				strings.Contains(script, "test -d /tmp/runner-images") {
@@ -2641,7 +2650,7 @@ func TestVersionedTemplateBuildStagesPinnedUpstreamTests(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			stage := `cp -a "$HELPER_SCRIPTS/../tests" /imagegeneration/tests`
 			helperStage := `cp -a "$HELPER_SCRIPTS" /imagegeneration/helpers`
 			validationStart := `for installer in \`
@@ -2691,7 +2700,7 @@ func TestDiskBoundedTemplatesSkipOnlyCMakeDependentNinjaAssertions(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, assertion := range []string{
 				`It "Make a simple ninja project" -Skip {`,
 				`It "build.ninja file should exist" -Skip {`,
@@ -2736,7 +2745,7 @@ func TestPublicTemplatesUsePinnedMicrosoftAzCopyWithoutActionPrewarm(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				"install_azcopy_from_microsoft_package",
 				"https://packages.microsoft.com/ubuntu/24.04/prod/pool/main/a/azcopy/",
@@ -2791,7 +2800,7 @@ func TestVersionedTemplatesInstallPinnedPesterPackage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			functionStart := strings.Index(script, "install_pester_for_upstream_tests() {")
 			if functionStart < 0 {
 				t.Fatal("setup must define the Pester installation helper")
@@ -2848,7 +2857,7 @@ func TestPublicTemplatesInstallPinnedAzureCLIPackage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				`: "${AZURE_CLI_VERSION:?AZURE_CLI_VERSION is required}"`,
 				`install_azure_cli_from_microsoft_package() {`,
@@ -2981,7 +2990,7 @@ func TestPublicTemplatesPinFloatingCompatibilityTools(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				`/usr/bin/curl --http1.1`,
 				`install_aws_tools_from_checked_archives() {`,
@@ -3027,7 +3036,7 @@ func TestPublicTemplateCheckedDownloadsResumeAcrossTransientFailures(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			functionStart := strings.Index(script, "download_checked() {")
 			functionEnd := strings.Index(script, "\nrun_upstream_tests_if_available() {")
 			if functionStart < 0 || functionEnd < functionStart {
@@ -3175,7 +3184,7 @@ func TestPublicTemplatesRetryPythonInstallersAfterTransientNetworkFailures(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			functionStart := strings.Index(script, "run_retryable_upstream_installer() {")
 			functionEnd := strings.Index(script, "\nrun_upstream_installer() {")
 			if functionStart < 0 || functionEnd < functionStart {
@@ -3265,7 +3274,7 @@ func TestPublicTemplatesInstallPinnedAzureDevOpsExtensionAfterAzureCLI(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				"install_azure_devops_extension",
 				"https://azcliprod.blob.core.windows.net/cli-extensions/azure_devops-",
@@ -3305,7 +3314,7 @@ func TestUbuntu2604TemplateInstallsICUBeforePowerShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(scriptBytes)
+	script := string(append(commonTemplateSetup(t), scriptBytes...))
 	icuIndex := strings.Index(script, "libicu78")
 	powershellIndex := strings.LastIndex(script, "install_pinned_powershell_package")
 	if icuIndex < 0 || powershellIndex < 0 {
@@ -3355,7 +3364,7 @@ func TestUbuntu2604TemplatePinsMicrosoftPowerShellPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(scriptBytes)
+	script := string(append(commonTemplateSetup(t), scriptBytes...))
 	for _, expected := range []string{
 		`: "${POWERSHELL_VERSION:?POWERSHELL_VERSION is required}"`,
 		`: "${POWERSHELL_DEB_SHA256:?POWERSHELL_DEB_SHA256 is required}"`,
@@ -3391,7 +3400,7 @@ func TestVersionedTemplatesInstallNetcatProviderBeforeAptCommon(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			netcatIndex := strings.Index(script, "netcat-openbsd")
 			aptCommonIndex := strings.LastIndex(script, "install-apt-common.sh")
 			if netcatIndex < 0 || aptCommonIndex < 0 {
@@ -3557,7 +3566,7 @@ func TestVersionedTemplateBuildDefersOnlyPodmanNetworkingToRuntimeConformance(t 
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				`podman_networking_test=/imagegeneration/tests/Tools.Tests.ps1`,
 				`grep -Fxc '    It "podman networking" -TestCases "podman CNI plugins" {' "$podman_networking_test"`,
@@ -3693,7 +3702,7 @@ func TestVersionedTemplateBuildMakesSystemctlShimVisibleToSudoAndCleansIt(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			expose := `ln -s /tmp/qiniu-runner-build-tools/systemctl /usr/local/bin/systemctl`
 			apache := `install-apache.sh`
 			cleanup := `rm -f /usr/local/bin/systemctl`
@@ -3744,7 +3753,7 @@ func TestVersionedTemplateSystemctlShimClosesDescriptorsBoundsAndVerifiesService
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			requiredFragments := []string{
 				`action=${1:-}`,
 				`unit=${unit%.service}`,
@@ -3820,7 +3829,7 @@ func TestVersionedTemplateBuildStopsValidatedServicesBetweenInstallers(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			installerRun := `run_upstream_installer "$upstream_build/$installer"`
 			serviceCleanup := `install-apache.sh) stop_validated_service apache2 ;;`
 			installerRunIndex := strings.LastIndex(script, installerRun)
@@ -3882,7 +3891,7 @@ func TestVersionedTemplateBuildReloadsPersistedEnvironmentBeforePipxPackages(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			configureEnvironment := `bash "$upstream_build/configure-environment.sh"`
 			reloadEnvironment := `. "$HELPER_SCRIPTS/etc-environment.sh"
   reload_etc_environment`
@@ -3929,7 +3938,7 @@ func TestVersionedTemplateBuildUsesDiskBoundedToolset(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			start := strings.Index(script, "else\n  . /etc/os-release")
 			if start < 0 {
 				t.Fatal("cannot find versioned installer branch")
@@ -4019,7 +4028,7 @@ func TestRunnerTemplatePinsGoogleCloudCLIArchive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				`: "${GOOGLE_CLOUD_CLI_VERSION:?GOOGLE_CLOUD_CLI_VERSION is required}"`,
 				`: "${GOOGLE_CLOUD_CLI_ARCHIVE_SHA256:?GOOGLE_CLOUD_CLI_ARCHIVE_SHA256 is required}"`,
@@ -4080,7 +4089,7 @@ func TestRunnerTemplatePinsNVMArchive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				`: "${NVM_VERSION:?NVM_VERSION is required}"`,
 				`: "${NVM_ARCHIVE_SHA256:?NVM_ARCHIVE_SHA256 is required}"`,
@@ -4233,7 +4242,7 @@ func TestRunnerTemplatesCacheLargeAWSSAMArchiveInCheckedRanges(t *testing.T) {
 				t.Fatalf("AWS SAM ranges must be cached between bootstrap and platform provisioning")
 			}
 			for _, want := range []string{
-				"COPY scripts/download-checked-range /usr/local/share/qiniu-sandbox-runner-template/download-checked-range",
+				"COPY common/scripts/download-checked-range /usr/local/share/qiniu-sandbox-runner-template/download-checked-range",
 				"cat /opt/qiniu-runner-build-cache/aws-sam-cli.part-* > /tmp/qiniu-aws-sam-cli.zip",
 				`echo "$AWS_SAM_CLI_ARCHIVE_SHA256  /tmp/qiniu-aws-sam-cli.zip" | sha256sum --check -`,
 				"rm -f /opt/qiniu-runner-build-cache/aws-sam-cli.part-*",
@@ -4276,7 +4285,7 @@ func TestRunnerTemplatesPreferOverseasUbuntuMirrors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			functionStart := strings.Index(script, "configure_reliable_apt_sources() {")
 			if functionStart < 0 {
 				t.Fatal("setup script is missing configure_reliable_apt_sources")
@@ -4347,7 +4356,7 @@ func TestRunnerTemplateFallsBackToUbuntuDockerPackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				"configure_docker_apt_repository() {",
 				"remove_official_docker_packages() {",
@@ -4400,7 +4409,7 @@ func TestRunnerTemplatePinsBicepNuGetPackage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				`: "${BICEP_VERSION:?BICEP_VERSION is required}"`,
 				`: "${BICEP_NUGET_SHA256:?BICEP_NUGET_SHA256 is required}"`,
@@ -4441,7 +4450,7 @@ func TestRunnerTemplateInstallsGitLFSFromUbuntuArchive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			for _, required := range []string{
 				"install_git_lfs_from_ubuntu() {",
 				"apt-get install -y --no-install-recommends git-lfs",
@@ -4480,7 +4489,7 @@ func TestRunnerTemplateBuildUsesBoundedHTTPSAptSources(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			bootstrapInstall := strings.Index(
 				script,
 				"\napt-get install -y --no-install-recommends ca-certificates\n",
@@ -4568,7 +4577,7 @@ func TestRunnerTemplateBuildBootstrapsTLSCertificatesBeforeStrictHTTPS(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			script := string(scriptBytes)
+			script := string(append(commonTemplateSetup(t), scriptBytes...))
 			bootstrap := strings.Index(
 				script,
 				"apt-get update\napt-get install -y --no-install-recommends ca-certificates",

@@ -394,7 +394,8 @@ Run `task template-check-all`, then use the eight
 `task template-build-ubuntu-*` targets for real qshell Sandbox builds. See
 [Public Runner Templates](docs/default-runner-templates.md) for publication and
 cache-resume guidance after a remote build time limit, plus publication and
-smoke commands.
+smoke commands. Shared setup code and the Actions Runner version pin live in
+`templates/common/`.
 
 ## Documentation
 
