@@ -611,7 +611,7 @@ func TestRunnerTemplateQshellBuildUsesTemporaryConfigAndRequiresReady(t *testing
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(templateDir, "qshell.sandbox.toml")
-	const trackedConfig = "name = \"fixture-template\"\n"
+	const trackedConfig = "name = \"fixture-template\"\ndisk_size_mb = 20480\n"
 	if err := os.WriteFile(configPath, []byte(trackedConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -620,11 +620,20 @@ func TestRunnerTemplateQshellBuildUsesTemporaryConfigAndRequiresReady(t *testing
 	writeExecutable(t, qshellPath, `#!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = version ]; then
-  printf 'v2.19.10\n'
+  printf 'v2.19.13\n'
+  exit 0
+fi
+if [ "$*" = 'sandbox template list --format json' ]; then
+  if [ -f "$QSHELL_TEST_BUILT" ]; then
+    printf '[{"Aliases":["fixture-template"],"DiskSizeMB":20480}]\n'
+  else
+    printf '[]\n'
+  fi
   exit 0
 fi
 printf 'pwd=%s args=%s\n' "$PWD" "$*" >>"$QSHELL_TEST_LOG"
 if [ "$QSHELL_TEST_MODE" = ready ]; then
+  touch "$QSHELL_TEST_BUILT"
   printf 'Status:       ready\n'
 else
   printf 'Error: fixture build failed\n' >&2
@@ -633,6 +642,7 @@ fi
 	commonEnv := []string{
 		"QSHELL=" + qshellPath,
 		"QSHELL_TEST_LOG=" + qshellLog,
+		"QSHELL_TEST_BUILT=" + filepath.Join(fixture, "built"),
 		"QINIU_SANDBOX_API_URL=https://sandbox.example.test",
 		"QINIU_API_KEY=test-api-key",
 	}
@@ -689,7 +699,11 @@ func TestRunnerTemplateQshellResolvesRelativeTemplateFromScriptCheckout(t *testi
 	writeExecutable(t, qshellPath, `#!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = version ]; then
-  printf 'v2.19.10\n'
+  printf 'v2.19.13\n'
+  exit 0
+fi
+if [ "$*" = 'sandbox template list --format json' ]; then
+  printf '[{"Aliases":["github-runner-ubuntu-slim"],"DiskSizeMB":20480}]\n'
   exit 0
 fi
 printf 'pwd=%s\n' "$PWD" >"$QSHELL_TEST_LOG"
@@ -732,7 +746,7 @@ func TestRunnerTemplateQshellPublicationRunsFromTemplateDirectory(t *testing.T) 
 	}
 	if err := os.WriteFile(
 		filepath.Join(templateDir, "qshell.sandbox.toml"),
-		[]byte("name = \"fixture-template\"\n"),
+		[]byte("name = \"fixture-template\"\ndisk_size_mb = 20480\n"),
 		0o644,
 	); err != nil {
 		t.Fatal(err)
@@ -743,6 +757,10 @@ func TestRunnerTemplateQshellPublicationRunsFromTemplateDirectory(t *testing.T) 
 set -euo pipefail
 if [ "${1:-}" = version ]; then
   printf 'v2.19.10\n'
+  exit 0
+fi
+if [ "$*" = 'sandbox template list --format json' ]; then
+  printf '[{"Aliases":["fixture-template"],"DiskSizeMB":20480}]\n'
   exit 0
 fi
 printf 'pwd=%s args=%s\n' "$PWD" "$*" >>"$QSHELL_TEST_LOG"
@@ -792,48 +810,56 @@ func TestDefaultTemplateCatalogCheckRequiresUniqueRunnablePublicTemplates(t *tes
 			"names":       []string{"qiniu/github-runner-ubuntu-slim"},
 			"public":      true,
 			"buildStatus": "ready",
+			"diskSizeMB":  20480,
 		},
 		{
 			"templateID":  "tmpl-22",
 			"names":       []string{"github-runner-ubuntu-22-04"},
 			"public":      true,
 			"buildStatus": "uploaded",
+			"diskSizeMB":  20480,
 		},
 		{
 			"templateID":  "tmpl-24",
 			"names":       []string{"github-runner-ubuntu-24-04"},
 			"public":      true,
 			"buildStatus": "ready",
+			"diskSizeMB":  20480,
 		},
 		{
 			"templateID":  "tmpl-26",
 			"names":       []string{"github-runner-ubuntu-26-04"},
 			"public":      true,
 			"buildStatus": "ready",
+			"diskSizeMB":  20480,
 		},
 		{
 			"templateID":  "tmpl-slim-large",
 			"names":       []string{"github-runner-ubuntu-slim-large"},
 			"public":      true,
 			"buildStatus": "ready",
+			"diskSizeMB":  81920,
 		},
 		{
 			"templateID":  "tmpl-22-large",
 			"names":       []string{"github-runner-ubuntu-22-04-large"},
 			"public":      true,
 			"buildStatus": "ready",
+			"diskSizeMB":  81920,
 		},
 		{
 			"templateID":  "tmpl-24-large",
 			"names":       []string{"github-runner-ubuntu-24-04-large"},
 			"public":      true,
 			"buildStatus": "ready",
+			"diskSizeMB":  81920,
 		},
 		{
 			"templateID":  "tmpl-26-large",
 			"names":       []string{"github-runner-ubuntu-26-04-large"},
 			"public":      true,
 			"buildStatus": "ready",
+			"diskSizeMB":  81920,
 		},
 	}
 	initialResponseBody, err := json.Marshal(templates)
