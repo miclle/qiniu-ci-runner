@@ -88,9 +88,14 @@ Keep the host-side archive checksum, sixteen small COPY chunks, and remote full
 checksum in the same Docker `RUN` as runtime installation; qshell does not
 restore cached `/tmp` outputs. Keep every qshell `path = ".."` and the `-large`
 source links aligned. Keep `disk_size_mb = 20480` in the four standard TOML
-files and `81920` in the four `-large` files; these values apply only at
-creation, so a same-name template with a different disk size needs an explicit
-physical-template migration. Build tasks
+files and `81920` in the four `-large` files. These are build free-space
+requests, while the template API reports total rootfs size; do not compare
+them for equality. Qshell 2.19.13 applies the request only when creating a new
+name. An existing same-name template whose total disk is below the request or
+whose runtime free-space smoke fails needs a planned physical-template migration.
+Release smoke also checks at least
+19 GiB or 79 GiB of runtime rootfs free space for standard and `-large`
+templates, leaving 1 GiB for writes after provisioning. Build tasks
 stage ignored archive chunks under
 `templates/common/.build/`; reuse verified chunks without replacing them so
 parallel qshell uploads read stable files. Never commit the archive or chunks.

@@ -4,7 +4,7 @@
 
 Qiniu 维护 8 个用于 GitHub Actions 的 Linux x64 Sandbox 物理模板：4 个标准
 镜像（Ubuntu Slim、Ubuntu 22.04、Ubuntu 24.04，以及处于预览阶段的 Ubuntu
-26.04）和 4 个使用 80 GiB provider 磁盘的 `-large` 变体。`ubuntu-latest` 是
+26.04）和 4 个请求 80 GiB 构建可用空间的 `-large` 变体。`ubuntu-latest` 是
 Runner catalog 中指向 Ubuntu 24.04 的逻辑映射，不是第 9 个镜像。
 
 4 个标准物理模板已于 2026-08-03 在两个受支持的 Sandbox 区域完成发布、catalog
@@ -17,19 +17,21 @@ Managed Runner Spec rollout 已于 2026-08-04（CST）通过
 上游版本来源、兼容性契约和各镜像差异见
 [`templates/README.md`](../../templates/README.md)。
 
-4 份标准模板的构建配置现为新模板请求 `disk_size_mb = 20480`（20 GiB）。
-此前已验证的区域模板会保留原磁盘大小，直到完成物理 ID／名称迁移；同名重建不能
-调整磁盘。构建、发布与 catalog 检查会在本次配置发布前要求实际值为
-20,480 MiB。
+4 份标准模板的构建配置现为新模板请求 `disk_size_mb = 20480`（构建预置阶段的
+20 GiB 可用空间）。provider 展示的是根文件系统总容量，因此数值可能大于请求值：
+一份新建的 20,480-MiB 候选模板显示总容量为 22,222 MiB。qshell 同名重建会忽略
+这个请求。构建、发布与 catalog 检查只要求总容量不低于 20,480 MiB；总容量更大
+本身不需要迁移物理 ID／名称。仍需运行 Sandbox smoke；若运行时可用空间不足，
+现有模板仍需迁移。
 
 4 个 `-large` 变体通过仓库软链复用标准 Dockerfile 和脚本，并使用不同的物理
 模板名称。它们是已文档化的 operator 配置 Runner Spec：operator 通过自定义
 spec 路径在 Admin 中创建并启用带显式 template ID 的条目。它们不属于 runnerd
 managed defaults，但对应 spec 启用后，所有允许的 workflow 都可以使用文档中的
 labels。每份 large 模板的 `qshell.sandbox.toml` 都设置了
-`disk_size_mb = 81920`，用于创建新模板时请求 80 GiB 磁盘；provider 仍需接受该
-配额。qshell 在重建同名模板时会忽略此字段。构建和发布脚本会拒绝实际磁盘
-大小与配置不符的模板，发布前的 catalog 检查也会再次验证。
+`disk_size_mb = 81920`，用于创建新模板时请求 80 GiB 构建可用空间；provider
+仍需接受该配额。qshell 在重建同名模板时会忽略此字段。构建和发布脚本会拒绝
+总容量低于请求值的模板，发布前的 catalog 检查也会再次验证这一容量下界。
 [qshell v2.19.13 文档说明了磁盘参数仅在创建时生效](https://github.com/qiniu/qshell/blob/v2.19.13/docs/sandbox_template_build.md#L29-L48)。
 
 8 份 qshell 配置均以 `templates/` 为构建上下文。Dockerfile 从
@@ -108,9 +110,9 @@ jobs:
       - run: uname -a
 ```
 
-对外的 large 默认规格使用相同的标签契约和资源配置，但系统盘为 80 GiB：
+对外的 large 默认规格使用相同的标签契约和资源配置，但构建可用空间请求为 80 GiB：
 
-| Workflow label | 物理模板 | 系统盘 |
+| Workflow label | 物理模板 | 构建可用空间请求 |
 | --- | --- | --- |
 | `[qiniu, ubuntu-slim-large]` | `github-runner-ubuntu-slim-large` | 80 GiB |
 | `[qiniu, ubuntu-22.04-large]` | `github-runner-ubuntu-22-04-large` | 80 GiB |
@@ -198,12 +200,14 @@ task template-build-ubuntu-26-04-large
 ```
 
 标准和 large 构建目标分别通过已追踪的 TOML 为新模板请求 20,480 MiB 和
-81,920 MiB，但 qshell 不会将该值应用于同名模板的 rebuild。如果同名公共模板
-的实际磁盘大小与配置不符，构建脚本会在下载 Runner 归档前失败；使用自定义名称
-构建的标准开发模板不受此公共名称检查限制。需规划物理模板 ID／名称迁移，仍有
-Runner Spec 引用旧 ID 时不得移除旧模板。新模板创建后，先核对 catalog 的实际
-`disk_size_mb`，完成 release smoke，再切换引用它的 spec 并发布。provider 配额
-仍可能拒绝请求。
+81,920 MiB 构建可用空间，但 qshell 不会将该值应用于同名模板的 rebuild。只有
+同名公共模板的总容量低于请求值时，构建脚本才会在下载 Runner 归档前失败，
+此时需规划物理模板 ID／名称迁移。总容量高于请求值只是必要的容量检查，不能
+证明构建时的精确可用空间请求。使用自定义名称构建的标准开发模板不受此公共名称
+检查限制。仍有 Runner Spec 引用旧 ID 时不得移除旧模板。新模板创建后，先核对
+catalog 的总容量 `disk_size_mb`，完成 Sandbox smoke，再切换引用它的 spec 并
+发布。现有同名模板的运行时可用空间 smoke 失败时，迁移该模板并重新完成发布门禁。
+provider 配额仍可能拒绝请求。
 
 Dockerfile 会按需将 `bootstrap`、`platform`、`node`、`toolchain` 和
 `runtime` 工作保留为独立的 qshell 兼容缓存层。模板版本元数据会在预置工作
@@ -260,7 +264,10 @@ task template-smoke IMAGE_KEY=ubuntu-26.04-large TEMPLATE_ID=<26.04-large-templa
 ```
 
 Smoke 会通过 qshell 创建临时 Sandbox，检查系统版本、架构、预装 Actions
-Runner、出站 HTTPS、Docker daemon、可写 work/tool-cache 路径和清理行为。
+Runner、出站 HTTPS、Docker daemon、可写 work/tool-cache 路径、运行时根文件系统
+可用空间和清理行为。标准模板至少需要 19 GiB，large 模板至少需要 79 GiB；
+预留的 1 GiB 用于构建预置后的写入。该检查能发现运行时空间不足，但不能证明
+最初的构建请求值。
 无论验证是否成功，脚本都会尝试终止临时 Sandbox。请保存命令输出的 JSON 路径
 作为发布证据。完整 compatibility manifest 仍是静态 inventory contract；
 逐条 runtime conformance 只作为可选诊断，不阻塞发布可用性门槛。
@@ -277,10 +284,11 @@ qshell 模板构建或 Sandbox smoke。
 1. 导出
    `QINIU_SANDBOX_API_URL=https://cn-yangzhou-1-sandbox.qiniuapi.com`，并设置
    扬州区域的 `QINIU_API_KEY`。
-2. 为实际磁盘大小与配置不符的标准和 large 模板规划物理 ID／名称迁移，并保留
-   仍被引用的旧 ID。构建并发布 4 个标准替代模板；provider 接受 81,920 MiB 请求
-   后，再构建并发布 4 个 large 替代模板。随后运行
-   `task template-defaults-check`，并对全部 8 个 ID 做 smoke 验证。
+2. 只为总容量低于构建可用空间请求值的标准或 large 模板规划物理 ID／名称迁移，
+   并保留仍被引用的旧 ID。构建并发布 4 个标准模板；provider 接受 81,920 MiB
+   请求后，再构建并发布 4 个 large 模板。随后运行
+   `task template-defaults-check`，并对全部 8 个 ID 做 smoke 验证。若现有同名模板
+   的运行时可用空间检查失败，则迁移该模板并重复发布门禁。
 3. 保存构建输出、catalog ID、smoke JSON 和相关 workflow URL。
 4. 导出
    `QINIU_SANDBOX_API_URL=https://us-south-1-sandbox.qiniuapi.com`，并设置

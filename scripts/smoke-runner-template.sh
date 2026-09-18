@@ -110,6 +110,13 @@ case "$image_key" in
     ;;
 esac
 
+expected_free_disk_mib=20480
+if [[ "$image_key" == *-large ]]; then
+  expected_free_disk_mib=81920
+fi
+# The request is measured after provisioning; leave room for startup writes.
+minimum_runtime_free_mib=$((expected_free_disk_mib - 1024))
+
 template_dockerfile="$repository_root/templates/$template_directory/Dockerfile"
 runner_env="$repository_root/templates/common/actions-runner.env"
 expected_runner_version="$(sed -n 's/^RUNNER_VERSION=//p' "$runner_env")"
@@ -164,6 +171,7 @@ jq \
   --arg expected_release "$expected_release" \
   --arg expected_runner_version "$expected_runner_version" \
   --arg expected_template_version "$expected_template_version" \
+  --argjson minimum_runtime_free_mib "$minimum_runtime_free_mib" \
   --arg template_name "$template_name" \
   --arg nvm_smoke_command "$nvm_smoke_command" \
   --arg docker_smoke_command "$docker_smoke_command" \
@@ -224,6 +232,19 @@ jq \
         upstream_name: "outbound HTTPS",
         status: "provided",
         verification: "curl -fsS --connect-timeout 15 https://api.github.com/zen >/dev/null"
+      },
+      {
+        category: "Release smoke",
+        upstream_name: "runtime rootfs free space",
+        status: "provided",
+        verification: (
+          "available_mib=$(df -Pm / | tail -n +2 | tr -s \" \" | cut -d \" \" -f 4); "
+          + "if [ -z \"$available_mib\" ] || [ \"$available_mib\" -lt "
+          + ($minimum_runtime_free_mib | tostring)
+          + " ]; then printf \"rootfs has %s MiB available; expected at least "
+          + ($minimum_runtime_free_mib | tostring)
+          + " MiB\\n\" \"$available_mib\" >&2; exit 1; fi"
+        )
       },
       {
         category: "Release smoke",

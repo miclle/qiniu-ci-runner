@@ -1,7 +1,7 @@
 # GitHub runner Ubuntu Slim template
 
-This 8-vCPU, 8192-MiB Linux x86_64 template requests a 20-GiB disk when
-created. It is derived from the pinned upstream Ubuntu Slim Dockerfile,
+This 8-vCPU, 8192-MiB Linux x86_64 template requests 20 GiB of build free
+space when created. It is derived from the pinned upstream Ubuntu Slim Dockerfile,
 toolset, scripts, and software report at
 `actions/runner-images@e986db797519f06a2e5e53701a715cfa4c1545e8`.
 The base is pinned to the Canonical-published Ubuntu 24.04 OCI index digest in

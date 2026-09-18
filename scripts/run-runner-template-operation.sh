@@ -76,8 +76,12 @@ check_template_disk() {
   if [ "$disk_size" = missing ] && [ "$allow_missing" = true ]; then
     return
   fi
-  if [ "$disk_size" != "$expected_size" ]; then
-    echo "template $template_name has disk size $disk_size MiB; expected $expected_size MiB. Disk size only applies when creating a new template, so rebuild cannot resize this name." >&2
+  if [[ ! "$disk_size" =~ ^[0-9]+$ ]]; then
+    echo "template $template_name has invalid total disk size $disk_size MiB" >&2
+    exit 1
+  fi
+  if [ "$disk_size" -lt "$expected_size" ]; then
+    echo "template $template_name total disk size $disk_size MiB is below the requested $expected_size MiB of build free space" >&2
     exit 1
   fi
 }
@@ -97,7 +101,7 @@ if [ -n "$build_name" ]; then
 fi
 
 # A named standard development build can keep using its existing template.
-# Stable public names and large replacement candidates must match the requested disk.
+# The API reports total rootfs size, while the config requests free build space.
 check_disk_size=false
 if [ -z "$build_name" ] || [[ "$(basename "$template_dir")" == *-large ]]; then
   check_disk_size=true

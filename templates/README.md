@@ -8,10 +8,10 @@
 | `ubuntu-22.04` | `github-runner-ubuntu-22-04` | Ubuntu 22.04 x64 | follows upstream deprecation | verified |
 | `ubuntu-24.04` | `github-runner-ubuntu-24-04` | Ubuntu 24.04 x64 | stable | verified |
 | `ubuntu-26.04` | `github-runner-ubuntu-26-04` | Ubuntu 26.04 x64 | preview | verified |
-| `ubuntu-slim-large` | `github-runner-ubuntu-slim-large` | Ubuntu Slim x64 (80 GiB) | large | development |
-| `ubuntu-22.04-large` | `github-runner-ubuntu-22-04-large` | Ubuntu 22.04 x64 (80 GiB) | follows upstream deprecation | development |
-| `ubuntu-24.04-large` | `github-runner-ubuntu-24-04-large` | Ubuntu 24.04 x64 (80 GiB) | large | development |
-| `ubuntu-26.04-large` | `github-runner-ubuntu-26-04-large` | Ubuntu 26.04 x64 (80 GiB) | preview | development |
+| `ubuntu-slim-large` | `github-runner-ubuntu-slim-large` | Ubuntu Slim x64 (80 GiB build free-space request) | large | development |
+| `ubuntu-22.04-large` | `github-runner-ubuntu-22-04-large` | Ubuntu 22.04 x64 (80 GiB build free-space request) | follows upstream deprecation | development |
+| `ubuntu-24.04-large` | `github-runner-ubuntu-24-04-large` | Ubuntu 24.04 x64 (80 GiB build free-space request) | large | development |
+| `ubuntu-26.04-large` | `github-runner-ubuntu-26-04-large` | Ubuntu 26.04 x64 (80 GiB build free-space request) | preview | development |
 | `ubuntu-latest` | `github-runner-ubuntu-24-04` | Ubuntu 24.04 x64 | stable logical mapping | verified |
 
 The image-specific reports are [Ubuntu Slim](github-runner-ubuntu-slim/software-diff.md),
@@ -31,20 +31,26 @@ labels were end-to-end verified by
 on 2026-08-04 CST; every request completed and its Sandbox was cleaned.
 
 The four standard `qshell.sandbox.toml` files now request
-`disk_size_mb = 20480` (20 GiB) at creation. Earlier published templates
-retain their original roughly 22-GiB disks: qshell ignores this setting on a
-same-name rebuild. The build, publish, and catalog gates check the actual
-20-GiB disk before this revision can replace those templates. Migrating an
-existing stable name requires a planned ID/name transition.
+`disk_size_mb = 20480` (20 GiB of free space during build provisioning) at
+creation. The provider reports total rootfs size instead; a new build with
+this request can report 22,222 MiB total. Qshell ignores the request on a
+same-name rebuild. Build, publish, and catalog gates therefore check only
+that total size is not below the request. A larger total alone is not grounds
+for an ID/name migration; migrate if release smoke finds insufficient runtime
+free space.
+That smoke requires at least 19 GiB of runtime rootfs free space for standard
+templates and 79 GiB for large templates. The 1-GiB allowance covers writes
+after build provisioning; runtime free space does not prove the original request.
 
 The four `-large` variants reuse the standard Dockerfiles and scripts through
 in-repository links, but use distinct provider template names. Their tracked
 `qshell.sandbox.toml` files request `disk_size_mb = 81920` (80 GiB) when
-creating a new template. The provider must accept this allocation. Qshell
-ignores the field when rebuilding an existing same-name template, so an older
-smaller template must be replaced through a separately planned ID/name
-migration; rebuilding it cannot resize it. The build and publish helpers check
-the actual disk size, and these variants remain in `development` until they
+creating a new template. This requests build free space, so the final total
+rootfs size may exceed 81,920 MiB. The provider must accept this allocation.
+Qshell ignores the field when rebuilding an existing same-name template, so
+one whose total disk is below 81,920 MiB needs a planned ID/name migration.
+The build and publish helpers check the total-size lower bound, and these
+variants remain in `development` until they
 pass the same regional catalog and smoke gates.
 
 All eight builds use `templates/` as their Docker context. The four standard
@@ -249,8 +255,9 @@ than restarting the whole archive. The platform installer runs in the same
 layer as reassembly instead of depending on a cached oversized archive.
 Release smoke checks the OS, architecture, the exact common-pinned Actions
 Runner version, persisted runtime template name/version metadata, outbound
-HTTPS, the exact Cloudflare resolver configuration, Docker, a runner-owned
-writable NVM home, writable work/tool-cache paths, and cleanup. Full
+HTTPS, runtime rootfs free space, the exact Cloudflare resolver configuration,
+Docker, a runner-owned writable NVM home, writable work/tool-cache paths, and
+cleanup. Full
 per-inventory runtime conformance and local Docker builds remain optional
 diagnostics; neither is a substitute for the remote usability gate.
 The source gate rejects an Actions Runner version below `2.337.0`, while the
