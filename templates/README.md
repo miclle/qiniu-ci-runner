@@ -8,10 +8,10 @@
 | `ubuntu-22.04` | `github-runner-ubuntu-22-04` | Ubuntu 22.04 x64 | follows upstream deprecation | verified |
 | `ubuntu-24.04` | `github-runner-ubuntu-24-04` | Ubuntu 24.04 x64 | stable | verified |
 | `ubuntu-26.04` | `github-runner-ubuntu-26-04` | Ubuntu 26.04 x64 | preview | verified |
-| `ubuntu-slim-large` | `github-runner-ubuntu-slim-large` | Ubuntu Slim x64 (80 GiB) | large | development |
-| `ubuntu-22.04-large` | `github-runner-ubuntu-22-04-large` | Ubuntu 22.04 x64 (80 GiB) | follows upstream deprecation | development |
-| `ubuntu-24.04-large` | `github-runner-ubuntu-24-04-large` | Ubuntu 24.04 x64 (80 GiB) | large | development |
-| `ubuntu-26.04-large` | `github-runner-ubuntu-26-04-large` | Ubuntu 26.04 x64 (80 GiB) | preview | development |
+| `ubuntu-slim-large` | `github-runner-ubuntu-slim-large` | Ubuntu Slim x64 (80 GiB minimum disk size) | large | development |
+| `ubuntu-22.04-large` | `github-runner-ubuntu-22-04-large` | Ubuntu 22.04 x64 (80 GiB minimum disk size) | follows upstream deprecation | development |
+| `ubuntu-24.04-large` | `github-runner-ubuntu-24-04-large` | Ubuntu 24.04 x64 (80 GiB minimum disk size) | large | development |
+| `ubuntu-26.04-large` | `github-runner-ubuntu-26-04-large` | Ubuntu 26.04 x64 (80 GiB minimum disk size) | preview | development |
 | `ubuntu-latest` | `github-runner-ubuntu-24-04` | Ubuntu 24.04 x64 | stable logical mapping | verified |
 
 The image-specific reports are [Ubuntu Slim](github-runner-ubuntu-slim/software-diff.md),
@@ -19,7 +19,7 @@ The image-specific reports are [Ubuntu Slim](github-runner-ubuntu-slim/software-
 [Ubuntu 24.04](github-runner-ubuntu-24.04/software-diff.md), and
 [Ubuntu 26.04](github-runner-ubuntu-26.04/software-diff.md).
 `ubuntu-latest` is a logical mapping to the 24.04 physical template and has no
-fifth physical template directory.
+fifth source directory.
 
 The four standard physical templates were published, catalog-checked, and release-smoke
 verified in `cn-yangzhou-1` and `us-south-1` on 2026-08-03. The regional IDs
@@ -30,12 +30,39 @@ labels were end-to-end verified by
 [GitHub Actions run 30858489153](https://github.com/miclle/qiniu-ci-runner-test/actions/runs/30858489153)
 on 2026-08-04 CST; every request completed and its Sandbox was cleaned.
 
-The four `-large` variants reuse the standard Dockerfiles and scripts through
-in-repository links, but use distinct provider template names and an 80-GiB
-provider allocation. Disk size is controlled by the Sandbox provider's
-team/tier build allocation rather than qshell configuration. Set it to 81,920
-MiB before building, verify catalog `disk_size_mb`, and keep these variants in
-`development` until they reach the same regional smoke gate.
+The four standard `qshell.sandbox.toml` files set
+`disk_size_mb = 20480`, a 20-GiB minimum root disk size. The provider may
+report a larger total. Qshell does not send the setting on a same-name rebuild.
+After the provider team's `DiskMb` is adjusted, the build
+helper rebuilds the existing name and ID without checking its stale total.
+Publish, catalog, and release-smoke gates require the reported or runtime root
+disk size to meet the configured lower bound.
+
+Each of the four source directories contains a standard
+`qshell.sandbox.toml` and a large `qshell.sandbox.large.toml`. Both configs
+reuse the same Dockerfile and scripts while naming distinct provider templates.
+The large configs set `disk_size_mb = 81920`, an 80-GiB minimum root disk
+size when creating a new template. The final total may exceed 81,920 MiB.
+The provider team's `DiskMb` must be at
+least 81,920 MiB before rebuilding an existing name. Qshell does not send the
+field on a same-name rebuild, so the build helper allows the in-place rebuild
+without checking the stale total. Publish and catalog checks enforce the
+total-size lower bound after the rebuild. These
+variants remain in `development` until they
+pass the same regional catalog and smoke gates.
+
+All eight builds use `templates/` as their Docker context. The four standard
+Dockerfiles copy shared setup functions and helper programs directly from
+`templates/common/`; each variant keeps its own Ubuntu-specific setup flow,
+base image, and tool pins. Each `-large` config is colocated with and uses its
+standard variant's source. Keep the tracked `path = ".."` setting in each
+qshell config so remote builds include `common/`. The single Actions Runner
+version, Linux x64 archive SHA-256, and archive size live in
+`templates/common/actions-runner.env`. Each Dockerfile copies that file after
+provisioning and before cached archive downloads and runtime installation, so
+a Runner upgrade retains the earlier provisioned layers. This is a shared
+source directory, not another physical Sandbox
+template or provider-side inheritance layer.
 
 Publication state is restricted to `development`, `published`, or `verified`.
 `published` means the physical template is public in both supported regions.
@@ -61,8 +88,9 @@ The contract has no compatibility percentage. Every upstream item is either
 `provided` with an executable verification command or `excluded` with a
 specific Qiniu Sandbox limitation.
 
-The current public-template build allocation exposes a 22,222-MiB root disk.
-The complete GitHub-hosted runner image exceeds that allocation. The three
+The earlier standard public-template build allocation exposed a roughly
+22,222-MiB root disk; the new standard request is 20,480 MiB. The complete
+GitHub-hosted runner image exceeds either allocation. The three
 versioned templates therefore guarantee the pinned Ubuntu Slim-compatible
 core on the requested Ubuntu release, plus Apache, Podman, Buildah, Skopeo,
 Ninja, pinned Pester for build-time validation, and the Qiniu runner contract.
@@ -166,7 +194,7 @@ Sandbox conformance runs it in the actual Qiniu template runtime.
 ## Build and verification
 
 Qiniu Sandbox templates are officially built and published with
-`qiniu/qshell` 2.19.10 or newer.
+`qiniu/qshell` 2.19.13 or newer.
 Docker builds are local conformance inputs only: a successful Docker build does
 not create, rebuild, or publish a Qiniu Sandbox template.
 
@@ -174,6 +202,7 @@ The build and verification commands are:
 
 ```bash
 task template-check-all
+task template-build-all
 task template-build-ubuntu-slim
 task template-build-ubuntu-22-04
 task template-build-ubuntu-24-04
@@ -186,8 +215,16 @@ task template-conformance-local
 task template-smoke IMAGE_KEY=ubuntu-24.04 TEMPLATE_ID=<published-template-id>
 ```
 
+`template-build-all` runs the eight build targets sequentially and stops at the
+first failure. Use an individual target when rebuilding only one template.
+
 The formal template gate is a qshell build reaching terminal `Status: ready`,
-followed by release smoke inside a real Sandbox created from that template.
+or the exact Template ID and Build ID reaching `ready` or `uploaded` during the
+helper's bounded reconciliation window, followed by release smoke inside a real
+Sandbox created from that template. A reconciliation timeout can leave the
+remote build active; inspect the printed exact-build command before rebuilding.
+When exact status queries remain unavailable, the helper preserves the last
+qshell error instead of describing the build as active.
 The Slim Dockerfile divides setup into four cacheable qshell-compatible phases:
 `bootstrap`, `platform`, `toolchain`, and `runtime`. The versioned templates add
 a dedicated `node` phase between `platform` and `toolchain`, keeping their large
@@ -198,11 +235,21 @@ its Pester contract. Large emoji-font, ICU, RPM, Tk, Xvfb, binutils, and
 `systemd-coredump` dependency sets are isolated, and the final batch is
 open-ended so appended pinned packages are not skipped; this keeps slow
 Resolute mirrors from trapping the whole package set in one non-cacheable
-timeout. If the remote builder hits its hard
+timeout. The build task downloads the official Actions Runner archive on the
+operator's machine and verifies its pinned version, size, and SHA-256. It then
+stages sixteen ignored chunks of at most 16 MiB each for separate qshell COPY
+layers. Concurrent build tasks reuse verified chunks without replacing files
+during upload. The remote builder verifies each chunk size and the complete
+archive SHA-256 in the same `RUN` as runtime installation, so a cache-resumed
+build does not depend on restoring `/tmp`. If a new Runner archive exceeds
+256 MiB,
+increase the Dockerfile chunk count and its matrix gate when updating the
+common pin. If the remote builder hits its hard
 time limit after one or more phases finish, rerun the same
 `template-build-*` task with cache enabled; completed phases are reused. Do not
 use `--no-cache` for that recovery, and do not publish until one build reaches
-terminal `Status: ready`.
+terminal `Status: ready` or its exact build status is reconciled as `ready` or
+`uploaded`.
 Template version metadata and the runner-owned NVM copy are applied only after
 the heavy provisioning layers, so a release identity bump or NVM ownership fix
 does not invalidate otherwise reusable installer caches.
@@ -214,16 +261,17 @@ The checksum-pinned AWS SAM Range layers sit between `bootstrap` and
 `platform`; rerunning the identical source reuses every completed chunk rather
 than restarting the whole archive. The platform installer runs in the same
 layer as reassembly instead of depending on a cached oversized archive.
-Release smoke checks the OS, architecture, the exact Dockerfile-pinned Actions
+Release smoke checks the OS, architecture, the exact common-pinned Actions
 Runner version, persisted runtime template name/version metadata, outbound
-HTTPS, the exact Cloudflare resolver configuration, Docker, a runner-owned
-writable NVM home, writable work/tool-cache paths, and cleanup. Full
+HTTPS, runtime root disk size against the selected TOML's `disk_size_mb`, the exact Cloudflare resolver configuration,
+Docker, a runner-owned writable NVM home, writable work/tool-cache paths, and
+cleanup. Full
 per-inventory runtime conformance and local Docker builds remain optional
 diagnostics; neither is a substitute for the remote usability gate.
-The source gate rejects an Actions Runner version below `2.336.0`, while the
-compatibility contract checks the exact version pinned by each Dockerfile.
-Update the runner version, official archive checksum, and compatibility
-verification together. Python and pipx upstream installers use bounded retries
+The source gate rejects an Actions Runner version below `2.337.0`, while the
+compatibility contract checks the exact version in the common pin. Update the
+runner version, official archive checksum, and compatibility verification
+together. Python and pipx upstream installers use bounded retries
 and longer pip read timeouts because remote template builds must tolerate
 transient package-index failures without retrying unrelated installers.
 The Docker check imports a minimal root filesystem from the Sandbox itself and
@@ -233,16 +281,16 @@ regional Docker Hub availability; outbound HTTPS remains a separate check.
 
 Each `template-build-*` target must:
 
-1. copy the tracked template's `qshell.sandbox.toml` to a temporary file;
-2. keep the working directory at that template directory so the relative
+1. select the tracked standard or large TOML file and copy it to a temporary file;
+2. keep the working directory at its source directory so the relative
    Dockerfile and build context continue to resolve;
 3. run `qshell sandbox template build --wait --config <temporary-file>`; and
 4. remove the temporary file on exit.
 
 The temporary copy is required because a first Qiniu template creation writes
 the resulting `template_id` into the configuration file. The tracked
-`qshell.sandbox.toml` remains a stable, reviewable input and must not receive
-that environment-specific identifier.
+standard and large TOML files remain stable, reviewable inputs and must not
+receive that environment-specific identifier.
 
 The underlying Task 7 gates can also be run directly:
 
@@ -267,6 +315,6 @@ Task 8 exposes matching `task template-publish-*` and
 `task template-unpublish-*` commands for the eight physical templates; use
 `task template-defaults-check` before promotion and the matching unpublish
 target for rollback. Qshell publish and unpublish do not support the build-only
-`--config` option. Their Task targets run from the matching template directory,
-read the stable name from its tracked `qshell.sandbox.toml`, and invoke the
-matching operation with `-y`; no Region-specific template ID is committed.
+`--config` option. Their Task targets read the stable name from the selected
+tracked TOML file, resolve exactly one service-catalog template ID, and invoke
+the operation with that ID and `-y`; no region-specific template ID is committed.

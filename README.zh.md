@@ -75,7 +75,7 @@ cp runnerd.yaml.example runnerd.yaml
 
 5. 打开 `http://<host>:25500/`，使用 GitHub OAuth 登录。公开产品首页提供同域 `/docs` 指南，以及指向 `/jobs` 受保护的 Jobs 控制台入口。用户首次登录访问 `/jobs` 时，会看到介绍 Jobs、Repositories、Settings 和 Sandbox 设置的六步引导；之后可从账户菜单重播。
 6. 打开 **Repositories** 查看账户或组织的 **Runner readiness**。有效来源只显示状态，不提供配置控件；缺少 Sandbox 且用户可管理该 scope 时，通过 **Configure Sandbox** 进入精确的账户或组织 **Preferences** 页面并配置 **Sandbox Service** 凭据。Settings 只列出个人账户，以及 GitHub 返回 active owner membership（`role: admin`）的组织。普通组织成员、outside collaborator 和其他仅有仓库权限的用户只能看到 readiness 只读状态，不能浏览该组织的配置、Sandbox 资源目录或自定义 Runner Specs。管理员可以在 `/admin/sandbox_service` 配置兜底。
-7. 在**管理控制台**中确认 5 个内置 Qiniu managed Runner Specs。4 个标准公共模板已通过双区域 release gate。4 个 `-large` 模板是对外可用的 operator 配置默认 Runner Spec，使用 80 GiB 物理模板；其记录通过自定义 spec 路径保存，但已启用供普通 workflow 使用。operator 仍可禁用 managed 或 large 默认 spec，或调整并发与 idle capacity。
+7. 在**管理控制台**中确认 5 个内置 Qiniu managed Runner Specs。4 个标准公共模板已通过双区域 release gate。4 个 `-large` 变体是已文档化、通过自定义 spec 路径配置的 operator Runner Specs；其 `disk_size_mb = 81920` 的物理模板通过区域发布门槛后，再启用供普通 workflow 使用。operator 可调整启用状态、并发与 idle capacity。
 8. 配置 GitHub webhook → `POST http://<host>:25500/webhooks/github`。
 9. 在 workflow 中配置 `runs-on: [qiniu, ubuntu-24.04]` 使用 managed default，或配置自定义 spec 要求的 labels。
 
@@ -352,7 +352,7 @@ task ui-production-smoke # 在 Chromium 中执行生产 UI bundle
 task dev           # 启动本地开发环境（runnerd + Vite + smee）
 task lint          # 运行代码检查
 task test          # 重建 UI + 运行全部测试（Go race detection + Bun UI tests）
-task docker-check  # 验证 Docker 构建
+task docker-check  # 验证服务 Dockerfile
 task release-check # 验证发布构建
 ```
 
@@ -363,22 +363,30 @@ task release-check # 验证发布构建
 
 | 模板                                   | 说明                                          |
 | -------------------------------------- | --------------------------------------------- |
-| `templates/github-runner-ubuntu-slim`  | 维护中的 Ubuntu Slim x64 Runner 模板          |
-| `templates/github-runner-ubuntu-22.04` | 维护中的 Ubuntu 22.04 x64 Runner 模板         |
-| `templates/github-runner-ubuntu-24.04` | 维护中的 Ubuntu 24.04 x64 Runner 模板         |
-| `templates/github-runner-ubuntu-26.04` | 预览版 Ubuntu 26.04 x64 Runner 模板           |
-| `templates/github-runner-ubuntu-slim-large` | 使用 80 GiB provider 磁盘的 Ubuntu Slim x64 Runner 模板 |
-| `templates/github-runner-ubuntu-22.04-large` | 使用 80 GiB provider 磁盘的 Ubuntu 22.04 x64 Runner 模板 |
-| `templates/github-runner-ubuntu-24.04-large` | 使用 80 GiB provider 磁盘的 Ubuntu 24.04 x64 Runner 模板 |
-| `templates/github-runner-ubuntu-26.04-large` | 使用 80 GiB provider 磁盘的 Ubuntu 26.04 x64 Runner 模板 |
+| `templates/github-runner-ubuntu-slim`  | 同时提供标准 20 GiB 与 large 80 GiB 构建配置的 Ubuntu Slim x64 源码 |
+| `templates/github-runner-ubuntu-22.04` | 同时提供标准 20 GiB 与 large 80 GiB 构建配置的 Ubuntu 22.04 x64 源码 |
+| `templates/github-runner-ubuntu-24.04` | 同时提供标准 20 GiB 与 large 80 GiB 构建配置的 Ubuntu 24.04 x64 源码 |
+| `templates/github-runner-ubuntu-26.04` | 同时提供标准 20 GiB 与 large 80 GiB 构建配置的预览版 Ubuntu 26.04 x64 源码 |
 
 对外的 `ubuntu-latest-large` Runner Spec 是映射到
-`github-runner-ubuntu-24-04-large` 物理模板的逻辑标签，不会新增模板目录或构建目标。
+`github-runner-ubuntu-24-04-large` 物理模板的逻辑标签，不会新增源码目录或构建目标。
 
-先运行 `task template-check-all`，再通过 8 个
-`task template-build-ubuntu-*` targets 执行真实 qshell Sandbox 构建。发布与
+先运行 `task template-check-all`，再通过 `task template-build-all` 串行构建全部
+8 个模板，或通过单个 `task template-build-ubuntu-*` target 执行一次真实 qshell
+Sandbox 构建。发布与
 远程构建超时后的缓存续跑、发布与 smoke 命令见
-[公共 Runner 模板](docs/zh/default-runner-templates.md)。
+[公共 Runner 模板](docs/zh/default-runner-templates.md)。公共安装代码和
+Actions Runner 版本固定值位于 `templates/common/`。
+构建命令先在本机下载并校验官方 Runner 归档，再以较小的 COPY 分片上传，
+远端拼接后会再次校验完整归档。
+模板构建要求 qshell 2.19.13 或更高版本。标准配置为新模板请求
+`disk_size_mb = 20480`，large 配置请求 `81920`。该配置表示根磁盘容量下限，
+实际总容量可以更大。qshell 在同名 rebuild 时不会发送该配置。先调整 provider 团队的 `DiskMb`，构建任务会保留现有名称和 ID
+并原地重建，不会用重建前的旧总容量拦截构建。发布与 catalog 检查仍要求重建后的
+总容量达到配置下界；总容量较大本身不能说明配置不符。
+发布 smoke 会读取对应 TOML，并要求运行时根磁盘容量达到其中的
+`disk_size_mb` 下限。2.337.0 候选版已通过此前的一次开发模板构建与 Sandbox
+smoke；完整的双区域 release gate 仍待执行。
 
 ## 文档
 

@@ -75,7 +75,7 @@ cp runnerd.yaml.example runnerd.yaml
 
 5. Open `http://<host>:25500/` and sign in with GitHub OAuth. The public product landing page links to the same-origin `/docs` guides and the protected Jobs console at `/jobs`. On the first authenticated visit to `/jobs`, a six-step product tour introduces Jobs, Repositories, Settings, and Sandbox setup; it can be replayed from the account menu.
 6. Open **Repositories** to review **Runner readiness** for the account or organization. Ready sources are shown without configuration controls. If Sandbox setup is missing and you can manage that scope, use **Configure Sandbox** to open the exact account or organization **Preferences** page and configure **Sandbox Service** credentials. Settings lists only your account and organizations where GitHub reports an active owner membership (`role: admin`). Organization members, outside collaborators, and other repository-only users receive only read-only readiness and cannot browse that organization's configuration, Sandbox catalogs, or custom Runner Specs. Administrators can provide a fallback at `/admin/sandbox_service`.
-7. Confirm the five built-in managed Qiniu Runner Specs in the **Admin Console**. The four standard public templates have passed the two-region release gate. The four `-large` templates are public operator-configured default Runner Specs backed by the 80-GiB physical templates; their records use the custom-spec path but are enabled for ordinary workflow use. Operators can disable managed or large default specs and adjust their concurrency and idle capacity.
+7. Confirm the five built-in managed Qiniu Runner Specs in the **Admin Console**. The four standard public templates have passed the two-region release gate. The four `-large` variants are documented operator-configured Runner Specs that use the custom-spec path; enable them for ordinary workflows only after their physical templates with `disk_size_mb = 81920` pass the regional release gate. Operators can adjust the enabled state, concurrency, and idle capacity.
 8. Configure a GitHub webhook → `POST http://<host>:25500/webhooks/github`.
 9. Use `runs-on: [qiniu, ubuntu-24.04]` for a managed default, or use the labels required by your custom spec.
 
@@ -365,7 +365,7 @@ task ui-production-smoke # Execute the production UI bundle in Chromium
 task dev           # Start local dev (runnerd + Vite + smee)
 task lint          # Run linters
 task test          # Rebuild UI + run all tests (Go with race detection + Bun UI tests)
-task docker-check  # Verify Docker build
+task docker-check  # Verify the service Dockerfile
 task release-check # Verify release build
 ```
 
@@ -377,24 +377,35 @@ loading.
 
 | Template | Description |
 | --- | --- |
-| `templates/github-runner-ubuntu-slim` | Maintained Ubuntu Slim x64 runner template |
-| `templates/github-runner-ubuntu-22.04` | Maintained Ubuntu 22.04 x64 runner template |
-| `templates/github-runner-ubuntu-24.04` | Maintained Ubuntu 24.04 x64 runner template |
-| `templates/github-runner-ubuntu-26.04` | Preview Ubuntu 26.04 x64 runner template |
-| `templates/github-runner-ubuntu-slim-large` | Ubuntu Slim x64 runner template with an 80-GiB provider disk |
-| `templates/github-runner-ubuntu-22.04-large` | Ubuntu 22.04 x64 runner template with an 80-GiB provider disk |
-| `templates/github-runner-ubuntu-24.04-large` | Ubuntu 24.04 x64 runner template with an 80-GiB provider disk |
-| `templates/github-runner-ubuntu-26.04-large` | Ubuntu 26.04 x64 runner template with an 80-GiB provider disk |
+| `templates/github-runner-ubuntu-slim` | Ubuntu Slim x64 source with standard 20-GiB and large 80-GiB build configs |
+| `templates/github-runner-ubuntu-22.04` | Ubuntu 22.04 x64 source with standard 20-GiB and large 80-GiB build configs |
+| `templates/github-runner-ubuntu-24.04` | Ubuntu 24.04 x64 source with standard 20-GiB and large 80-GiB build configs |
+| `templates/github-runner-ubuntu-26.04` | Preview Ubuntu 26.04 x64 source with standard 20-GiB and large 80-GiB build configs |
 
 The public `ubuntu-latest-large` Runner Spec is a logical label mapped to the
 `github-runner-ubuntu-24-04-large` physical template; it does not add another
-template directory or build target.
+source directory or build target.
 
-Run `task template-check-all`, then use the eight
-`task template-build-ubuntu-*` targets for real qshell Sandbox builds. See
+Run `task template-check-all`, then use `task template-build-all` to build all
+eight templates sequentially, or use an individual `task template-build-ubuntu-*`
+target for one real qshell Sandbox build. See
 [Public Runner Templates](docs/default-runner-templates.md) for publication and
 cache-resume guidance after a remote build time limit, plus publication and
-smoke commands.
+smoke commands. Shared setup code and the Actions Runner version pin live in
+`templates/common/`. Build tasks verify the official Runner archive locally,
+upload it as small COPY chunks, and verify it again before installation.
+Template builds require qshell 2.19.13 or newer. Standard configs request
+`disk_size_mb = 20480`, while large configs request `81920` for new templates.
+This setting is the minimum root disk size; the reported total can be larger.
+Qshell does not send the setting on same-name
+rebuilds. After the provider team's `DiskMb` is adjusted, the build tasks rebuild
+the existing names and IDs in place without rejecting their stale pre-rebuild
+totals. Publish and catalog checks require the rebuilt totals to meet the
+configured lower bounds; a larger total is not a mismatch by itself.
+Release smoke reads the corresponding TOML and requires the runtime root disk
+size to meet its `disk_size_mb` lower bound.
+The 2.337.0 candidate passed an earlier development Sandbox build and smoke;
+the full two-region release gate remains open.
 
 ## Documentation
 

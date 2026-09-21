@@ -71,6 +71,7 @@ task build
 task docker-check
 task release-check
 task template-check-all
+task template-build-all
 ```
 
 Use `task dev` for local development. It defaults to `RUNNERD_CONFIG=runnerd.local.yaml`, starts Vite on the first available localhost port at or after `5173`, and starts smee forwarding when `.smee-url` exists.
@@ -79,12 +80,41 @@ Use `task smee` for standalone GitHub webhook forwarding. It reads `.smee-url` a
 
 Use `task build` when verifying production embedded UI behavior because it rebuilds `internal/server/ui/` before compiling `bin/runnerd`.
 
-Public runner templates are built with `qiniu/qshell` 2.19.10 or newer.
+Public runner templates are built with `qiniu/qshell` 2.19.13 or newer.
+All eight public builds use `templates/` as their Docker context. Shared setup
+functions, helper scripts, and the sole Actions Runner version/SHA-256/size pin
+live in `templates/common/`; retain per-Ubuntu setup differences and keep the
+Runner pin COPY after provisioning so upgrades preserve earlier cache layers.
+Keep the host-side archive checksum, sixteen small COPY chunks, and remote full
+checksum in the same Docker `RUN` as runtime installation; qshell does not
+restore cached `/tmp` outputs. Each of the four per-Ubuntu source directories
+contains `qshell.sandbox.toml` and `qshell.sandbox.large.toml`; do not recreate
+separate `-large` directories or source links. Keep every qshell `path = ".."`,
+`disk_size_mb = 20480` in the four standard TOML files, and `81920` in the four
+large TOML files. This value is the minimum root disk size; the template API
+and runtime smoke may report a larger total. Qshell 2.19.13 sends the setting
+only when creating a new name. Before rebuilding an existing name in place,
+adjust the provider team's
+`DiskMb`; the build task must preserve the name and ID and must not reject the
+stale pre-rebuild total. Publish and catalog checks still require the rebuilt
+total to meet the configured lower bound.
+Release smoke reads `disk_size_mb` from the selected TOML and requires the
+runtime root disk size to meet the same lower bound. Build tasks
+stage ignored archive chunks under
+`templates/common/.build/`; reuse verified chunks without replacing them so
+parallel qshell uploads read stable files. Never commit the archive or chunks.
 `task template-build-ubuntu-*` performs the real remote template build and
 requires `QINIU_SANDBOX_API_URL` plus `QINIU_API_KEY`. A local Docker build is
 diagnostic only and does not prove that a Sandbox template exists or is
-usable. Release evidence requires qshell `Status: ready` followed by
-`task template-smoke` in both supported regions.
+usable. If qshell's wait stream ends without `Status: ready`, the build helper
+queries that exact template/build pair for five minutes. It succeeds only when
+the build reaches `ready` or `uploaded`, fails immediately on a terminal error,
+reports the status-only inspection command when the build remains active, and
+preserves the last qshell error when exact status queries remain unavailable.
+Release evidence then still requires `task template-smoke` in both supported
+regions.
+`task template-build-all` invokes all eight build targets sequentially and stops
+at the first failure; use it only when the whole regional catalog must be rebuilt.
 
 Use `cd ui && bun run test` for focused UI tests. `task test` rebuilds the UI, runs the Bun UI tests, and then runs Go tests with race detection and coverage.
 

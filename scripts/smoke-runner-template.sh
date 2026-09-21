@@ -59,7 +59,7 @@ case "$image_key" in
     expected_release=24.04
     support_channel=development
     template_name=github-runner-ubuntu-slim
-    template_directory=github-runner-ubuntu-slim-large
+    template_directory=github-runner-ubuntu-slim
     manifest_image_key=ubuntu-slim
     ;;
   ubuntu-24.04)
@@ -73,7 +73,7 @@ case "$image_key" in
     expected_release=24.04
     support_channel=development
     template_name=github-runner-ubuntu-24-04
-    template_directory=github-runner-ubuntu-24.04-large
+    template_directory=github-runner-ubuntu-24.04
     manifest_image_key=ubuntu-24.04
     ;;
   ubuntu-22.04)
@@ -87,7 +87,7 @@ case "$image_key" in
     expected_release=22.04
     support_channel=development
     template_name=github-runner-ubuntu-22-04
-    template_directory=github-runner-ubuntu-22.04-large
+    template_directory=github-runner-ubuntu-22.04
     manifest_image_key=ubuntu-22.04
     ;;
   ubuntu-26.04)
@@ -101,7 +101,7 @@ case "$image_key" in
     expected_release=26.04
     support_channel=development
     template_name=github-runner-ubuntu-26-04
-    template_directory=github-runner-ubuntu-26.04-large
+    template_directory=github-runner-ubuntu-26.04
     manifest_image_key=ubuntu-26.04
     ;;
   *)
@@ -110,11 +110,26 @@ case "$image_key" in
     ;;
 esac
 
+template_config="$repository_root/templates/$template_directory/qshell.sandbox.toml"
+if [[ "$image_key" == *-large ]]; then
+  template_config="$repository_root/templates/$template_directory/qshell.sandbox.large.toml"
+fi
+expected_disk_size_mib="$(
+  sed -nE \
+    's/^[[:space:]]*disk_size_mb[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' \
+    "$template_config"
+)"
+[[ "$expected_disk_size_mib" =~ ^[1-9][0-9]*$ ]] || {
+  echo "could not determine disk_size_mb from $template_config" >&2
+  exit 65
+}
+
 template_dockerfile="$repository_root/templates/$template_directory/Dockerfile"
-expected_runner_version="$(awk -F= '$1 == "ARG RUNNER_VERSION" {print $2; exit}' "$template_dockerfile")"
+runner_env="$repository_root/templates/common/actions-runner.env"
+expected_runner_version="$(sed -n 's/^RUNNER_VERSION=//p' "$runner_env")"
 expected_template_version="$(awk -F= '$1 == "ARG TEMPLATE_VERSION" {print $2; exit}' "$template_dockerfile")"
 test -n "$expected_runner_version" || {
-  echo "could not determine RUNNER_VERSION from $template_dockerfile" >&2
+  echo "could not determine RUNNER_VERSION from $runner_env" >&2
   exit 65
 }
 test -n "$expected_template_version" || {
@@ -163,6 +178,7 @@ jq \
   --arg expected_release "$expected_release" \
   --arg expected_runner_version "$expected_runner_version" \
   --arg expected_template_version "$expected_template_version" \
+  --argjson expected_disk_size_mib "$expected_disk_size_mib" \
   --arg template_name "$template_name" \
   --arg nvm_smoke_command "$nvm_smoke_command" \
   --arg docker_smoke_command "$docker_smoke_command" \
@@ -223,6 +239,23 @@ jq \
         upstream_name: "outbound HTTPS",
         status: "provided",
         verification: "curl -fsS --connect-timeout 15 https://api.github.com/zen >/dev/null"
+      },
+      {
+        category: "Release smoke",
+        upstream_name: "runtime root disk size",
+        status: "provided",
+        verification: (
+          "root_device=$(findmnt -nro SOURCE /); "
+          + "disk_bytes=$(lsblk -bndo SIZE \"$root_device\"); "
+          + "if [[ ! \"$disk_bytes\" =~ ^[0-9]+$ ]]; then "
+          + "printf \"could not determine root disk size for %s\\n\" \"$root_device\" >&2; exit 1; fi; "
+          + "disk_mib=$((disk_bytes / 1048576)); "
+          + "if [ \"$disk_mib\" -lt "
+          + ($expected_disk_size_mib | tostring)
+          + " ]; then printf \"root disk size is %s MiB; disk_size_mb requires at least "
+          + ($expected_disk_size_mib | tostring)
+          + " MiB\\n\" \"$disk_mib\" >&2; exit 1; fi"
+        )
       },
       {
         category: "Release smoke",
