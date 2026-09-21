@@ -138,9 +138,65 @@ fi
 export RUNNERD_SANDBOX_ID="$sandbox_id"
 export RUNNERD_REQUEST_ID="$runner_request_id"
 export RUNNERD_RUNNER_NAME="$runner_name"
+export RUNNERD_RUNNER_LISTENER="$workdir/bin/Runner.Listener"
+hook_signal_path="$hook_root/job-started.signal"
+hook_signal_fallback_path="$hook_root/job-started.signal.fallback"
+hook_signal_pid=""
+hook_signal_mode=""
+cleanup_hook_signal() {
+  if [ -n "$hook_signal_pid" ]; then
+    if [ "$hook_signal_mode" = fifo ] && [ -p "$hook_signal_path" ]; then
+      kill "$hook_signal_pid" 2>/dev/null || true
+    elif [ "$hook_signal_mode" = fallback ] && [ ! -f "$hook_signal_fallback_path" ]; then
+      kill "$hook_signal_pid" 2>/dev/null || true
+    fi
+    wait "$hook_signal_pid" 2>/dev/null || true
+  fi
+  rm -f "$hook_signal_path" "$hook_signal_fallback_path"
+}
+trap cleanup_hook_signal EXIT
+if rm -f "$hook_signal_path" "$hook_signal_fallback_path" && mkfifo -m 600 "$hook_signal_path"; then
+  cat "$hook_signal_path" &
+  hook_signal_pid="$!"
+  hook_signal_mode="fifo"
+  export RUNNERD_HOOK_SIGNAL_PATH="$hook_signal_path"
+  unset RUNNERD_HOOK_SIGNAL_FALLBACK_PATH
+else
+  unset RUNNERD_HOOK_SIGNAL_PATH
+  (
+    while [ ! -f "$hook_signal_fallback_path" ]; do
+      sleep 0.05
+    done
+    cat "$hook_signal_fallback_path"
+    rm -f "$hook_signal_fallback_path"
+  ) &
+  hook_signal_pid="$!"
+  hook_signal_mode="fallback"
+  export RUNNERD_HOOK_SIGNAL_FALLBACK_PATH="$hook_signal_fallback_path"
+  echo "effective Runner version channel is unavailable; using job-start marker fallback" >&2
+fi
 cat >"$hook_root/job-started.sh" <<'HOOK'
 #!/usr/bin/env bash
-echo "RUNNERD_JOB_STARTED"
+effective_runner_version="$("$RUNNERD_RUNNER_LISTENER" --version 2>/dev/null || true)"
+if [ -n "${RUNNERD_HOOK_SIGNAL_PATH:-}" ] && [ -p "$RUNNERD_HOOK_SIGNAL_PATH" ]; then
+  {
+    if [ -n "$effective_runner_version" ] && \
+      [ "${#effective_runner_version}" -le 256 ] && \
+      [[ "$effective_runner_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+      printf 'RUNNERD_EFFECTIVE_RUNNER_VERSION=%%s\n' "$effective_runner_version"
+    fi
+    echo "RUNNERD_JOB_STARTED"
+  } >"$RUNNERD_HOOK_SIGNAL_PATH"
+  rm -f "$RUNNERD_HOOK_SIGNAL_PATH"
+elif [ -n "${RUNNERD_HOOK_SIGNAL_FALLBACK_PATH:-}" ]; then
+  fallback_tmp="${RUNNERD_HOOK_SIGNAL_FALLBACK_PATH}.tmp.$$"
+  umask 077
+  if printf 'RUNNERD_JOB_STARTED\n' >"$fallback_tmp"; then
+    mv -f "$fallback_tmp" "$RUNNERD_HOOK_SIGNAL_FALLBACK_PATH"
+  else
+    rm -f "$fallback_tmp"
+  fi
+fi
 echo "::notice title=Qiniu sandbox::sandbox_id=${RUNNERD_SANDBOX_ID} runner_request_id=${RUNNERD_REQUEST_ID} runner_name=${RUNNERD_RUNNER_NAME}"
 echo "Qiniu sandbox id: ${RUNNERD_SANDBOX_ID}"
 echo "Runner request id: ${RUNNERD_REQUEST_ID}"
@@ -154,7 +210,7 @@ chmod +x "$hook_root/job-started.sh" "$hook_root/job-completed.sh"
 export ACTIONS_RUNNER_HOOK_JOB_STARTED="$hook_root/job-started.sh"
 export ACTIONS_RUNNER_HOOK_JOB_COMPLETED="$hook_root/job-completed.sh"
 
-config_args=(--url "$runner_url" --token "$registration_token" --name "$runner_name" --labels "$runner_labels" --work "$runner_job_work" --ephemeral --unattended --replace --disableupdate)
+config_args=(--url "$runner_url" --token "$registration_token" --name "$runner_name" --labels "$runner_labels" --work "$runner_job_work" --ephemeral --unattended --replace)
 if [ -n "$runner_group" ]; then
   config_args+=(--runnergroup "$runner_group")
 fi
@@ -174,6 +230,7 @@ while [ "$retries_left" -gt 0 ]; do
   sleep 1
 done
 cleanup() {
+  cleanup_hook_signal
   ./config.sh remove --token "$registration_token" || true
 }
 trap cleanup EXIT

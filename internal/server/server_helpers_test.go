@@ -2188,7 +2188,7 @@ func TestRunnerExitedWithExitCode0TransitionsToCompleted(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		srv.runnerExitedForAttempt(st.ID, runnerAttemptIdentity{sandboxID: st.SandboxID, processPID: st.ProcessPID}, sandboxrunner.ExitResult{ExitCode: 0}, nil)
+		srv.runnerExitedForAttempt(st.ID, runnerAttemptIdentity{sandboxID: st.SandboxID, processPID: st.ProcessPID}, sandboxrunner.ExitResult{ExitCode: 0, EffectiveRunnerVersion: "2.338.0"}, nil)
 		close(done)
 	}()
 	select {
@@ -2222,6 +2222,9 @@ func TestRunnerExitedWithExitCode0TransitionsToCompleted(t *testing.T) {
 	if got.TerminationSource != state.TerminationSourceProcessExit || got.RunnerExitCode == nil || *got.RunnerExitCode != 0 {
 		t.Fatalf("runnerExited exit=0: unexpected termination evidence %#v", got)
 	}
+	if got.EffectiveRunnerVersion != "2.338.0" {
+		t.Fatalf("runnerExited exit=0: effective Runner version = %q, want 2.338.0", got.EffectiveRunnerVersion)
+	}
 	if !got.StoppingAt.Equal(cleanupStartedAt) {
 		t.Fatalf("StoppingAt = %s, want preserved cleanup start %s", got.StoppingAt, cleanupStartedAt)
 	}
@@ -2249,6 +2252,7 @@ func TestRunnerExitedForAttemptPersistsExitCodeAfterExplicitStop(t *testing.T) {
 	st.Status = state.StatusRunning
 	st.SandboxID = "sb-explicit-stop-exit"
 	st.ProcessPID = 42
+	st.EffectiveRunnerVersion = "2.337.0"
 	if err := store.WriteState(st); err != nil {
 		t.Fatal(err)
 	}
@@ -2260,7 +2264,7 @@ func TestRunnerExitedForAttemptPersistsExitCodeAfterExplicitStop(t *testing.T) {
 	srv.runnerExitedForAttempt(
 		st.ID,
 		runnerAttemptIdentity{sandboxID: st.SandboxID, processPID: st.ProcessPID},
-		sandboxrunner.ExitResult{ExitCode: 137},
+		sandboxrunner.ExitResult{ExitCode: 137, EffectiveRunnerVersion: "2.338.0"},
 		nil,
 	)
 
@@ -2274,12 +2278,58 @@ func TestRunnerExitedForAttemptPersistsExitCodeAfterExplicitStop(t *testing.T) {
 	if got.RunnerExitCode == nil || *got.RunnerExitCode != 137 {
 		t.Fatalf("late observed exit code = %#v, want 137", got.RunnerExitCode)
 	}
+	if got.EffectiveRunnerVersion != "2.337.0" {
+		t.Fatalf("late exit replaced existing effective Runner version: %q", got.EffectiveRunnerVersion)
+	}
 	if fake.stoppedCount() != 1 {
 		t.Fatalf("late exit repeated Sandbox cleanup: got %d stops, want 1", fake.stoppedCount())
 	}
 	requireRunnerEventStageMessage(t, store, st.ID, "runner_exit", "runner process exited after cleanup started with code 137")
 	if stopped.RunnerExitCode != nil {
 		t.Fatalf("explicit stop unexpectedly had exit evidence before OnExit: %#v", stopped.RunnerExitCode)
+	}
+}
+
+func TestRunnerExitedForAttemptPersistsEffectiveVersionWithoutProviderResult(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "http://example.test", &fakeSandbox{})
+
+	_, st, err := store.CreateRequest(state.RunnerRequest{
+		ID:         "late-version-without-result",
+		Source:     "test",
+		Labels:     []string{"self-hosted"},
+		RunnerName: "e2b-late-version-without-result",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Status = state.StatusCompleted
+	st.SandboxID = "sb-late-version-without-result"
+	st.ProcessPID = 42
+	st.TerminationSource = state.TerminationSourceWorkflowJobWebhook
+	if err := store.WriteState(st); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.runnerExitedForAttempt(
+		st.ID,
+		runnerAttemptIdentity{sandboxID: st.SandboxID, processPID: st.ProcessPID},
+		sandboxrunner.ExitResult{EffectiveRunnerVersion: "2.338.0"},
+		errors.New("provider stream closed without a command result"),
+	)
+
+	got, err := store.ReadState(st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EffectiveRunnerVersion != "2.338.0" {
+		t.Fatalf("late effective Runner version = %q, want 2.338.0", got.EffectiveRunnerVersion)
+	}
+	if got.RunnerExitCode != nil {
+		t.Fatalf("provider error unexpectedly created exit-code evidence: %#v", got.RunnerExitCode)
+	}
+	if got.Status != state.StatusCompleted || got.TerminationSource != state.TerminationSourceWorkflowJobWebhook {
+		t.Fatalf("late version evidence changed terminal ownership: %#v", got)
 	}
 }
 
@@ -2311,7 +2361,7 @@ func TestRunnerExitedForAttemptRejectsStaleAttemptEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			srv.runnerExitedForAttempt(st.ID, tt.attempt, sandboxrunner.ExitResult{ExitCode: 137}, nil)
+			srv.runnerExitedForAttempt(st.ID, tt.attempt, sandboxrunner.ExitResult{ExitCode: 137, EffectiveRunnerVersion: "2.338.0"}, nil)
 
 			got, err := store.ReadState(st.ID)
 			if err != nil {
@@ -2319,6 +2369,9 @@ func TestRunnerExitedForAttemptRejectsStaleAttemptEvidence(t *testing.T) {
 			}
 			if got.RunnerExitCode != nil {
 				t.Fatalf("stale attempt wrote exit code into current request state: %#v", got.RunnerExitCode)
+			}
+			if got.EffectiveRunnerVersion != "" {
+				t.Fatalf("stale attempt wrote effective Runner version into current request state: %q", got.EffectiveRunnerVersion)
 			}
 		})
 	}
@@ -2828,6 +2881,7 @@ func TestReconcileMismatchedCompletedJobsRequeuesOriginalJob(t *testing.T) {
 	st.ResolvedTemplateID = "tpl-old-attempt"
 	st.TemplateVersion = "20260915.1"
 	st.RunnerVersion = "2.336.0"
+	st.EffectiveRunnerVersion = "2.338.0"
 	st.CompletedAt = time.Now().UTC()
 	if err := store.WriteState(st); err != nil {
 		t.Fatal(err)
@@ -2849,7 +2903,7 @@ func TestReconcileMismatchedCompletedJobsRequeuesOriginalJob(t *testing.T) {
 		got.GitHubJobRunnerName != "" || !got.GitHubJobObservedAt.IsZero() {
 		t.Fatalf("expected retained GitHub Job result to be cleared when requeued, got %#v", got)
 	}
-	if got.SandboxRegion != "" || got.ResolvedTemplateID != "" || got.TemplateVersion != "" || got.RunnerVersion != "" {
+	if got.SandboxRegion != "" || got.ResolvedTemplateID != "" || got.TemplateVersion != "" || got.RunnerVersion != "" || got.EffectiveRunnerVersion != "" {
 		t.Fatalf("expected runner environment snapshot to be cleared when requeued, got %#v", got)
 	}
 }
@@ -2969,6 +3023,7 @@ func TestFailStartRequeuesRunnerWhenRetriesRemain(t *testing.T) {
 	st.ResolvedTemplateID = "tpl-old-attempt"
 	st.TemplateVersion = "20260915.1"
 	st.RunnerVersion = "2.336.0"
+	st.EffectiveRunnerVersion = "2.338.0"
 	if err := store.WriteState(st); err != nil {
 		t.Fatal(err)
 	}
@@ -2984,7 +3039,7 @@ func TestFailStartRequeuesRunnerWhenRetriesRemain(t *testing.T) {
 	if got.Status != state.StatusQueued {
 		t.Errorf("failStart retry: expected status=queued, got %s (error=%s)", got.Status, got.Error)
 	}
-	if got.SandboxRegion != "" || got.ResolvedTemplateID != "" || got.TemplateVersion != "" || got.RunnerVersion != "" {
+	if got.SandboxRegion != "" || got.ResolvedTemplateID != "" || got.TemplateVersion != "" || got.RunnerVersion != "" || got.EffectiveRunnerVersion != "" {
 		t.Fatalf("failStart retry: expected runner environment snapshot to be cleared, got %#v", got)
 	}
 }

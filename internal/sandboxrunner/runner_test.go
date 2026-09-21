@@ -320,6 +320,55 @@ func TestStartScriptEncodesRunnerArguments(t *testing.T) {
 	}
 }
 
+func TestParseEffectiveRunnerVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "release", input: "2.337.0\n", want: "2.337.0"},
+		{name: "surrounding whitespace", input: "  2.338.1  ", want: "2.338.1"},
+		{name: "prerelease", input: "2.339.0-rc.1", want: "2.339.0-rc.1"},
+		{name: "oversized", input: strings.Repeat("2", 257)},
+		{name: "embedded newline", input: "2.337.0\nsecret"},
+		{name: "arbitrary text", input: "runner version is 2.337.0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseEffectiveRunnerVersion([]byte(tt.input)); got != tt.want {
+				t.Fatalf("parseEffectiveRunnerVersion(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveRunnerVersionCaptureFreezesPreJobEvidence(t *testing.T) {
+	t.Parallel()
+
+	capture := &effectiveRunnerVersionCapture{}
+	capture.Observe([]byte("listener ready\nRUNNERD_EFFECTIVE_RUNNER_VER"))
+	capture.Observe([]byte("SION=2.338.0\nRUNNERD_JOB_STARTED\n"))
+	capture.Observe([]byte("RUNNERD_EFFECTIVE_RUNNER_VERSION=9.999.0\n"))
+
+	if got := capture.Version(); got != "2.338.0" {
+		t.Fatalf("captured effective Runner version = %q, want frozen pre-job version 2.338.0", got)
+	}
+}
+
+func TestEffectiveRunnerVersionCaptureRejectsWorkflowOnlyEvidence(t *testing.T) {
+	t.Parallel()
+
+	capture := &effectiveRunnerVersionCapture{}
+	capture.Observe([]byte("RUNNERD_JOB_STARTED\n"))
+	capture.Observe([]byte("RUNNERD_EFFECTIVE_RUNNER_VERSION=9.999.0\n"))
+
+	if got := capture.Version(); got != "" {
+		t.Fatalf("captured workflow-controlled effective Runner version %q", got)
+	}
+}
+
 func TestStartScriptExportsScopedCachePrefixes(t *testing.T) {
 	input := StartInput{
 		CacheS3Bucket:       "cache-bucket",
@@ -399,8 +448,12 @@ func TestStartScriptUsesHostedRunnerFilesystemContract(t *testing.T) {
 	runnerHome := filepath.Join(fixture, "home", "runner")
 	hookRoot := filepath.Join(fixture, "hooks")
 	logPath := filepath.Join(fixture, "runner.log")
+	jobLogPath := filepath.Join(fixture, "job.log")
 	environmentPath := filepath.Join(fixture, "environment")
 	if err := os.MkdirAll(actionsRunnerRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(actionsRunnerRoot, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(environmentPath, []byte("ImageVersion=\"$TEMPLATE_VERSION\"\nIMAGE_VERSION=\"$TEMPLATE_VERSION\"\nCUSTOM_RUNNER_ENV=\"$HOME/from-environment\"\n"), 0o644); err != nil {
@@ -411,10 +464,18 @@ set -euo pipefail
 printf 'config HOME=%s PWD=%s TOOL_CACHE=%s AGENT_TOOLS=%s IMAGE_VERSION=%s CUSTOM_RUNNER_ENV=%s\n' "$HOME" "$PWD" "$RUNNER_TOOL_CACHE" "$AGENT_TOOLSDIRECTORY" "${IMAGE_VERSION:-}" "${CUSTOM_RUNNER_ENV:-}" >>"$RUNNER_TEST_LOG"
 printf 'go GOPATH=%s GOBIN=%s\n' "$GOPATH" "$GOBIN" >>"$RUNNER_TEST_LOG"
 printf 'go PATH=%s\n' "$PATH" >>"$RUNNER_TEST_LOG"
+printf 'config args=%s\n' "$*" >>"$RUNNER_TEST_LOG"
 `)
 	writeExecutable(t, filepath.Join(actionsRunnerRoot, "run.sh"), `#!/usr/bin/env bash
 set -euo pipefail
 printf 'run HOME=%s PWD=%s RUNASROOT=%s\n' "$HOME" "$PWD" "${RUNNER_ALLOW_RUNASROOT:-}" >>"$RUNNER_TEST_LOG"
+"$ACTIONS_RUNNER_HOOK_JOB_STARTED" >>"$RUNNER_TEST_JOB_LOG"
+`)
+	writeExecutable(t, filepath.Join(actionsRunnerRoot, "bin", "Runner.Listener"), `#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf '2.338.0\n'
+fi
 `)
 
 	script := startScript(StartInput{
@@ -437,6 +498,7 @@ printf 'run HOME=%s PWD=%s RUNASROOT=%s\n' "$HOME" "$PWD" "${RUNNER_ALLOW_RUNASR
 		"RUNNER_HOME="+runnerHome,
 		"RUNNER_HOOK_ROOT="+hookRoot,
 		"RUNNER_TEST_LOG="+logPath,
+		"RUNNER_TEST_JOB_LOG="+jobLogPath,
 		"RUNNER_ENVIRONMENT_FILE="+environmentPath,
 		"ENSURE_DOCKER=/bin/true",
 		"GOPATH=",
@@ -450,6 +512,9 @@ printf 'run HOME=%s PWD=%s RUNASROOT=%s\n' "$HOME" "$PWD" "${RUNNER_ALLOW_RUNASR
 		t.Fatal(err)
 	}
 	log := string(logBytes)
+	if strings.Contains(log, "--disableupdate") {
+		t.Fatalf("runner registration disabled the official updater:\n%s", log)
+	}
 	for _, want := range []string{
 		"config HOME=" + runnerHome + " PWD=" + workdir,
 		"TOOL_CACHE=/opt/hostedtoolcache AGENT_TOOLS=/opt/hostedtoolcache",
@@ -461,6 +526,9 @@ printf 'run HOME=%s PWD=%s RUNASROOT=%s\n' "$HOME" "$PWD" "${RUNNER_ALLOW_RUNASR
 			t.Fatalf("runner execution log missing %q:\n%s", want, log)
 		}
 	}
+	versionMarker := "RUNNERD_EFFECTIVE_RUNNER_VERSION=2.338.0"
+	jobStartedMarker := "RUNNERD_JOB_STARTED"
+	foundPath := false
 	for _, line := range strings.Split(log, "\n") {
 		pathValue, ok := strings.CutPrefix(line, "go PATH=")
 		if !ok {
@@ -472,9 +540,69 @@ printf 'run HOME=%s PWD=%s RUNASROOT=%s\n' "$HOME" "$PWD" "${RUNNER_ALLOW_RUNASR
 		if goBinIndex < 0 || systemBinIndex < 0 || goBinIndex >= systemBinIndex {
 			t.Fatalf("Go binary directory must precede /usr/local/bin in PATH: %q", pathValue)
 		}
-		return
+		versionIndex := strings.Index(string(output), versionMarker)
+		jobStartedIndex := strings.Index(string(output), jobStartedMarker)
+		if versionIndex < 0 || jobStartedIndex < 0 {
+			t.Fatalf("runner command output missing ordered hook evidence:\n%s", output)
+		}
+		if versionIndex >= jobStartedIndex {
+			t.Fatalf("runner command output crossed the job-start boundary before version evidence:\n%s", output)
+		}
+		jobLog, err := os.ReadFile(jobLogPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(jobLog), "Qiniu sandbox id: sandbox-1") {
+			t.Fatalf("job-start hook output missing from job log:\n%s", jobLog)
+		}
+		if strings.Contains(string(jobLog), jobStartedMarker) {
+			t.Fatalf("job log must not duplicate the outer job-start control marker:\n%s", jobLog)
+		}
+		if _, err := os.Stat(filepath.Join(hookRoot, "job-started.signal")); !os.IsNotExist(err) {
+			t.Fatalf("job-start hook left its one-shot evidence channel behind: %v", err)
+		}
+		foundPath = true
+		break
 	}
-	t.Fatalf("runner execution log missing Go PATH: %s", log)
+	if !foundPath {
+		t.Fatalf("runner execution log missing Go PATH: %s", log)
+	}
+
+	mockBin := filepath.Join(runnerHome, "go", "bin")
+	if err := os.MkdirAll(mockBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(mockBin, "mkfifo"), `#!/usr/bin/env bash
+exit 1
+`)
+	fallbackOutput, err := runCommand(
+		t,
+		"bash",
+		[]string{scriptPath},
+		"ACTIONS_RUNNER_ROOT="+actionsRunnerRoot,
+		"RUNNER_WORKDIR="+workdir,
+		"RUNNER_JOB_WORK="+runnerJobWork,
+		"RUNNER_HOME="+runnerHome,
+		"RUNNER_HOOK_ROOT="+hookRoot,
+		"RUNNER_TEST_LOG="+logPath,
+		"RUNNER_TEST_JOB_LOG="+jobLogPath,
+		"RUNNER_ENVIRONMENT_FILE="+environmentPath,
+		"ENSURE_DOCKER=/bin/true",
+		"GOPATH=",
+		"GOBIN=",
+	)
+	if err != nil {
+		t.Fatalf("start script failed without FIFO support: %v\n%s", err, fallbackOutput)
+	}
+	if strings.Count(fallbackOutput, jobStartedMarker) != 1 {
+		t.Fatalf("runner command output lost the job-start marker without FIFO support:\n%s", fallbackOutput)
+	}
+	if strings.Contains(fallbackOutput, versionMarker) {
+		t.Fatalf("fallback channel must not forward effective-version evidence:\n%s", fallbackOutput)
+	}
+	if _, err := os.Stat(filepath.Join(hookRoot, "job-started.signal.fallback")); !os.IsNotExist(err) {
+		t.Fatalf("job-start hook left its fallback evidence channel behind: %v", err)
+	}
 }
 
 func TestStartScriptDockerBootstrapPolicy(t *testing.T) {
