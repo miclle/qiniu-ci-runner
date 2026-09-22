@@ -21,16 +21,26 @@ import (
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/qiniu/ci-runner/internal/labelutil"
 	"github.com/qiniu/ci-runner/internal/metrics"
+	"github.com/qiniu/ci-runner/internal/runnerapplication"
+	"golang.org/x/sync/singleflight"
 )
 
 type Client struct {
-	baseURL      string
-	http         *http.Client
-	userHTTP     *http.Client
-	downloadHTTP *http.Client
-	appAuth      *appAuthenticator
-	tokensMu     sync.Mutex
-	regTokens    map[string]RegistrationToken
+	baseURL           string
+	http              *http.Client
+	userHTTP          *http.Client
+	downloadHTTP      *http.Client
+	appAuth           *appAuthenticator
+	tokensMu          sync.Mutex
+	regTokens         map[string]RegistrationToken
+	applicationsMu    sync.Mutex
+	applications      map[string]runnerApplicationsCacheEntry
+	applicationsGroup singleflight.Group
+}
+
+type runnerApplicationsCacheEntry struct {
+	applications []RunnerApplication
+	expiresAt    time.Time
 }
 
 type AppAuth struct {
@@ -111,6 +121,8 @@ type RegistrationToken struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
+
+type RunnerApplication = runnerapplication.Application
 
 type OrganizationMembership struct {
 	OrganizationID    int64
@@ -510,6 +522,7 @@ func newClient(baseURL string, httpClient, downloadHTTP *http.Client) *Client {
 		userHTTP:     httpClient,
 		downloadHTTP: downloadHTTP,
 		regTokens:    map[string]RegistrationToken{},
+		applications: map[string]runnerApplicationsCacheEntry{},
 	}
 }
 
@@ -616,6 +629,125 @@ func (c *Client) CreateRegistrationToken(ctx context.Context, repositoryFullName
 	c.storeRegistrationToken(target.cacheKey, token)
 	result = "success"
 	return token, nil
+}
+
+func (c *Client) ListRunnerApplications(ctx context.Context, repositoryFullName, runnerGroup string) ([]RunnerApplication, error) {
+	startedAt := time.Now()
+	result := "error"
+	defer func() { metrics.RecordGitHubAPI("list_runner_applications", result, time.Since(startedAt)) }()
+	target, err := c.runnerTarget(repositoryFullName, runnerGroup)
+	if err != nil {
+		return nil, err
+	}
+	if applications, ok := c.cachedRunnerApplications(target.cacheKey); ok {
+		result = "cache_hit"
+		return applications, nil
+	}
+	value, err, _ := c.applicationsGroup.Do(target.cacheKey, func() (any, error) {
+		if applications, ok := c.cachedRunnerApplications(target.cacheKey); ok {
+			return applications, nil
+		}
+		applications, err := c.fetchRunnerApplications(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		c.storeRunnerApplications(target.cacheKey, applications)
+		return cloneRunnerApplications(applications), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	applications, ok := value.([]RunnerApplication)
+	if !ok {
+		return nil, fmt.Errorf("github runner applications cache returned an unexpected value")
+	}
+	result = "success"
+	return cloneRunnerApplications(applications), nil
+}
+
+func (c *Client) fetchRunnerApplications(ctx context.Context, target runnerTarget) ([]RunnerApplication, error) {
+	requestURL := fmt.Sprintf("%s/%s/actions/runners/downloads", c.baseURL, target.apiPath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	setGitHubHeaders(req)
+	resp, err := c.do(req, target.repositoryFullName)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	const maxResponseBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read github runner applications response: %w", err)
+	}
+	if len(body) > maxResponseBytes {
+		return nil, fmt.Errorf("github runner applications response exceeds %d bytes", maxResponseBytes)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github runner applications: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var descriptors []struct {
+		OS             string `json:"os"`
+		Architecture   string `json:"architecture"`
+		DownloadURL    string `json:"download_url"`
+		Filename       string `json:"filename"`
+		SHA256Checksum string `json:"sha256_checksum"`
+	}
+	if err := json.Unmarshal(body, &descriptors); err != nil {
+		return nil, fmt.Errorf("decode github runner applications response: %w", err)
+	}
+	applications := make([]RunnerApplication, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		if descriptor.OS != "linux" {
+			continue
+		}
+		application, err := runnerapplication.FromDescriptor(
+			descriptor.Architecture,
+			descriptor.Filename,
+			descriptor.DownloadURL,
+			descriptor.SHA256Checksum,
+		)
+		if err != nil {
+			return nil, err
+		}
+		applications = append(applications, application)
+	}
+	if len(applications) == 0 {
+		return nil, fmt.Errorf("github runner applications response contains no supported Linux application")
+	}
+	return applications, nil
+}
+
+func (c *Client) cachedRunnerApplications(key string) ([]RunnerApplication, bool) {
+	c.applicationsMu.Lock()
+	defer c.applicationsMu.Unlock()
+	entry, ok := c.applications[key]
+	if !ok || !time.Now().Before(entry.expiresAt) {
+		delete(c.applications, key)
+		return nil, false
+	}
+	return cloneRunnerApplications(entry.applications), true
+}
+
+func (c *Client) storeRunnerApplications(key string, applications []RunnerApplication) {
+	c.applicationsMu.Lock()
+	defer c.applicationsMu.Unlock()
+	now := time.Now()
+	c.applications[key] = runnerApplicationsCacheEntry{
+		applications: cloneRunnerApplications(applications),
+		expiresAt:    now.Add(10 * time.Minute),
+	}
+	for cachedKey, cached := range c.applications {
+		if !now.Before(cached.expiresAt) {
+			delete(c.applications, cachedKey)
+		}
+	}
+}
+
+func cloneRunnerApplications(applications []RunnerApplication) []RunnerApplication {
+	return append([]RunnerApplication(nil), applications...)
 }
 
 func (c *Client) ListRunners(ctx context.Context, repositoryFullName, runnerGroup string) ([]Runner, error) {

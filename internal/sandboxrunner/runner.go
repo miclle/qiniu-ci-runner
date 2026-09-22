@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/qiniu/ci-runner/internal/runnerapplication"
 	qnsandbox "github.com/qiniu/go-sdk/v7/sandbox"
 )
 
@@ -27,6 +28,7 @@ type StartInput struct {
 	RegistrationToken   string
 	Labels              []string
 	RunnerGroup         string
+	RunnerApplications  []RunnerApplication
 	TemplateID          string
 	RequireDocker       bool
 	Timeout             time.Duration
@@ -43,6 +45,8 @@ type StartInput struct {
 	OnStderr            func([]byte)
 	OnExit              func(ExitResult, error)
 }
+
+type RunnerApplication = runnerapplication.Application
 
 type StartResult struct {
 	SandboxID          string
@@ -967,5 +971,29 @@ func startScript(input StartInput, sandboxID string) string {
 		base64.StdEncoding.EncodeToString([]byte(input.CacheS3AccessKeyID)),
 		base64.StdEncoding.EncodeToString([]byte(input.CacheS3SecretKey)),
 		base64.StdEncoding.EncodeToString([]byte(input.CacheS3SessionToken)),
+		base64.StdEncoding.EncodeToString([]byte(runnerApplicationsManifest(input.RunnerApplications))),
 	)
+}
+
+func runnerApplicationsManifest(applications []RunnerApplication) string {
+	const maxApplications = 3
+	lines := make([]string, 0, min(len(applications), maxApplications))
+	for _, application := range applications {
+		if len(lines) == maxApplications {
+			break
+		}
+		normalized, err := runnerapplication.Normalize(application)
+		if err != nil {
+			continue
+		}
+		// Normalize guarantees these TSV fields cannot contain tabs or newlines.
+		// Preserve that invariant if the manifest gains more fields.
+		lines = append(lines, strings.Join([]string{
+			normalized.Architecture,
+			normalized.Version,
+			normalized.DownloadURL,
+			normalized.SHA256Checksum,
+		}, "\t"))
+	}
+	return strings.Join(lines, "\n")
 }

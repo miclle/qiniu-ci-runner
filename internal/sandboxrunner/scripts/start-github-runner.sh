@@ -61,6 +61,164 @@ if [ ! -x ./config.sh ]; then
   cp -a "$actions_runner_root"/. "$workdir"/
 fi
 
+runner_applications_manifest="$(printf '%%s' "%[17]s" | base64 -d)"
+if [ -n "$runner_applications_manifest" ]; then
+  case "$(uname -m)" in
+    x86_64) runner_architecture="x64" ;;
+    aarch64|arm64) runner_architecture="arm64" ;;
+    armv7l|armv8l) runner_architecture="arm" ;;
+    *)
+      echo "unsupported architecture for GitHub Actions runner preflight update: $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+
+  runner_target_version=""
+  runner_download_url=""
+  runner_sha256_checksum=""
+  while IFS=$'\t' read -r application_architecture application_version application_url application_checksum; do
+    if [ "$application_architecture" = "$runner_architecture" ]; then
+      runner_target_version="$application_version"
+      runner_download_url="$application_url"
+      runner_sha256_checksum="$application_checksum"
+      break
+    fi
+  done <<<"$runner_applications_manifest"
+  if [ -z "$runner_target_version" ] || [ -z "$runner_download_url" ] || [ -z "$runner_sha256_checksum" ]; then
+    echo "GitHub Actions runner preflight update has no application for architecture $runner_architecture" >&2
+    exit 1
+  fi
+
+  normalize_runner_version_component() {
+    local component="$1"
+    while [ "${#component}" -gt 1 ] && [ "${component#0}" != "$component" ]; do
+      component="${component#0}"
+    done
+    printf '%%s' "$component"
+  }
+  runner_version_at_least() {
+    local current="$1"
+    local target="$2"
+    local current_component target_component index
+    local -a current_components target_components
+    [[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    IFS=. read -r -a current_components <<<"$current"
+    IFS=. read -r -a target_components <<<"$target"
+    for index in 0 1 2; do
+      current_component="$(normalize_runner_version_component "${current_components[$index]}")"
+      target_component="$(normalize_runner_version_component "${target_components[$index]}")"
+      if [ "${#current_component}" -gt "${#target_component}" ]; then
+        return 0
+      fi
+      if [ "${#current_component}" -lt "${#target_component}" ]; then
+        return 1
+      fi
+      if [[ "$current_component" > "$target_component" ]]; then
+        return 0
+      fi
+      if [[ "$current_component" < "$target_component" ]]; then
+        return 1
+      fi
+    done
+    return 0
+  }
+
+  current_runner_version="$("$workdir/bin/Runner.Listener" --version 2>/dev/null || true)"
+  if [ "$current_runner_version" = "$runner_target_version" ]; then
+    echo "GitHub Actions runner $runner_target_version is already installed"
+  elif runner_version_at_least "$current_runner_version" "$runner_target_version"; then
+    echo "GitHub Actions runner $current_runner_version is newer than target $runner_target_version; keeping installed version"
+  else
+    for runner_update_tool in curl tar sha256sum mktemp timeout; do
+      if ! command -v "$runner_update_tool" >/dev/null 2>&1; then
+        echo "missing required GitHub Actions runner update tool: $runner_update_tool" >&2
+        exit 1
+      fi
+    done
+
+    runner_update_root="$(mktemp -d "${workdir}.update.XXXXXX")"
+    runner_update_archive="$runner_update_root/runner.tar.gz"
+    runner_update_candidate="$runner_update_root/candidate"
+    runner_previous_workdir=""
+    cleanup_runner_update() {
+      if [ -n "${runner_previous_workdir:-}" ] && [ -e "$runner_previous_workdir" ]; then
+        if [ ! -e "$workdir" ]; then
+          if ! mv "$runner_previous_workdir" "$workdir"; then
+            echo "GitHub Actions runner work directory rollback failed: $runner_previous_workdir" >&2
+            # The previous Runner is the last recoverable copy. Keep the
+            # random update root instead of deleting it below.
+            runner_update_root=""
+          fi
+        else
+          rm -rf "$runner_previous_workdir"
+        fi
+      fi
+      if [ -n "${runner_update_root:-}" ]; then
+        rm -rf "$runner_update_root"
+      fi
+    }
+    interrupt_runner_update() {
+      exit 1
+    }
+    trap cleanup_runner_update EXIT
+    trap interrupt_runner_update HUP INT TERM
+    mkdir -p "$runner_update_candidate"
+    echo "downloading GitHub Actions runner $runner_target_version for $runner_architecture"
+    if ! (
+      # Bash expresses RLIMIT_FSIZE in KiB. Keep the archive bounded even when
+      # an older curl cannot apply --max-filesize without Content-Length. The
+      # outer timeout caps all curl retries, including the final active transfer.
+      ulimit -f 524288
+      timeout --signal=KILL 300s curl \
+        --fail \
+        --location \
+        --retry 3 \
+        --retry-delay 1 \
+        --retry-max-time 300 \
+        --connect-timeout 10 \
+        --max-time 300 \
+        --max-filesize 536870912 \
+        --output "$runner_update_archive" \
+        "$runner_download_url"
+    ); then
+      echo "GitHub Actions runner download failed" >&2
+      exit 1
+    fi
+    if ! printf '%%s  %%s\n' "$runner_sha256_checksum" "$runner_update_archive" | sha256sum -c - >/dev/null 2>&1; then
+      echo "GitHub Actions runner archive checksum verification failed" >&2
+      exit 1
+    fi
+    if ! tar -xzf "$runner_update_archive" -C "$runner_update_candidate"; then
+      echo "GitHub Actions runner archive extraction failed" >&2
+      exit 1
+    fi
+    candidate_runner_version="$("$runner_update_candidate/bin/Runner.Listener" --version 2>/dev/null || true)"
+    if [ "$candidate_runner_version" != "$runner_target_version" ]; then
+      echo "GitHub Actions runner archive version verification failed: got ${candidate_runner_version:-unknown}, want $runner_target_version" >&2
+      exit 1
+    fi
+
+    runner_previous_workdir="$runner_update_root/previous"
+    cd "$(dirname "$workdir")"
+    # The EXIT trap restores this backup if the candidate move fails or a
+    # catchable signal arrives between the two moves.
+    if ! mv "$workdir" "$runner_previous_workdir"; then
+      echo "GitHub Actions runner work directory replacement failed" >&2
+      exit 1
+    fi
+    if ! mv "$runner_update_candidate" "$workdir"; then
+      echo "GitHub Actions runner work directory replacement failed" >&2
+      exit 1
+    fi
+    cleanup_runner_update
+    runner_previous_workdir=""
+    runner_update_root=""
+    trap - EXIT HUP INT TERM
+    cd "$workdir"
+    echo "updated GitHub Actions runner from ${current_runner_version:-unknown} to $runner_target_version"
+  fi
+fi
+
 if [ ! -x "$ensure_docker" ]; then
   if [ "$require_docker" = 1 ]; then
     echo "missing required Docker bootstrap helper at $ensure_docker" >&2
