@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -358,6 +359,123 @@ func TestGetInstallationReturnsStableAccountIdentity(t *testing.T) {
 	}
 	if installation.AccountID != 9001 || installation.AccountType != "organization" || installation.AccountLogin != "octo-org" {
 		t.Fatalf("unexpected installation owner: %#v", installation)
+	}
+}
+
+func TestListInstallationsFollowsPagination(t *testing.T) {
+	privateKey := testPrivateKeyFile(t)
+	var serverURL string
+	var requests []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/app/installations" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		if r.Header.Get("Authorization") == "" {
+			t.Fatal("expected app JWT authorization")
+		}
+		requests = append(requests, r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			_, _ = io.WriteString(w, `[{"id":457,"account":{"id":9002,"login":" octocat ","type":"User","name":" Octo Cat ","avatar_url":" https://avatars.example/u.png "}}]`)
+			return
+		}
+		w.Header().Set("Link", `<`+serverURL+`/app/installations?per_page=100&page=2>; rel="next"`)
+		_, _ = io.WriteString(w, `[
+			{"id":0,"account":{"id":8999,"login":"invalid-zero","type":"User"}},
+			{"id":-1,"account":{"id":8998,"login":"invalid-negative","type":"User"}},
+			{"id":456,"account":{"id":9001,"login":"octo-org","type":"Organization","name":"Octo Org","avatar_url":"https://avatars.example/o.png"}}
+		]`)
+	}))
+	serverURL = ts.URL
+	defer ts.Close()
+
+	client, err := NewAppClient(ts.URL, AppAuth{AppID: 123, PrivateKeyFile: privateKey}, ts.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	installations, err := client.ListInstallations(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Installation{
+		{ID: 456, AccountID: 9001, AccountType: "organization", AccountLogin: "octo-org", AccountName: "Octo Org", AccountAvatar: "https://avatars.example/o.png"},
+		{ID: 457, AccountID: 9002, AccountType: "user", AccountLogin: "octocat", AccountName: "Octo Cat", AccountAvatar: "https://avatars.example/u.png"},
+	}
+	if !reflect.DeepEqual(installations, want) {
+		t.Fatalf("unexpected installations: got=%#v want=%#v", installations, want)
+	}
+	if !reflect.DeepEqual(requests, []string{"per_page=100", "per_page=100&page=2"}) {
+		t.Fatalf("unexpected installation requests: %#v", requests)
+	}
+}
+
+func TestListInstallationsRequiresAppAuth(t *testing.T) {
+	_, err := NewClient("https://api.github.test", nil).ListInstallations(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "github app auth is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestListInstallationsRejectsGitHubFailure(t *testing.T) {
+	privateKey := testPrivateKeyFile(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer ts.Close()
+
+	client, err := NewAppClient(ts.URL, AppAuth{AppID: 123, PrivateKeyFile: privateKey}, ts.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.ListInstallations(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "status 403") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestListInstallationRepositoriesFollowsPagination(t *testing.T) {
+	privateKey := testPrivateKeyFile(t)
+	var serverURL string
+	var repositoryRequests []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/987/access_tokens":
+			if r.Header.Get("Authorization") == "" {
+				t.Fatal("expected app JWT authorization for installation token")
+			}
+			_, _ = io.WriteString(w, `{"token":"installation-token","expires_at":"`+time.Now().Add(time.Hour).Format(time.RFC3339)+`"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/installation/repositories":
+			if got := r.Header.Get("Authorization"); got != "token installation-token" {
+				t.Fatalf("unexpected installation authorization: %q", got)
+			}
+			repositoryRequests = append(repositoryRequests, r.URL.RawQuery)
+			if r.URL.Query().Get("page") == "2" {
+				_, _ = io.WriteString(w, `{"repositories":[{"full_name":"octo-org/api"}]}`)
+				return
+			}
+			w.Header().Set("Link", `<`+serverURL+`/installation/repositories?per_page=100&page=2>; rel="next"`)
+			_, _ = io.WriteString(w, `{"repositories":[{"full_name":"octo-org/runner"}]}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	serverURL = ts.URL
+	defer ts.Close()
+
+	client, err := NewAppClient(ts.URL, AppAuth{AppID: 123, PrivateKeyFile: privateKey}, ts.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositories, err := client.ListInstallationRepositories(t.Context(), 987)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"octo-org/runner", "octo-org/api"}; !reflect.DeepEqual(repositories, want) {
+		t.Fatalf("unexpected repositories: got=%#v want=%#v", repositories, want)
+	}
+	if want := []string{"per_page=100", "per_page=100&page=2"}; !reflect.DeepEqual(repositoryRequests, want) {
+		t.Fatalf("unexpected repository requests: got=%#v want=%#v", repositoryRequests, want)
 	}
 }
 
