@@ -6,6 +6,10 @@ import {
   adminDataResources,
   adminPollingResources,
   adminRunnerRequestsPath,
+  collectAdminRunnerPoll,
+  createAutomaticPageLoadGate,
+  mergeAdminRunnerPages,
+  reconcileAdminRunnerPages,
   shouldPollAdminSection,
   shouldPollUserRoute,
   userDataResources,
@@ -16,8 +20,8 @@ import {
 
 describe("app load policy", () => {
   test.each([
-    ["overview", ["runner_requests", "runner_specs"]],
-    ["runner_requests", ["runner_requests", "runner_specs"]],
+    ["overview", ["runner_requests", "runner_request_metrics", "runner_specs"]],
+    ["runner_requests", ["runner_requests", "runner_request_metrics", "runner_specs"]],
     ["runner_specs", ["runner_specs"]],
     ["audit", ["audit_events"]],
     ["accounts", []],
@@ -34,9 +38,112 @@ describe("app load policy", () => {
     expect(shouldPollAdminSection("runner_requests")).toBe(true)
     expect(shouldPollAdminSection("runner_specs")).toBe(false)
     expect(shouldPollAdminSection("audit")).toBe(false)
-    expect(adminPollingResources("overview")).toEqual(["runner_requests"])
-    expect(adminPollingResources("runner_requests")).toEqual(["runner_requests"])
+    expect(adminPollingResources("overview")).toEqual(["runner_requests", "runner_request_metrics"])
+    expect(adminPollingResources("runner_requests")).toEqual(["runner_requests", "runner_request_metrics"])
     expect(adminPollingResources("runner_specs")).toEqual([])
+  })
+
+  test("merges polled admin rows without losing loaded history", () => {
+    const existing = [
+      { id: "older", status: "completed", runner_name: "older" },
+      { id: "same", status: "running", runner_name: "same" },
+    ]
+    const latest = [
+      { id: "new", status: "queued", runner_name: "new" },
+      { id: "same", status: "completed", runner_name: "same" },
+    ]
+    expect(mergeAdminRunnerPages(latest, existing)).toEqual([
+      latest[0],
+      latest[1],
+      existing[0],
+    ])
+  })
+
+  test("reconciles the loaded admin window when polling reaches its boundary", () => {
+    const existing = [
+      { id: "older", status: "running", runner_name: "older" },
+      { id: "removed", status: "running", runner_name: "removed" },
+    ]
+    const latest = [
+      { id: "new", status: "queued", runner_name: "new" },
+      { id: "older", status: "completed", runner_name: "older" },
+    ]
+    expect(reconcileAdminRunnerPages(latest, existing, true)).toEqual([
+      latest[0],
+      latest[1],
+    ])
+    expect(reconcileAdminRunnerPages(latest, existing, false)).toEqual([
+      latest[0],
+      latest[1],
+      existing[1],
+    ])
+  })
+
+  test("polls across new head pages until the loaded history boundary", async () => {
+    const calls = []
+    const pages = new Map([
+      [null, { items: [{ id: "new-2" }, { id: "new-1" }], nextCursor: "head-2", hasMore: true }],
+      ["head-2", { items: [{ id: "loaded-newest", status: "completed" }, { id: "loaded-oldest", status: "completed" }], nextCursor: "head-3", hasMore: true }],
+    ])
+    const result = await collectAdminRunnerPoll(async (cursor = null) => {
+      calls.push(cursor)
+      return pages.get(cursor)
+    }, {
+      items: [{ id: "loaded-newest", status: "running" }, { id: "loaded-oldest", status: "running" }],
+      nextCursor: "loaded-history",
+      hasMore: true,
+    })
+
+    expect(calls).toEqual([null, "head-2"])
+    expect(result.items.map((runner) => runner.id)).toEqual(["new-2", "new-1", "loaded-newest", "loaded-oldest"])
+    expect(result.items[2].status).toBe("completed")
+    expect(result.nextCursor).toBe("loaded-history")
+    expect(result.hasMore).toBe(true)
+    expect(result.preservePagination).toBe(true)
+  })
+
+  test("rebuilds the filtered window when its previous boundary no longer matches", async () => {
+    const result = await collectAdminRunnerPoll(async (cursor = null) => cursor === null
+      ? { items: [{ id: "still-running" }], nextCursor: "older", hasMore: true }
+      : { items: [{ id: "older-running" }], nextCursor: null, hasMore: false }, {
+      items: [{ id: "still-running" }, { id: "finished-oldest" }],
+      nextCursor: "loaded-history",
+      hasMore: true,
+    })
+
+    expect(result.items.map((runner) => runner.id)).toEqual(["still-running", "older-running"])
+    expect(result.nextCursor).toBeNull()
+    expect(result.hasMore).toBe(false)
+    expect(result.preservePagination).toBe(false)
+  })
+
+  test("includes older requests that newly match an exhausted filtered list", async () => {
+    const result = await collectAdminRunnerPoll(async () => ({
+      items: [{ id: "loaded-oldest" }, { id: "newly-matching-older" }],
+      nextCursor: null,
+      hasMore: false,
+    }), {
+      items: [{ id: "loaded-oldest" }],
+      nextCursor: null,
+      hasMore: false,
+    })
+
+    expect(result.items.map((runner) => runner.id)).toEqual(["loaded-oldest", "newly-matching-older"])
+    expect(result.hasMore).toBe(false)
+    expect(result.preservePagination).toBe(false)
+  })
+
+  test("suspends automatic page loading after a failure until a manual retry", () => {
+    const gate = createAutomaticPageLoadGate()
+    expect(gate.begin()).toBe(true)
+    expect(gate.begin()).toBe(false)
+    gate.finish(false)
+    expect(gate.begin()).toBe(false)
+    expect(gate.begin(true)).toBe(true)
+    gate.finish(true)
+    expect(gate.begin()).toBe(true)
+    gate.reset()
+    expect(gate.begin()).toBe(true)
   })
 
   test("builds filtered admin Runner request pages without client-side truncation", () => {
@@ -45,13 +152,13 @@ describe("app load policy", () => {
       repository: "octo/older repo",
       runnerSpec: "large",
       limit: 100,
-      offset: 200,
-    })).toBe("/runner_requests?limit=100&offset=200&status=failed&repository_full_name=octo%2Folder+repo&runner_spec_name=large")
+      cursor: "next-page",
+    })).toBe("/runner_requests?limit=100&cursor=next-page&status=failed&repository_full_name=octo%2Folder+repo&runner_spec_name=large")
     expect(adminRunnerRequestsPath({
       status: "all",
       repository: "all",
       runnerSpec: "all",
-    })).toBe("/runner_requests?limit=100&offset=0")
+    })).toBe("/runner_requests?limit=100")
   })
 
   test.each([
