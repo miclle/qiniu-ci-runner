@@ -1,0 +1,47 @@
+name: Fork sponsorship smoke
+
+on:
+  push:
+    branches:
+      - test/fork-sponsorship-smoke
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sponsored-runner:
+    name: Verify organization-sponsored runner
+    if: github.repository == 'miclle/qiniu-ci-runner'
+    runs-on: [qiniu, ubuntu-24.04]
+    timeout-minutes: 15
+    steps:
+      - name: Verify fork-owned job context
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: miclle/qiniu-ci-runner
+          EXPECTED_OWNER: miclle
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$GITHUB_REPOSITORY_OWNER" = "$EXPECTED_OWNER"
+          test "$RUNNER_OS" = "Linux"
+
+          echo "repository=$GITHUB_REPOSITORY"
+          echo "event=$GITHUB_EVENT_NAME"
+          echo "runner_name=$RUNNER_NAME"
+          echo "runner_os=$RUNNER_OS"
+          echo "runner_arch=$RUNNER_ARCH"
+          uname -a
+          whoami
+          pwd
+
+      - name: Verify writable runner temp
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker="$RUNNER_TEMP/fork-sponsorship-smoke"
+          printf '%s\n' "$GITHUB_RUN_ID:$GITHUB_JOB" > "$marker"
+          test -s "$marker"
