@@ -85,6 +85,8 @@ type runnerEventRecord struct {
 func (runnerEventRecord) TableName() string { return "runner_events" }
 
 type runnerProfileRecord struct {
+	TemplateSource      string    `gorm:"column:template_source;not null;default:''"`
+	Published           bool      `gorm:"column:published;not null;default:false"`
 	Name                string    `gorm:"column:name;primaryKey"`
 	LabelsJSON          string    `gorm:"column:labels_json;not null"`
 	RequiredLabelsJSON  *string   `gorm:"column:required_labels_json"`

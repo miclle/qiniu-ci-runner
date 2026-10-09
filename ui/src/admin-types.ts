@@ -80,6 +80,9 @@ export type RunnerJobGroup = {
 }
 
 export type RunnerSpec = {
+  template_source: "public" | "private"
+  published: boolean
+
   name: string
   labels: string[]
   required_labels: string[]
@@ -105,7 +108,8 @@ export type RunnerSpecMatch = {
 
 export type UserRunnerSpec = {
   name: string
-  source: "managed" | "platform_custom" | "scoped_custom" | string
+  published?: boolean
+  source: "platform_public" | "platform_custom" | "scoped_custom" | string
   workflow_labels: string[]
   template_id?: string
   default_template_name?: string

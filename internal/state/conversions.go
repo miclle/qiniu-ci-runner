@@ -348,12 +348,14 @@ func recordToProfile(record runnerProfileRecord) (RunnerProfile, error) {
 			}
 		}
 	}
-	return RunnerProfile{
+	return NormalizeProfilePolicy(RunnerProfile{
 		Name:                record.Name,
 		Labels:              labels,
 		RequiredLabels:      requiredLabels,
 		TemplateID:          record.TemplateID,
 		DefaultTemplateName: record.DefaultTemplateName,
+		TemplateSource:      record.TemplateSource,
+		Published:           record.Published,
 		RunnerGroup:         record.RunnerGroup,
 		MaxConcurrency:      record.MaxConcurrency,
 		MinIdle:             record.MinIdle,
@@ -363,7 +365,7 @@ func recordToProfile(record runnerProfileRecord) (RunnerProfile, error) {
 		CatalogRevision:     record.CatalogRevision,
 		CreatedAt:           record.CreatedAt,
 		UpdatedAt:           record.UpdatedAt,
-	}, nil
+	}), nil
 }
 
 func uniqueTrimmed(values []string) []string {
