@@ -189,6 +189,8 @@ export function adminPollingResources(section: AdminSection): AdminDataResource[
 
 export function userDataResources(path: string): UserDataResource[] {
   if (isUserJobsRoute(path)) return ["github_app", "runner_requests", "onboarding"]
+  if (path === "/deployments/new") return ["github_app"]
+  if (isDeploymentRoute(path)) return []
   if (path === "/repositories") return ["github_app", "preferences", "onboarding"]
   if (path === "/runner-specs") return []
   if (isAccountSettingsRoute(path)) return ["github_app", "preferences", "onboarding"]
@@ -290,7 +292,19 @@ function isUserRoute(path: string): boolean {
     isUserJobsRoute(path) ||
     /^\/jobs\/[^/]+$/.test(path) ||
     path === "/repositories" ||
+    isDeploymentRoute(path) ||
     path === "/runner-specs" ||
     isAccountSettingsRoute(path)
   )
+}
+
+export function isDeploymentRoute(path: string): boolean {
+  return path === "/deployments" || /^\/deployments\/[^/]+$/.test(path)
+}
+
+export function deploymentIDFromPath(path: string): string | undefined {
+  if (path === "/deployments/new") return undefined
+  const match = path.match(/^\/deployments\/([^/]+)$/)
+  if (!match) return undefined
+  try { return decodeURIComponent(match[1]) } catch { return match[1] }
 }

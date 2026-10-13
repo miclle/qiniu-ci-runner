@@ -83,6 +83,9 @@ Organization owners can open **Settings → Fork sponsorship** to let trusted pe
 
 For local development, use `task dev` with `runnerd.local.yaml`. See [docs/testing.md](docs/testing.md) for detailed local setup including GitHub App creation and webhook forwarding.
 
+The Sandbox Deploy control-plane and execution slice is documented in [docs/deployment.md](docs/deployment.md). `/deployments` lists the signed-in account's local deployment history and links to `/deployments/new`. The creation page contains the repository, Branch/Tag and scoped Sandbox template form; `deploy.template_id` is an optional API default. Creation opens `/deployments/{id}`, where refresh preserves the deployment and its logs.
+Application startup supplies the exact Sandbox hostname for Vite's Host allowlist, so Vite preview needs no repository-specific ingress domain.
+
 ## Configuration
 
 `runnerd` reads `./runnerd.yaml` by default, or the path passed with `--config`. See [`runnerd.yaml.example`](runnerd.yaml.example) for a fully commented reference.
@@ -93,6 +96,7 @@ For local development, use `task dev` with `runnerd.local.yaml`. See [docs/testi
 | `database` | Backend (`sqlite` / `postgres` / `mysql`) and DSN |
 | `auth` | Session secret, encryption key, session TTL |
 | `sandbox` | Sandbox lifecycle timeouts (create, run, stop) |
+| `deploy` | Dedicated Deploy template, per-scope concurrency, retention, and transient work root (enables Issue #125 worker) |
 | `github` | Webhook secret, auth method (App / PAT / basic), OAuth, allowed repositories |
 | `worker` | Lease, retry, and concurrency settings |
 
@@ -105,6 +109,9 @@ Key notes:
 - GitHub Enterprise Server is **not** supported; use a GitHub.com App.
 - Configure exactly one GitHub auth method: `github.app`, `github.token`, or `github.basic_auth`.
 - When `github.app.installation_id` is omitted, runnerd resolves the installation dynamically per repository, allowing one App to serve multiple accounts.
+- `deploy.template_id` is an optional default, separate from Runner Specs. The independent worker always runs; creation requires an available selected template (or this default) and effective scoped credentials. `deploy.work_root` is an absolute workspace path inside the Sandbox.
+- Deploy defaults to scoped credentials; `deploy.allow_admin_fallback: true` explicitly permits the existing platform fallback and its audience rules. Admitted deployments snapshot region/template bindings; retries resolve current credentials.
+- `deploy.max_concurrent_per_scope` defaults to `3` and limits queued/running deployments for each account or organization scope. `deploy.retention_hours` defaults to `168`; released terminal rows and bounded events are pruned after that period while audit history remains.
 
 ### Config Value Obfuscation
 
@@ -342,6 +349,8 @@ task docker-check  # Verify the service Dockerfile
 task release-check # Verify release build
 ```
 
+The `staticcheck` step in `task lint` uses the Go version declared in `go.mod`, matching CI.
+
 For focused UI tests, run `cd ui && bun run test`. Use `task ui-production-smoke`
 after changing UI dependencies, Vite/Rollup configuration, or production asset
 loading.
@@ -416,6 +425,7 @@ standard workflow, and large workflow gates recorded in
 | [Hosted site guides](https://runner.qiniuinc.com/docs) | Hosted quick start, runnerd deployment, workflow example, organization fork sponsorship, custom template lifecycle, troubleshooting, and managed labels |
 | [docs/testing.md](docs/testing.md) | Local testing, GitHub App/OAuth setup, webhook forwarding, troubleshooting |
 | [docs/deployment-smoke.md](docs/deployment-smoke.md) | Production-style readiness checklist |
+| [docs/deployment.md](docs/deployment.md) | Sandbox Deploy configuration and current control-plane API |
 | [docs/default-runner-templates.md](docs/default-runner-templates.md) | Public template labels, qshell release flow, regional smoke, and rollback |
 | [docs/runner-architecture-comparison.md](docs/runner-architecture-comparison.md) | Architecture diagrams and comparison with ARC / Fireactions |
 | [docs/runner-implementation-review.md](docs/runner-implementation-review.md) | Implementation status and schema migration notes |

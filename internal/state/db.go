@@ -170,6 +170,8 @@ func (s *DBStore) migrate(db *gorm.DB) error {
 	}
 	models = append(
 		models,
+		&deploymentRecord{},
+		&deploymentEventRecord{},
 		&auditEventRecord{},
 		&accountRecord{},
 		&oauthIdentityRecord{},

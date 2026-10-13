@@ -54,6 +54,8 @@ Use this guide for future Codex or agent work in this repository.
   spec.
 - The recommended production GitHub auth path is GitHub App auth for runner operations plus GitHub App OAuth sign-in for ordinary users and administrators. Local account roles authorize management APIs. Token and basic auth still exist as compatibility modes, but their long-term product status is undecided.
 
+- Sandbox Deploy uses `/deployments` for the list, `/deployments/new` for the creation form, and `/deployments/{id}` for a directly reloadable detail. The list API reads only local account-owned history after session validation, with pagination and no GitHub/provider I/O; creation, details, events and mutations retain their current scope/repository checks. Only the creation route loads GitHub App/form dependencies. Creation/retry validate the effective scoped credentials and selected physical template, persist queue evidence, and notify the independent worker. `deploy.template_id` is only an optional default. The owner-authorized `/user/deployment-templates` merges runnable owned/public catalogs with Deploy's own fallback policy. `/user/deployment-refs` requires the exact OAuth/App repository intersection before reading bounded Branch/Tag pages. Creation qualifies a selected source as `refs/heads/` or `refs/tags/`; source-less API refs remain compatible. UI source/scope changes discard stale discovery responses. Deployment logs use mutually exclusive before/after cursors; polling merges history and failures remain visible. Bound deployd workspace operation IDs independently from HTTP idempotency IDs and preserve provider reconciliation metadata.
+
 ## Common Commands
 
 ```bash

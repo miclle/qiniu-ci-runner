@@ -51,6 +51,7 @@ import {
   adminRunnerRequestPageSize,
   adminRunnerRequestsPath,
   appRouteAccess,
+  isDeploymentRoute,
   authRouteViewState,
   collectAdminRunnerPoll,
   createLatestUserLoadGate,
@@ -278,14 +279,21 @@ function App() {
     window.history.replaceState(null, "", nextPath)
   }, [])
 
-  const setUserPage = useCallback((next: "home" | "repositories" | "runner-specs" | "settings") => {
-    const nextPath = next === "settings" ? "/account/preferences" : next === "repositories" ? "/repositories" : next === "runner-specs" ? "/runner-specs" : userJobsPath(userSelectedKey)
+  const setUserPage = useCallback((next: "home" | "repositories" | "runner-specs" | "deployments" | "settings") => {
+    const nextPath = next === "settings" ? "/account/preferences" : next === "repositories" ? "/repositories" : next === "runner-specs" ? "/runner-specs" : next === "deployments" ? "/deployments" : userJobsPath(userSelectedKey)
     if (window.location.pathname + window.location.search !== nextPath) {
       window.history.pushState(null, "", nextPath)
     }
     setLocationPath(window.location.pathname)
     setLocationSearch(window.location.search)
   }, [userSelectedKey])
+
+  const openDeployment = useCallback((id: string | null) => {
+    const nextPath = id ? `/deployments/${encodeURIComponent(id)}` : "/deployments"
+    if (window.location.pathname !== nextPath) window.history.pushState(null, "", nextPath)
+    setLocationPath(window.location.pathname)
+    setLocationSearch(window.location.search)
+  }, [])
 
   const setRepositoryAccount = useCallback(
     (accountLogin: string | undefined) => {
@@ -363,6 +371,8 @@ function App() {
   )
   const userPage = locationPath === "/runner-specs"
     ? "runner-specs"
+    : isDeploymentRoute(locationPath)
+      ? "deployments"
     : selectedRepositoryAccountLogin
       ? "repositories"
       : accountSettingsRoute
@@ -1306,6 +1316,7 @@ function App() {
           onSaveCacheConfig={saveCacheConfig}
           onDeleteCacheConfig={deleteCacheConfig}
           onNavigate={setUserPage}
+          onOpenDeployment={openDeployment}
           onNavigateRepositoryAccount={setRepositoryAccount}
           onNavigateAccountSettings={setAccountSettingsRoute}
           onOpenJob={openUserJob}

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -945,6 +946,53 @@ func TestListUserInstallationRepositoryDetailsPreservesSourceMetadata(t *testing
 	}
 }
 
+func TestResolveCommitUsesRepositoryRefAndValidatesFullSHA(t *testing.T) {
+	const wantSHA = "0123456789abcdef0123456789abcdef01234567"
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Query().Get("unexpected") != "" {
+			t.Fatal("unexpected query parameter")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sha":"`+wantSHA+`"}`)
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, ts.Client())
+	sha, err := client.ResolveCommit(t.Context(), "owner/repo", "feature/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != wantSHA || gotPath != "/repos/owner/repo/commits/feature/test" {
+		t.Fatalf("resolved commit=%q path=%q", sha, gotPath)
+	}
+}
+
+func TestReadRepositoryFileDecodesAndBoundsContentsResponse(t *testing.T) {
+	content := []byte("version: 1\nstart_command: ./server\n")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/contents/.qiniu/deploy.yaml" || r.URL.Query().Get("ref") != strings.Repeat("a", 40) {
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"type":"file","encoding":"base64","content":%q}`, base64.StdEncoding.EncodeToString(content))
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, ts.Client())
+	got, err := client.ReadRepositoryFile(t.Context(), "owner/repo", "/.qiniu/deploy.yaml/", strings.Repeat("a", 40), int64(len(content)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("decoded content=%q", got)
+	}
+	if _, err := client.ReadRepositoryFile(t.Context(), "owner/repo", ".qiniu/deploy.yaml", strings.Repeat("a", 40), int64(len(content)-1)); err == nil {
+		t.Fatal("expected decoded content limit error")
+	}
+}
+
 func TestListUserInstallationRepositoriesClassifiesRateLimitResponse(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/user/installations/987/repositories" {
@@ -1032,4 +1080,36 @@ func testPrivateKeyFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestRepositoryRefsBranchesTagsAndPagination(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("per_page") != "100" || r.URL.Query().Get("page") != "2" {
+			t.Errorf("bounded pagination: %s", r.URL.String())
+		}
+		switch r.URL.Path {
+		case "/repos/owner/repo/branches":
+			w.Header().Set("Link", `<https://api.github.com/repos/owner/repo/branches?page=3>; rel="next"`)
+			fmt.Fprint(w, `[{"name":"feature/vite"}]`)
+		case "/repos/owner/repo/tags":
+			fmt.Fprint(w, `[{"name":"v1.0"}]`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	client := NewClient(api.URL, http.DefaultClient)
+	for _, tc := range []struct {
+		source, name string
+		more         bool
+	}{{"branch", "feature/vite", true}, {"tag", "v1.0", false}} {
+		names, more, err := client.ListRepositoryRefs(t.Context(), "owner/repo", tc.source, 2)
+		if err != nil || len(names) != 1 || names[0] != tc.name || more != tc.more {
+			t.Fatalf("%s refs=%v more=%v err=%v", tc.source, names, more, err)
+		}
+	}
+	if _, _, err := client.ListRepositoryRefs(t.Context(), "owner/repo", "commit", 1); err == nil {
+		t.Fatal("accepted unsupported source")
+	}
 }

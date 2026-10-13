@@ -4037,6 +4037,7 @@ func TestScopedRunnerProfileNameCanMatchDisabledGlobalProfile(t *testing.T) {
 
 func sqlBackendTestTables() []string {
 	return []string{
+		"deployments",
 		"fork_sponsorship_approvals",
 		"fork_sponsorship_policies",
 		"runner_events",

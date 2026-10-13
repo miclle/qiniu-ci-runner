@@ -331,3 +331,41 @@ Workflow 完成后确认：
 自定义 specs。回滚时不要删除公共模板或自定义 specs。
 
 如果部署说明包含 private hosts、account names、channel URLs、secrets 或 cookie data，请记录在仓库外部。
+
+## 9. Sandbox Deploy 验收
+
+使用真实私有仓库、GitHub App Installation、可用的独立 Deploy 模板，以及账号或 owner
+管理的组织 Sandbox 配置执行本节。开始前确认 App 具有仓库 Contents 读取权限；组织验收还
+需要 Members 读取权限和 active owner membership。生成的 ID 和时间戳只记录在仓库外部的验收
+记录中。
+
+1. 在已知 Commit 写入 `.qiniu/deploy.yaml`，从 branch 发起手动部署，确认 API 保存完整
+   SHA、不可变 spec hash、一小时默认 TTL（或限定范围内的请求 TTL），且响应不含命令或凭证。
+2. 确认部署进入 `running`，HTTPS endpoint 的 health path 可访问，响应包含
+   `endpoint_access: public`；UI 应提示该地址没有应用层鉴权。
+   对 Vite preview，确认原仓库无需修改，启动时传入当前 Sandbox 的精确域名，保留 Host 校验，
+   不使用通配符白名单。主动启用的公开 worker 验证命令见 [Testing](testing.md#sandbox-deploy-验证)。
+3. 确认源 GitHub Job 和 Runner 清理完成后服务仍可访问；Deploy 不得注册 GitHub Runner。
+4. 使用同一个 `Idempotency-Key` 重复提交，并人为制造 provider 创建超时。确认系统按精确的
+   `qiniu-deployd` metadata 补偿查询，重试不会创建第二个 Sandbox。
+5. 服务运行期间重启 runnerd，确认恢复相同 Sandbox ID、runtime process tag、endpoint 和
+   到期时间；旧 attempt 回调不能修改当前部署。
+6. 分别执行 stop、DELETE、TTL 到期和启动失败，确认 provider 证据最终表明 Sandbox 已释放；
+   清理失败保持可见并继续重试。
+7. 验证未授权账号、仅有仓库权限的组织成员及 installation/repository 不匹配请求，对创建、
+   详情、事件、stop、delete 和 retry 都失败关闭。创建足够的活动部署后应收到
+   `429 deployment_quota_exceeded`；释放一个后准入恢复。超过保留期后终态部署行／事件应清理，
+   审计证据仍保留。
+
+分别记录本地单元／集成检查、浏览器/UI 检查和真实 Sandbox provider 运行三类证据。Local fake
+和 preview fixture 不能替代本节验收。
+
+
+在真实浏览器中确认 `/deployments` 只展示列表及“创建部署”链接，点击进入
+`/deployments/new` 并刷新，确认只展示表单。列表页不读取表单目录，创建页不读取历史。
+切换“版本来源”的分支／Tag，确认加载对应的真实引用列表，再选择当前
+scope 的可用模板。引用为空或加载失败时不能提交旧版本，并可刷新重试。
+创建部署后确认跳转到 `/deployments/{id}`。
+在执行中和就绪后刷新该地址，必须保留同一部署及阶段、stdout／stderr 日志。验证更早日志
+分页和事件读取失败时保留历史。缺少模板或作用域凭据时，创建应被拒绝并给出可操作提示。
+幂等重放和重试必须保留所选模板 ID。

@@ -352,3 +352,59 @@ enabled `-large` custom specs first. Do not delete public templates or custom
 specs during rollback.
 
 Record any deployment-specific notes outside the repository if they include private hosts, account names, channel URLs, secrets, or cookie data.
+
+## 9. Sandbox Deploy acceptance
+
+Run this section with a real private repository, a GitHub App installation, a
+usable dedicated Deploy template, and an account or owner-managed organization
+Sandbox configuration. Before starting, confirm the App has repository
+Contents read access; organization runs also require Members read access and an
+active owner membership. Keep the generated IDs and timestamps in the external
+acceptance record, never in repository files.
+
+1. Create a repository `.qiniu/deploy.yaml` at a known Commit. Start a manual
+   deployment from a branch, then verify the API stores the resolved full SHA,
+   immutable spec hash, one-hour default TTL (or the requested bounded TTL),
+   and no command or credential in the response.
+2. Verify the deployment reaches `running`, its HTTPS endpoint answers the
+   configured health path, and the response reports `endpoint_access: public`.
+   Confirm the UI warns that the address has no application authentication.
+   For Vite preview, verify the unmodified repository runs with the current
+   Sandbox hostname supplied at startup; retain its Host check and avoid a
+   wildcard allowlist. The opt-in public worker check is documented in
+   [Testing](testing.md#sandbox-deploy-verification).
+3. Confirm the service remains reachable after the source GitHub Job and any
+   runner cleanup finish; Deploy must not register a GitHub Runner.
+4. Submit the same `Idempotency-Key` twice and force a provider create timeout.
+   Reconcile by the exact `qiniu-deployd` metadata and confirm that retrying does
+   not create a second Sandbox.
+5. Restart runnerd while the service is running. The same Sandbox ID, runtime
+   process tag, endpoint, and expiry must be recovered; an old attempt callback
+   must not change the current deployment.
+6. Exercise stop, DELETE, TTL expiry, and a failed start. Each path must finish
+   with provider evidence that the Sandbox is released; a cleanup failure stays
+   visible and is retried.
+7. Verify an unauthorized account, a repository-only organization member, and
+   an installation/repository mismatch receive fail-closed responses for create,
+   detail, events, stop, delete, and retry. Create enough active deployments to
+   receive `429 deployment_quota_exceeded`, then release one and verify admission
+   resumes. After the configured retention window, confirm terminal deployment
+   rows/events are pruned while audit evidence remains.
+
+Record three evidence classes separately: local unit/integration checks,
+browser/UI checks, and the real Sandbox provider run. Local fakes and preview
+fixtures cannot satisfy this section.
+
+
+In the real browser flow, confirm `/deployments` only shows the list and its Create
+deployment link. Follow it to `/deployments/new`, reload, and confirm only the form
+appears; the list must not load form catalogs and creation must not load history.
+Switch Version source between Branch and Tag, confirm
+the matching live reference list, and choose an available template for the selected scope.
+Empty or failed reference discovery must prevent stale submission and allow refresh.
+Create the deployment and verify navigation to `/deployments/{id}`. Refresh
+that address during execution and after readiness; the same deployment and
+stage/stdout/stderr logs must remain visible. Exercise earlier-log pagination
+and a failed event read without discarding existing history. Missing template
+or scoped credentials must reject creation with an actionable message. Verify
+the selected template ID remains bound through idempotent replay and retry.

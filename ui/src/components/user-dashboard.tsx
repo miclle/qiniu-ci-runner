@@ -52,6 +52,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { shouldShowSandboxSetupTask } from "@/user-onboarding"
 import { SandboxesSection, SandboxTemplatesSection } from "@/components/sandbox-catalog-sections"
 import { UserRunnerSpecsSection } from "@/components/user-runner-specs-section"
+import { UserDeploymentsSection } from "@/components/user-deployments-section"
+import { UserDeploymentCreateSection } from "@/components/user-deployment-create-section"
+import { deploymentIDFromPath } from "@/app-load-policy"
 import { ForkSponsorshipSection } from "@/components/fork-sponsorship-section"
 import { findSandboxRegionByAPIURL, useSandboxRegions } from "@/components/sandbox-catalog-utils"
 import { Switch } from "@/components/ui/switch"
@@ -77,7 +80,7 @@ type BuildGroup = {
   pullRequestNumber?: number
 }
 
-type UserPage = "home" | "repositories" | "runner-specs" | "settings"
+type UserPage = "home" | "repositories" | "runner-specs" | "deployments" | "settings"
 type AccountSettingsTab = "repositories" | "preferences" | "sandbox-templates" | "sandbox-instances" | "runner-specs" | "fork-sponsorship"
 type AccountSettingsRoute = {
   accountLogin?: string
@@ -120,6 +123,7 @@ export function UserDashboard({
   onSaveCacheConfig,
   onDeleteCacheConfig,
   onNavigate,
+  onOpenDeployment,
   onNavigateRepositoryAccount,
   onNavigateAccountSettings,
   onOpenJob,
@@ -161,6 +165,7 @@ export function UserDashboard({
   onSaveCacheConfig: (input: { bucket: string; prefix: string; access_key_id: string; secret_access_key: string }, installationID?: number) => Promise<void>
   onDeleteCacheConfig: (installationID?: number) => Promise<void>
   onNavigate: (page: UserPage) => void
+  onOpenDeployment: (id: string | null) => void
   onNavigateRepositoryAccount: (accountLogin: string | undefined) => void
   onNavigateAccountSettings: (accountLogin: string | undefined, tab: AccountSettingsTab) => void
   onOpenJob: (id: string) => void
@@ -279,6 +284,14 @@ export function UserDashboard({
             {t("user.repositories")}
           </a>
           <a
+            href="/deployments"
+            className={navItemClass(page === "deployments")}
+            onClick={(event) => goToPage(event, "deployments")}
+          >
+            <SquareTerminal className="h-4 w-4" />
+            {t("user.deployments")}
+          </a>
+          <a
             href="/runner-specs"
             className={navItemClass(page === "runner-specs")}
             onClick={(event) => goToPage(event, "runner-specs")}
@@ -319,6 +332,14 @@ export function UserDashboard({
           {t("user.repositories")}
         </a>
         <a
+          href="/deployments"
+          className={navItemClass(page === "deployments")}
+          onClick={(event) => goToPage(event, "deployments")}
+        >
+          <SquareTerminal className="h-4 w-4" />
+          {t("user.deployments")}
+        </a>
+        <a
           href="/runner-specs"
           className={navItemClass(page === "runner-specs")}
           onClick={(event) => goToPage(event, "runner-specs")}
@@ -328,7 +349,20 @@ export function UserDashboard({
         </a>
       </nav>
 
-      {page === "repositories" ? (
+      {page === "deployments" ? (
+        locationPath === "/deployments/new" ? <UserDeploymentCreateSection
+          githubApp={githubApp}
+          currentLogin={authSession.login}
+          loadingGitHubApp={loadingGitHubApp}
+          request={request}
+          onOpenDeployment={onOpenDeployment}
+        /> : <UserDeploymentsSection
+          currentLogin={authSession.login}
+          request={request}
+          deploymentID={deploymentIDFromPath(locationPath)}
+          onOpenDeployment={onOpenDeployment}
+        />
+      ) : page === "repositories" ? (
         <RepositoryReadinessPage
           githubApp={githubApp ? { ...githubApp, installations } : null}
           currentLogin={authSession.login}

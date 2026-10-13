@@ -4,6 +4,8 @@
 
 这份文档说明如何用本地 Qiniu sandbox 环境测试服务，以及如何在 GitHub 仓库中配置 self-hosted runner 自动拉起。
 
+本地质量检查使用 `task lint`；其中的 `staticcheck` 使用 `go.mod` 声明的 Go 版本，与 CI 保持一致。
+
 ## 1. 本地配置文件
 
 服务现在默认读取 `./runnerd.yaml`；也可以通过 `--config` 指向别的路径：
@@ -716,3 +718,51 @@ apt 管理的 `packaging` 保持不变、pipx 工具目录兼容、普通用户�
 - GitHub self-hosted runner workflow labels: https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/using-self-hosted-runners-in-a-workflow
 - GitHub self-hosted runner autoscaling: https://docs.github.com/en/actions/hosting-your-own-runners/autoscaling-with-self-hosted-runners
 - GitHub webhook `workflow_job` event: https://docs.github.com/en/webhooks/webhook-events-and-payloads
+
+## Sandbox Deploy 验证
+
+先运行 `go test ./internal/state -count=1`，再运行
+`go test ./internal/deployment/... ./internal/server -count=1` 与 `task test`。
+状态测试覆盖旧 SQLite 部署目标列升级、乐观锁生命周期隔离、保留期限和有界事件。
+在上面的独立 PostgreSQL/MySQL gate 中增加 `TestDeploymentScopeQuotaSQLBackends`；
+它验证两个账号在同一组织下并发准入时的共享配额、事务此前已读取后的可见性，以及
+拒绝写入时部署与审计记录保持不变。
+
+恢复测试区分健康 running attempt、临时 Provider 故障、进程身份不匹配、中断创建、
+创建结果未知和确认资源不存在。Provider HTTP fixture 验证只查找元数据而不创建资源、
+Sandbox 不存在判定和重连时的剩余生命周期。这些检查不能证明公网访问、真实 Contents
+权限或远端资源释放；真实验收见 [Deployment Smoke](deployment-smoke.md)。
+`deploy.allow_admin_fallback` 默认为 false，独立于 CI 兜底配置。
+
+worker 测试还覆盖仅启动时注入 Vite 精确 Host、保留其他环境变量，以及无法解析应用地址时
+拒绝启动。使用公开的 `qiniu/deployment` Vite fixture 和公共 `base` 模板验证真实 worker：
+
+```bash
+RUNNERD_DEPLOY_LIVE=1 \
+RUNNERD_DEPLOY_LIVE_CONFIG="$PWD/runnerd.local.yaml" \
+RUNNERD_DEPLOY_LIVE_ACCOUNT_ID="<已配置的账号 ID>" \
+RUNNERD_DEPLOY_LIVE_TEMPLATE=base \
+go test ./internal/server -run '^TestDeploymentLivePublicWorker$' -count=1 -v -timeout 20m
+```
+
+该测试需主动启用，会读取指定账号的 scope Sandbox 配置，在隔离的临时部署数据库中执行，
+并创建真实计费 Sandbox。它验证公网 HTML、相同 attempt 的控制器重连、手动停止、加速到期
+和 Provider 确认资源释放；不代表 GitHub 准入授权或完整 runnerd 进程重启验收。
+可将 `RUNNERD_DEPLOY_LIVE_EVIDENCE` 设置为未跟踪文件的绝对路径，保存不含凭据的结果。
+测试未内置本地账号或物理模板 ID，未显式启用时会跳过。
+
+SDK 协议 fixture 验证应用启动不发送远端 `Connect-Timeout-Ms` 截止时间，响应头等待与 PID
+确认仍受本地超时限制。worker 回归测试覆盖 Provider 查询跨过到期时间，以及旧到期观察
+不能停止替代 attempt 的边界。
+
+
+部署列表 API 测试应证明只读取本地数据、账号隔离与分页，覆盖 OAuth Token 缺失和匿名拒绝，
+不允许访问 GitHub／Provider。UI 测试应验证 `/deployments` 只加载历史，并通过链接进入
+`/deployments/new`；创建页只加载表单依赖，两条路由均支持直接刷新。
+部署 UI 验证还覆盖分支／Tag 发现、空列表与失败重试、版本分页、延迟来源／scope 响应、
+模板选择、创建后进入详情、直接刷新
+`/deployments/{id}`，以及 before／after 日志分页和错误时保留历史。执行部署交互的
+聚焦 Bun 测试及 `task ui-production-smoke`；其中部署 fixture 验证 production bundle，
+已登录的真实 Sandbox 验收仍单独记录。
+API 回归还覆盖完整分支／Tag 引用解析、同名来源的幂等冲突、包含来源前缀的长度限制，
+以及未授权时禁止读取上游引用。

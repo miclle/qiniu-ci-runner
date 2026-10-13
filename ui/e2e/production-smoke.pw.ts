@@ -917,3 +917,69 @@ function fixtureRunnerEvents() {
     has_more: false,
   }
 }
+
+test("separates deployment list, creation, and refreshable detail pages", async ({ page }) => {
+  test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
+  const diagnostics = observeBrowserDiagnostics(page)
+  let created = false
+  let submittedTemplate = ""
+  let submittedSource = ""
+  let submittedRef = ""
+  const requestedPaths: string[] = []
+  const deployment = { id: "deployment-fixture", repository_full_name: "fixture-user/project", source: "tag", ref: "v1.0", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", template_id: "custom-template", status: "running", created_at: "2026-10-13T00:00:00Z", expires_at: "2026-10-13T01:00:00Z" }
+  await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
+  await page.route("**/user/**", async (route) => {
+    const url = new URL(route.request().url())
+    requestedPaths.push(url.pathname)
+    if (url.pathname === "/user/github-app") return route.fulfill({ json: { installations: [{ id: 1, account_login: "fixture-user", account_type: "User", manageable: true, repositories: ["fixture-user/project"] }] } })
+    if (url.pathname.endsWith("/repositories")) return route.fulfill({ json: { repositories: ["fixture-user/project"] } })
+    if (url.pathname === "/user/deployment-refs") return route.fulfill({ json: { refs: url.searchParams.get("source") === "tag" ? ["v1.0"] : ["main", "example/vite"], has_more: false } })
+    if (url.pathname === "/user/deployment-templates") return route.fulfill({ json: { templates: [{ template_id: "base-template", names: ["base"] }, { template_id: "custom-template", aliases: ["custom"] }] } })
+    if (url.pathname === "/user/deployments" && route.request().method() === "POST") {
+      submittedTemplate = route.request().postDataJSON().template_id
+      submittedSource = route.request().postDataJSON().source
+      submittedRef = route.request().postDataJSON().ref
+      created = true
+      return route.fulfill({ status: 201, json: deployment })
+    }
+    if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: created ? [deployment] : [] } })
+    if (url.pathname === "/user/deployments/deployment-fixture") return route.fulfill({ json: deployment })
+    if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: url.searchParams.has("after_id") ? [] : [{ id: 1, event_type: "output", stage: "installing", stream: "stdout", message: "Vite build completed", created_at: "2026-10-13T00:00:00Z" }], has_more: false } })
+    return route.fulfill({ status: 404, body: "fixture route not found" })
+  })
+  await page.goto("/deployments", { waitUntil: "networkidle" })
+  await expect(page.getByRole("heading", { name: "Deployments", exact: true })).toBeVisible()
+  await expect(page.locator("form")).toHaveCount(0)
+  expect(requestedPaths).toEqual(["/user/deployments"])
+  await page.getByRole("link", { name: "Create deployment", exact: true }).click()
+  await expect(page).toHaveURL(/\/deployments\/new$/)
+  await expect(page.locator("form")).toHaveCount(1)
+  await expect(page.locator('[data-testid="deployment-list"]')).toHaveCount(0)
+  await expect(page.locator('[data-testid="deployment-logs"]')).toHaveCount(0)
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(page).toHaveURL(/\/deployments\/new$/)
+  await expect(page.locator("#deployment-source")).toBeVisible()
+  await page.locator("#deployment-repository").selectOption("fixture-user/project")
+  await page.locator("#deployment-template").selectOption("custom-template")
+  await page.locator("#deployment-source").selectOption("tag")
+  await expect(page.getByText("Select Tag", { exact: true })).toBeVisible()
+  await page.locator("#deployment-ref").selectOption("v1.0")
+  await page.locator('button[type="submit"]').click()
+  await expect(page).toHaveURL(/\/deployments\/deployment-fixture$/)
+  expect(submittedTemplate).toBe("custom-template")
+  expect(submittedSource).toBe("tag")
+  expect(submittedRef).toBe("v1.0")
+  await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
+  await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(page).toHaveURL(/\/deployments\/deployment-fixture$/)
+  await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
+  await expect(page.locator("#deployment-template")).toHaveCount(0)
+  await page.getByRole("button", { name: "Back to deployments" }).click()
+  await expect(page).toHaveURL(/\/deployments$/)
+  await expect(page.locator("form")).toHaveCount(0)
+  await expect(page.locator('[data-testid="deployment-list"]')).toContainText("fixture-user/project")
+  await page.locator('[data-testid="deployment-list"] a').click()
+  await expect(page).toHaveURL(/\/deployments\/deployment-fixture$/)
+  diagnostics.expectClean()
+})

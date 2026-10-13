@@ -83,6 +83,9 @@ Organization owner 可以在 **Settings → Fork 赞助** 中允许可信个人 
 
 本地开发请使用 `task dev` 配合 `runnerd.local.yaml`。详细的本地环境搭建（包括 GitHub App 创建和 webhook 转发）请参阅 [docs/zh/testing.md](docs/zh/testing.md)。
 
+Sandbox Deploy 控制面与执行切片见 [docs/zh/deployment.md](docs/zh/deployment.md)。`/deployments` 展示当前账号的本地部署历史，通过“创建部署”链接进入 `/deployments/new`。创建页只展示仓库、分支／Tag 和作用域 Sandbox 模板等表单；`deploy.template_id` 仅作为 API 可选默认值。创建成功后进入 `/deployments/{id}`，刷新仍保留该部署与日志。
+启动应用时会为 Vite 的 Host 白名单传入当前 Sandbox 的精确域名，Vite preview 无需在仓库中预先配置公网入口域名。
+
 ## 配置
 
 `runnerd` 默认读取 `./runnerd.yaml`，也可通过 `--config` 指定路径。完整注释的参考配置见 [`runnerd.yaml.example`](runnerd.yaml.example)。
@@ -93,6 +96,7 @@ Organization owner 可以在 **Settings → Fork 赞助** 中允许可信个人 
 | `database` | 后端类型（`sqlite` / `postgres` / `mysql`）和 DSN                |
 | `auth`     | Session secret、加密密钥、Session TTL                            |
 | `sandbox`  | 沙箱生命周期超时（创建、运行、停止）                             |
+| `deploy`   | 独立 Deploy 模板、scope 并发上限、保留期和临时工作目录（启用 Issue #125 worker） |
 | `github`   | Webhook secret、鉴权方式（App / PAT / basic）、OAuth、允许的仓库 |
 | `worker`   | Lease、重试和并发设置                                            |
 
@@ -105,6 +109,9 @@ Organization owner 可以在 **Settings → Fork 赞助** 中允许可信个人 
 - **不支持** GitHub Enterprise Server，请使用 GitHub.com App。
 - GitHub 鉴权方式三选一：`github.app`、`github.token` 或 `github.basic_auth`。
 - 省略 `github.app.installation_id` 时，runnerd 按仓库动态解析 installation，一个 App 可服务多个账号。
+- `deploy.template_id` 是可选默认值，与 Runner Spec 分离。独立 worker 始终运行；创建需要可用的所选模板（或默认模板）及有效作用域凭据。`deploy.work_root` 是 Sandbox 内的绝对工作目录路径。
+- Deploy 默认只消费 scope 凭据；`deploy.allow_admin_fallback: true` 显式允许现有平台兜底及其 audience 规则。准入保存区域／模板绑定，重试重新解析当前凭据。
+- `deploy.max_concurrent_per_scope` 默认是 `3`，限制每个账户或组织 scope 的排队／运行部署数；`deploy.retention_hours` 默认是 `168`，释放后的终态记录和有界事件到期清理，审计历史继续保留。
 
 ### 配置值混淆
 
@@ -337,6 +344,8 @@ task docker-check  # 验证服务 Dockerfile
 task release-check # 验证发布构建
 ```
 
+`task lint` 中的 `staticcheck` 使用 `go.mod` 声明的 Go 版本，与 CI 保持一致。
+
 单独运行 UI 测试时使用 `cd ui && bun run test`。修改 UI 依赖、Vite/Rollup 配置或
 生产静态资源加载逻辑后，还要运行 `task ui-production-smoke`。
 
@@ -399,6 +408,7 @@ workflow 与 large workflow 门槛，证据保留在
 | [站点指南](https://runner.qiniuinc.com/docs)                                           | 托管版快速开始、runnerd 部署、Workflow 示例、组织 Fork 赞助、自定义模板全流程、故障排查和 managed labels |
 | [docs/zh/testing.md](docs/zh/testing.md)                                               | 本地测试、GitHub App/OAuth 设置、webhook 转发、故障排查 |
 | [docs/zh/deployment-smoke.md](docs/zh/deployment-smoke.md)                             | 生产环境就绪检查清单                                    |
+| [docs/zh/deployment.md](docs/zh/deployment.md)                                         | Sandbox Deploy 配置和当前控制面 API                      |
 | [docs/zh/default-runner-templates.md](docs/zh/default-runner-templates.md)             | 公共模板 labels、qshell 发布流程、区域 smoke 和回滚     |
 | [docs/zh/runner-architecture-comparison.md](docs/zh/runner-architecture-comparison.md) | 架构图及与 ARC / Fireactions 的对比                     |
 | [docs/zh/runner-implementation-review.md](docs/zh/runner-implementation-review.md)     | 实现状态与 schema 迁移说明                              |

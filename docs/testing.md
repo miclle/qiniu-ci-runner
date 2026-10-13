@@ -4,6 +4,8 @@
 
 This guide explains how to test the service with a local Qiniu sandbox environment and how to configure a GitHub repository so self-hosted runners are started automatically.
 
+Run `task lint` for local quality checks. Its `staticcheck` step uses the Go version declared in `go.mod`, matching CI.
+
 ## 1. Local Config File
 
 The service reads `./runnerd.yaml` by default. You can also pass another path with `--config`:
@@ -733,3 +735,63 @@ still stop the build. This does not replace regional Sandbox build/smoke gates.
 - GitHub self-hosted runner workflow labels: https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/using-self-hosted-runners-in-a-workflow
 - GitHub self-hosted runner autoscaling: https://docs.github.com/en/actions/hosting-your-own-runners/autoscaling-with-self-hosted-runners
 - GitHub webhook `workflow_job` event: https://docs.github.com/en/webhooks/webhook-events-and-payloads
+
+## Sandbox Deploy verification
+
+Run `go test ./internal/state -count=1` first, then
+`go test ./internal/deployment/... ./internal/server -count=1` and `task test`.
+The state coverage includes old SQLite deployment target-column upgrades,
+optimistic lifecycle fencing, retention and bounded events. Add
+`TestDeploymentScopeQuotaSQLBackends` to the dedicated PostgreSQL/MySQL gate
+above; it exercises concurrent account admissions against one organization
+quota after earlier transaction reads, with rejected-write/audit invariance.
+
+Deploy recovery tests distinguish healthy running attempts, transient provider
+failures, mismatched process identity, interrupted creation, unknown creation
+outcomes and confirmed missing resources. Provider HTTP fixtures check metadata
+lookup without creation, missing Sandbox handling and reconnect lifetime.
+These checks do not prove public ingress, real Contents permission or remote
+resource release. Use [Deployment Smoke](deployment-smoke.md#9-sandbox-deploy-acceptance)
+for those gates. `deploy.allow_admin_fallback` defaults to false, independently
+of CI fallback configuration.
+
+The worker tests also cover the startup-only exact Host environment for Vite,
+preservation of unrelated environment values, and rejection before startup when
+the application endpoint cannot be resolved. To exercise the real worker with
+the public `qiniu/deployment` Vite fixture and the public `base` template:
+
+```bash
+RUNNERD_DEPLOY_LIVE=1 \
+RUNNERD_DEPLOY_LIVE_CONFIG="$PWD/runnerd.local.yaml" \
+RUNNERD_DEPLOY_LIVE_ACCOUNT_ID="<configured-account-id>" \
+RUNNERD_DEPLOY_LIVE_TEMPLATE=base \
+go test ./internal/server -run '^TestDeploymentLivePublicWorker$' -count=1 -v -timeout 20m
+```
+
+This opt-in test reads that account's scoped Sandbox configuration, uses an
+isolated temporary deployment database, and creates real billable Sandboxes.
+It checks public HTML, same-attempt controller reconnection, manual stop,
+accelerated expiry, and provider-confirmed resource release. It does not prove
+GitHub admission authorization or a full runnerd process restart. Set
+`RUNNERD_DEPLOY_LIVE_EVIDENCE` to an absolute, untracked output path to save
+credential-free results; no local account or physical template ID is embedded
+in the test. The test skips unless explicitly enabled.
+
+SDK protocol fixtures verify that application startup sends no remote
+`Connect-Timeout-Ms` deadline while response-header and PID confirmation remain
+bounded locally. Worker regressions cover provider lookups that cross expiry
+and stale expiry observations that must not stop a replacement attempt.
+
+
+Deployment list API tests must prove local account isolation and pagination without
+GitHub/provider reads, including a missing OAuth token and anonymous rejection.
+UI tests must prove that `/deployments` only loads history and links to
+`/deployments/new`, that creation only loads form dependencies, and that both
+routes reload directly. Deployment UI verification also covers Branch/Tag discovery, empty and error retry
+states, version pagination, delayed source/scope responses, template selection,
+create-to-detail navigation, direct `/deployments/{id}` reload, and before/after
+log pagination with history retained on errors. Run the focused Bun deployment
+interaction tests and `task ui-production-smoke`; its deployment fixture checks
+the production bundle, while authenticated real Sandbox acceptance remains separate.
+API regressions cover qualified branch/tag resolution, same-name idempotency
+conflicts, source-prefix length limits, and unauthorized discovery before provider reads.

@@ -1,0 +1,310 @@
+import { afterAll, afterEach, describe, expect, test } from "bun:test"
+import { act, createElement } from "react"
+import { Window } from "happy-dom"
+import { createRoot } from "react-dom/client"
+import { renderToStaticMarkup } from "react-dom/server"
+
+import "../i18n"
+import { UserDeploymentsSection } from "./user-deployments-section"
+import { UserDeploymentCreateSection } from "./user-deployment-create-section"
+
+function renderPage(overrides = {}) {
+  return renderToStaticMarkup(createElement(UserDeploymentCreateSection, {
+    githubApp: {
+      setup_url: "/github-app/setup",
+      installations: [{
+        id: 12,
+        account_id: 4,
+        installation_id: 9001,
+        account_login: "miclle",
+        account_type: "User",
+        repositories: ["miclle/demo"],
+        manageable: true,
+        created_at: "2026-10-01T00:00:00Z",
+        updated_at: "2026-10-01T00:00:00Z",
+      }],
+    },
+    currentLogin: "miclle",
+    loadingGitHubApp: false,
+    request: async () => ({ items: [] }),
+    onOpenDeployment: () => {},
+    ...overrides,
+  }))
+}
+
+describe("UserDeploymentCreateSection", () => {
+  test("renders the deployment workflow and keeps repository data in the form", () => {
+    const html = renderPage()
+
+    expect(html).toContain("Create deployment")
+    expect(html).toContain("miclle/demo")
+    expect(html).toContain(".qiniu/deploy.yaml")
+    expect(html).toContain("Version source")
+    expect(html).toContain("Select branch")
+  })
+
+  test("does not expose credentials in the deployment surface", () => {
+    const html = renderPage()
+
+    expect(html).not.toContain("api_key")
+    expect(html).not.toContain("Sandbox API key")
+    expect(html).not.toContain("secret_access_key")
+  })
+})
+
+const window = new Window({ url: "http://localhost/" })
+const domGlobals = { window, document: window.document, navigator: window.navigator, HTMLElement: window.HTMLElement, SVGElement: window.SVGElement, Node: window.Node, DocumentFragment: window.DocumentFragment, Event: window.Event, MouseEvent: window.MouseEvent, getComputedStyle: window.getComputedStyle.bind(window), requestAnimationFrame: window.requestAnimationFrame.bind(window), cancelAnimationFrame: window.cancelAnimationFrame.bind(window), IS_REACT_ACT_ENVIRONMENT: true }
+const originalGlobalDescriptors = new Map(Object.keys(domGlobals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
+for (const [key, value] of Object.entries(domGlobals)) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value })
+const mountedRoots = []
+
+afterEach(async () => {
+  for (const { root, container } of mountedRoots.splice(0)) {
+    await act(async () => root.unmount())
+    container.remove()
+  }
+})
+
+afterAll(() => {
+  for (const [key, descriptor] of originalGlobalDescriptors) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+    else Reflect.deleteProperty(globalThis, key)
+  }
+  window.close()
+})
+
+async function settle() {
+  await act(async () => { await Promise.resolve(); await Promise.resolve() })
+}
+
+const installation = (id, login = "miclle") => ({ id, account_login: login, account_type: "User", repositories: [`${login}/demo`], manageable: true })
+const deployment = (id, status = "running") => ({ id, repository_full_name: "miclle/demo", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", status, template_id: "public-base", created_at: "2026-10-13T00:00:00Z", expires_at: "2026-10-13T01:00:00Z" })
+const event = (id, message) => ({ id, event_type: "output", stage: "installing", stream: "stdout", message, created_at: "2026-10-13T00:00:00Z" })
+async function mountPage(props, { chooseRepository = true, page = "create" } = {}) {
+  const container = document.createElement("div")
+  document.body.append(container)
+  const root = createRoot(container)
+  mountedRoots.push({ root, container })
+  const base = { githubApp: { installations: [installation(12)] }, currentLogin: "miclle", loadingGitHubApp: false, onOpenDeployment: () => {}, ...props }
+  await act(async () => root.render(createElement(page === "create" ? UserDeploymentCreateSection : UserDeploymentsSection, base)))
+  await settle()
+  const repository = container.querySelector("#deployment-repository")
+  if (chooseRepository && repository) {
+    await selectOption(container, "#deployment-repository", [...repository.options].find((option) => option.value)?.value ?? "")
+    await settle()
+  }
+  return { root, container, props: base }
+}
+function button(container, name) { return [...container.querySelectorAll("button")].find((item) => item.textContent.trim() === name) }
+async function selectOption(container, id, value) {
+  await act(async () => {
+    const select = container.querySelector(id)
+    select.value = value
+    select.dispatchEvent(new Event("change", { bubbles: true }))
+  })
+}
+
+describe("deployment interaction", () => {
+  test("shows only the list and a creation link without loading form catalogs", async () => {
+    const requested = []
+    const request = async (url) => {
+      requested.push(url)
+      if (url !== "/user/deployments") throw new Error(`list requested a form dependency: ${url}`)
+      return { items: [deployment("existing", "completed")] }
+    }
+    const { container } = await mountPage({ request }, { page: "deployments" })
+    expect(requested).toEqual(["/user/deployments"])
+    expect(container.querySelector("form")).toBeNull()
+    expect(container.querySelector('a[href="/deployments/new"]').textContent).toContain("Create deployment")
+    expect(container.querySelector('a[href="/deployments/existing"]').textContent).toContain("miclle/demo")
+    expect(container.querySelector('[data-testid="deployment-logs"]')).toBeNull()
+  })
+
+  test("loads only creation dependencies and provides a link back to the list", async () => {
+    const requested = []
+    const request = async (url) => {
+      requested.push(url)
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base" }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      throw new Error(`unexpected creation request: ${url}`)
+    }
+    const { container } = await mountPage({ request }, { chooseRepository: false })
+    expect(requested).not.toContain("/user/deployments")
+    expect(container.querySelector("form")).not.toBeNull()
+    expect(container.querySelector('a[href="/deployments"]').textContent).toBe("Back to deployments")
+    expect(container.querySelector('[data-testid="deployment-list"]')).toBeNull()
+    expect(container.querySelector('[data-testid="deployment-logs"]')).toBeNull()
+  })
+
+  test("waits for an explicit repository choice before discovering versions", async () => {
+    const requests = []
+    const request = async (url) => {
+      requests.push(url)
+      if (url.includes("deployment-refs")) return { refs: ["main"], has_more: false }
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base" }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request }, { chooseRepository: false })
+    expect(container.querySelector("#deployment-repository").value).toBe("")
+    expect(requests.some((url) => url.includes("deployment-refs"))).toBe(false)
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
+    await selectOption(container, "#deployment-repository", "miclle/demo")
+    expect(container.querySelector("#deployment-ref").value).toBe("main")
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(false)
+  })
+
+  test("shows an actionable App permission error when version discovery is forbidden", async () => {
+    const request = async (url) => {
+      if (url.includes("deployment-refs")) throw Object.assign(new Error("provider detail"), { code: "deployment_repository_contents_required" })
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base" }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request })
+    expect(container.textContent).toContain("Approve its Contents: Read-only permission")
+    expect(container.textContent).not.toContain("provider detail")
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
+  })
+
+  test("submits the selected template and opens the created deployment's canonical detail", async () => {
+    let submitted, opened
+    const request = async (url, options) => {
+      if (options?.method === "POST") { submitted = JSON.parse(options.body); return deployment("created", "queued") }
+      if (url.includes("deployment-refs")) return { refs: ["main", "example/vite"], has_more: false }
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base", names: ["base"] }, { template_id: "custom", aliases: ["My template"] }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request, onOpenDeployment: (id) => { opened = id } })
+    const select = container.querySelector("#deployment-template")
+    expect(select.value).toBe("public-base")
+    await act(async () => { select.value = "custom"; select.dispatchEvent(new Event("change", { bubbles: true })) })
+    await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submitted.template_id).toBe("custom")
+    expect(submitted.source).toBe("branch")
+    expect(submitted.ref).toBe("main")
+    expect(submitted.repository_full_name).toBe("miclle/demo")
+    expect(opened).toBe("created")
+  })
+
+  test("ignores the previous scope's delayed template response and prevents stale submission", async () => {
+    let resolveFirst
+    const pending = new Promise((resolve) => { resolveFirst = resolve })
+    const request = async (url) => {
+      if (url.includes("deployment-refs")) return { refs: ["main"], has_more: false }
+      if (url.includes("deployment-templates")) return url.endsWith("=12") ? pending : { templates: [{ template_id: "scope-13", names: ["base"] }] }
+      if (url.includes("/repositories")) return { repositories: url.includes("/13/") ? ["other/demo"] : ["miclle/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request, githubApp: { installations: [installation(12), installation(13, "other")] } })
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
+    const scope = container.querySelector("#deployment-installation")
+    await act(async () => { scope.value = "13"; scope.dispatchEvent(new Event("change", { bubbles: true })) })
+    await settle()
+    await act(async () => resolveFirst({ templates: [{ template_id: "stale-private", names: ["old"] }] }))
+    expect(container.querySelector("#deployment-template").value).toBe("scope-13")
+    expect(container.textContent).not.toContain("stale-private")
+  })
+
+  test("switches to Tag, ignores a delayed branch response, and submits the selected tag", async () => {
+    let resolveBranches, submitted
+    const branches = new Promise((resolve) => { resolveBranches = resolve })
+    const request = async (url, options) => {
+      if (options?.method === "POST") { submitted = JSON.parse(options.body); return deployment("tag-deployment", "queued") }
+      if (url.includes("deployment-refs")) return url.includes("source=branch") ? branches : { refs: ["v1.0"], has_more: false }
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base", names: ["base"] }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request })
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
+    await selectOption(container, "#deployment-source", "tag")
+    await settle()
+    expect(container.querySelector('label[for="deployment-ref"]').textContent).toBe("Select Tag")
+    expect(container.querySelector("#deployment-ref").value).toBe("v1.0")
+    await act(async () => resolveBranches({ refs: ["main", "stale-branch"], has_more: false }))
+    expect(container.querySelector("#deployment-ref").value).toBe("v1.0")
+    expect(container.textContent).not.toContain("stale-branch")
+    await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submitted.source).toBe("tag")
+    expect(submitted.ref).toBe("v1.0")
+  })
+
+  test("blocks creation for an empty Tag list and retries a failed version discovery", async () => {
+    let tagRequests = 0, submissions = 0
+    const request = async (url, options) => {
+      if (options?.method === "POST") { submissions += 1; return deployment("unexpected") }
+      if (url.includes("deployment-refs")) {
+        if (!url.includes("source=tag")) return { refs: ["main"], has_more: false }
+        tagRequests += 1
+        if (tagRequests === 1) return { refs: [], has_more: false }
+        if (tagRequests === 2) throw new Error("GitHub temporarily unavailable")
+        return { refs: ["v2.0"], has_more: false }
+      }
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base", names: ["base"] }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request })
+    await selectOption(container, "#deployment-source", "tag")
+    await settle()
+    expect(container.textContent).toContain("No branches or tags available")
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
+    await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submissions).toBe(0)
+    await act(async () => button(container, "Refresh versions").click())
+    expect(container.textContent).toContain("GitHub temporarily unavailable")
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
+    await act(async () => button(container, "Refresh versions").click())
+    expect(container.querySelector("#deployment-ref").value).toBe("v2.0")
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(false)
+    expect(container.textContent).not.toContain("GitHub temporarily unavailable")
+  })
+
+  test("appends another version page without losing the selected branch", async () => {
+    const request = async (url) => {
+      if (url.includes("deployment-refs")) return url.includes("page=2") ? { refs: ["main", "example/vite"], has_more: false } : { refs: ["main", "feature/first"], has_more: true }
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base", names: ["base"] }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request })
+    await selectOption(container, "#deployment-ref", "feature/first")
+    await act(async () => button(container, "Load more versions").click())
+    const select = container.querySelector("#deployment-ref")
+    expect(select.value).toBe("feature/first")
+    expect([...select.options].map((option) => option.value)).toEqual(["main", "feature/first", "example/vite"])
+    expect(button(container, "Load more versions")).toBeUndefined()
+  })
+
+  test("loads a direct detail URL, merges cursor pages, and retains logs after a refresh error", async () => {
+    let failRefresh = true
+    const requested = []
+    const request = async (url) => {
+      requested.push(url)
+      if (url === "/user/deployments/deep-link") return deployment("deep-link", "completed")
+      if (url.endsWith("?before_id=205")) return { events: [event(203, "earlier install output"), event(204, "older output")], has_more: false }
+      if (url.endsWith("?after_id=206")) {
+        if (failRefresh) throw new Error("offline")
+        return { events: [event(207, "application starting")], has_more: true }
+      }
+      if (url.endsWith("?after_id=207")) return { events: [event(208, "deployment ready")], has_more: false }
+      if (url.endsWith("/events")) return { events: [event(205, "install command output"), event(206, "build completed")], has_more: true }
+      throw new Error(`unexpected request ${url}`)
+    }
+    const { container } = await mountPage({ request, deploymentID: "deep-link" }, { page: "deployments" })
+    expect(requested).toContain("/user/deployments/deep-link")
+    expect(requested).not.toContain("/user/deployments")
+    expect(container.querySelector("form")).toBeNull()
+    await act(async () => button(container, "Load earlier logs").click())
+    await act(async () => [...container.querySelectorAll("button")].filter((item) => item.textContent.trim() === "Refresh").at(-1).click())
+    expect(container.textContent).toContain("Unable to load deployment logs: offline")
+    expect(container.textContent).toContain("earlier install output")
+    failRefresh = false
+    await act(async () => [...container.querySelectorAll("button")].filter((item) => item.textContent.trim() === "Refresh").at(-1).click())
+    expect(container.textContent).toContain("deployment ready")
+    expect(container.textContent).toContain("earlier install output")
+    expect(container.querySelector('[data-testid="deployment-logs"]').querySelectorAll("pre").length).toBe(6)
+  })
+})
