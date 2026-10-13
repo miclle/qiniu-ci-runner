@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -204,12 +205,12 @@ export function UserDeploymentsSection({
     }
   }
 
-  async function runAction(kind: "stop" | "delete" | "retry") {
+  async function runAction(kind: "stop" | "delete" | "retry", retryOptions?: { mode: "latest" | "revision"; revision_number?: number }) {
     if (!selectedDeployment || action) return
     setAction(kind)
     try {
       const path = `/user/deployments/${encodeURIComponent(selectedDeployment.id)}`
-      const result = await request(kind === "delete" ? path : `${path}/${kind}`, { method: kind === "delete" ? "DELETE" : "POST" }) as Deployment
+      const result = await request(kind === "delete" ? path : `${path}/${kind}`, { method: kind === "delete" ? "DELETE" : "POST", ...(kind === "retry" ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(retryOptions ?? { mode: "revision" }) } : {}) }) as Deployment
       if (kind === "retry") { setRevisionSelection({ id: result.id, number: result.revision_number }); const url = new URL(window.location.href); url.searchParams.delete("revision"); window.history.replaceState(null, "", url) }
       setDeployments((current) => kind === "delete" ? current.filter((item) => item.id !== selectedDeployment.id) : current.map((item) => item.id === result.id ? { ...result, revisions: item.revisions, revisions_has_more: item.revisions_has_more } : item))
       if (kind !== "delete") void loadDeployments()
@@ -272,13 +273,16 @@ function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLo
   eventState: ReturnType<typeof useDeploymentEvents>
   formatTime: (value?: string) => string
   action: string | null
-  onAction: (kind: "stop" | "delete" | "retry") => void
+  onAction: (kind: "stop" | "delete" | "retry", retryOptions?: { mode: "latest" | "revision"; revision_number?: number }) => void
 }) {
   const { t, i18n } = useTranslation()
   const { events, loading, error, hasOlder, refresh, loadOlder } = eventState
   const canStop = activeStatuses.has(deployment.status)
   const canRetry = ["failed", "completed", "expired"].includes(deployment.status)
   const revisions = deployment.revisions ?? []
+  const [redeployOpen, setRedeployOpen] = useState(false)
+  const [redeployMode, setRedeployMode] = useState<"latest" | "revision">(deployment.source === "branch" ? "latest" : "revision")
+  const [redeployRevision, setRedeployRevision] = useState(selectedRevision?.number ?? deployment.revision_number ?? revisions[0]?.number ?? 1)
   const resourceSnapshot = {
     ...(selectedRevision ?? deployment),
     ...(resources?.template_id ? { template_id: resources.template_id } : {}),
@@ -318,7 +322,7 @@ function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLo
           </div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" variant="outline" disabled={!canStop || Boolean(action)} onClick={() => onAction("stop")}><Square className="h-3.5 w-3.5" />{t("user.stopDeployment")}</Button>
-            <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => onAction("retry")}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
+            <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode(deployment.source === "branch" ? "latest" : "revision"); setRedeployRevision(selectedRevision?.number ?? deployment.revision_number ?? revisions[0]?.number ?? 1); setRedeployOpen(true) }}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
             <Button type="button" size="sm" variant="outline" disabled={Boolean(action)} onClick={() => onAction("delete")}><Trash2 className="h-3.5 w-3.5" />{t("common.delete")}</Button>
           </div>
         </div>
@@ -390,7 +394,34 @@ function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLo
         </CardContent>
       </Card>
     </div>
+    <Dialog open={redeployOpen} onOpenChange={(open) => !action && setRedeployOpen(open)}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{t("user.redeployChooseTitle")}</DialogTitle>
+          <DialogDescription>{t("user.redeployChooseDescription")}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {deployment.source === "branch" ? <RedeployOption selected={redeployMode === "latest"} onSelect={() => setRedeployMode("latest")} title={t("user.redeployLatestTitle")} description={t("user.redeployLatestDescription")}>
+            <Badge variant="secondary">{displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</Badge>
+          </RedeployOption> : null}
+          <RedeployOption selected={redeployMode === "revision"} onSelect={() => setRedeployMode("revision")} title={t("user.redeployRevisionTitle")} description={t("user.redeployRevisionDescription")}>
+            <Badge variant="secondary">#{redeployRevision} · {revisions.find((revision) => revision.number === redeployRevision)?.commit_sha.slice(0, 8) ?? deployment.commit_sha.slice(0, 8)}</Badge>
+          </RedeployOption>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setRedeployOpen(false)}>{t("common.cancel")}</Button>
+          <Button type="button" disabled={Boolean(action)} onClick={() => { setRedeployOpen(false); onAction("retry", { mode: redeployMode, ...(redeployMode === "revision" ? { revision_number: redeployRevision } : {}) }) }}>{t("user.startRedeploy")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
+}
+
+function RedeployOption({ selected, onSelect, title, description, children }: { selected: boolean; onSelect: () => void; title: string; description: string; children: React.ReactNode }) {
+  return <button type="button" onClick={onSelect} className={cn("flex w-full items-center gap-4 rounded-lg border p-4 text-left transition-colors", selected ? "border-primary bg-primary/5 ring-2 ring-primary/20" : "hover:bg-accent")}>
+    <span aria-hidden="true" className={cn("h-5 w-5 shrink-0 rounded-full border-2 p-1", selected ? "border-primary" : "border-muted-foreground/40")}><span className={cn("block h-full w-full rounded-full", selected ? "bg-primary" : "bg-transparent")} /></span>
+    <span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 font-semibold">{title}{children}</span><span className="mt-1 block text-sm text-muted-foreground">{description}</span></span>
+  </button>
 }
 
 function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {

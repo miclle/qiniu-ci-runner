@@ -63,8 +63,8 @@ Sandbox 运行。系统记录 Sandbox ID、attempt、runtime ID 和进程 tag，
 应选择模板重新创建。创建／重试在事务中保存排队事件，并立即唤醒 worker；定期协调仍作为兜底。
 
 区域来自该 scope 的有效 Sandbox endpoint。准入时保存区域标识、endpoint、加密凭据
-和独立 Deploy 模板绑定，后续全局配置变更不会移动已准入部署的区域或模板。重试保留
-不可变源码与模板绑定，并重新解析当前 scope 的凭据。Deploy 默认不使用平台 CI 兜底；
+和独立 Deploy 模板绑定，后续全局配置变更不会移动已准入部署的区域或模板。重试会重新解析
+当前 scope 的凭据，并按重新部署方式刷新分支源码或复用不可变源码与模板绑定。Deploy 默认不使用平台 CI 兜底；
 仅 `allow_admin_fallback: true` 时允许，且仍遵守已有的启用状态与 audience 限制。
 Deploy 不使用 Fork sponsorship 或 Cache S3 凭据。
 
@@ -127,8 +127,9 @@ Installation ID 由服务端解析：
   `after_id` 返回后续正序页，使活动轮询能够连续补齐日志。
 - `POST /user/deployments/{id}/stop`（或 `DELETE /user/deployments/{id}`）停止带
   tag 的进程并删除部署 Sandbox。清理失败会保留为 `failed`，worker 会继续重试。
-- `POST /user/deployments/{id}/retry` 只有在上一轮 Sandbox 证据已清理后才能重新入队；
-  原有完整 Commit 和计划保持不变。
+- `POST /user/deployments/{id}/retry` 只有在上一轮 Sandbox 证据已清理后才能重新入队。
+  JSON 请求体可使用 `{"mode":"latest"}` 重新解析分支并保存新的不可变计划，
+  或使用 `{"mode":"revision","revision_number":N}` 复用保留的部署版本；省略请求体时复用当前版本。
 
 创建流程会将 ref 固定为完整 Commit SHA，从该 Commit 读取配置，生成 deployd
 不可变计划，加密保存规范化后的执行 Spec，并在同一事务中写入部署记录和审计事件。
@@ -153,8 +154,8 @@ App 无法读取版本时，表单提示 Installation owner 批准 Contents 读�
 ## 部署版本与日志
 
 Deployment 保持稳定的资源 ID。首次创建以事务保存版本 #1；
-`POST /user/deployments/{id}/retry` 为同一固定 Commit 和加密计划创建下一个版本，
-不会重新解析已移动的分支。新版本、排队日志及审计在同一事务中提交。
+`POST /user/deployments/{id}/retry` 创建下一个版本。使用分支最新代码时会重新解析
+已移动的分支，复用版本时复制所选固定 Commit 和加密计划。新版本、排队日志及审计在同一事务中提交。
 只有当前版本可推进，旧版的来源、状态、地址、已确认 Sandbox 标识与日志独立保留。
 执行 attempt 继续用于 Provider fencing，与用户可见的版本编号分开。
 

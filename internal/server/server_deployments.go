@@ -45,6 +45,11 @@ type createDeploymentRequest struct {
 	TemplateDiskMB     int32  `json:"template_disk_mb"`
 }
 
+type retryDeploymentRequest struct {
+	Mode           string `json:"mode"`
+	RevisionNumber int64  `json:"revision_number,omitempty"`
+}
+
 type deploymentResponse struct {
 	LastSuccessfulRevisionNumber int64                        `json:"last_successful_revision_number,omitempty"`
 	ID                           string                       `json:"id"`
@@ -685,8 +690,29 @@ func (s *Server) handleUserStopDeployment(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleUserRetryDeployment(w http.ResponseWriter, r *http.Request) {
-	session, _, deployment, ok := s.loadAuthorizedDeployment(w, r)
+	session, account, deployment, ok := s.loadAuthorizedDeployment(w, r)
 	if !ok {
+		return
+	}
+	input := retryDeploymentRequest{Mode: "revision"}
+	if r.Body != nil {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+			writeErrorCode(w, http.StatusBadRequest, "invalid_deployment_retry", "invalid redeploy selection")
+			return
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			writeErrorCode(w, http.StatusBadRequest, "invalid_deployment_retry", "invalid redeploy selection")
+			return
+		}
+	}
+	input.Mode = strings.TrimSpace(strings.ToLower(input.Mode))
+	if input.Mode == "" {
+		input.Mode = "revision"
+	}
+	if input.Mode != "latest" && input.Mode != "revision" {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_deployment_retry", "redeploy mode must be latest or revision")
 		return
 	}
 	if deployment.Status != state.DeploymentStatusFailed && deployment.Status != state.DeploymentStatusCompleted && deployment.Status != state.DeploymentStatusExpired {
@@ -703,6 +729,41 @@ func (s *Server) handleUserRetryDeployment(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		deployment, _ = s.store.GetDeployment(deployment.ID)
+	}
+	if input.Mode == "revision" && input.RevisionNumber > 0 {
+		revision, err := s.store.GetDeploymentRevision(deployment.ID, input.RevisionNumber)
+		if err != nil {
+			if errors.Is(err, state.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "deployment revision not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "load deployment revision")
+			}
+			return
+		}
+		deployment.Ref = revision.Ref
+		deployment.CommitSHA = revision.CommitSHA
+		deployment.ConfigPath = revision.ConfigPath
+		deployment.SnapshotVersion = revision.SnapshotVersion
+		deployment.SpecHash = revision.SpecHash
+		deployment.SpecJSONEncrypted = revision.SpecJSONEncrypted
+		deployment.DeploymentTemplateID = revision.DeploymentTemplateID
+		deployment.DeploymentTemplateName = revision.DeploymentTemplateName
+		deployment.DeploymentTemplateCPU = revision.DeploymentTemplateCPU
+		deployment.DeploymentTemplateMemoryMB = revision.DeploymentTemplateMemoryMB
+		deployment.DeploymentTemplateDiskMB = revision.DeploymentTemplateDiskMB
+		deployment.SandboxID = ""
+		deployment.RuntimeID = ""
+		deployment.ProcessID = ""
+		deployment.ProcessTag = ""
+	} else if input.Mode == "latest" {
+		if !strings.HasPrefix(deployment.Ref, "refs/heads/") {
+			writeErrorCode(w, http.StatusBadRequest, "invalid_deployment_retry", "latest redeploy is available only for branch deployments")
+			return
+		}
+		if err := s.refreshDeploymentPlanFromGitHub(r.Context(), account.ID, &deployment); err != nil {
+			writeErrorCode(w, http.StatusBadGateway, "deployment_latest_source_failed", "failed to resolve the latest repository source")
+			return
+		}
 	}
 	if strings.TrimSpace(deployment.DeploymentTemplateID) == "" {
 		writeErrorCode(w, http.StatusConflict, "deployment_template_required", "Create a new deployment with an available Sandbox template")
@@ -751,6 +812,48 @@ func (s *Server) handleUserRetryDeployment(w http.ResponseWriter, r *http.Reques
 	s.signalDeployments()
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusAccepted, deploymentResponseFromState(updated))
+}
+
+func (s *Server) refreshDeploymentPlanFromGitHub(ctx context.Context, accountID int64, deployment *state.Deployment) error {
+	if deployment == nil || s.gh == nil {
+		return errors.New("GitHub client is not configured")
+	}
+	if _, err := s.githubUserAccessToken(accountID); err != nil {
+		return err
+	}
+	commitSHA, err := s.gh.ResolveCommit(ctx, deployment.RepositoryFullName, deployment.Ref)
+	if err != nil {
+		return err
+	}
+	configData, err := s.gh.ReadRepositoryFile(ctx, deployment.RepositoryFullName, deployment.ConfigPath, commitSHA, deployconfig.MaxBytes)
+	if err != nil {
+		return err
+	}
+	spec, err := deployconfig.Parse(configData)
+	if err != nil {
+		return err
+	}
+	plan, err := deploy.NewPlan(deploy.ResolvedSource{SourceID: githubDeploymentSourceURL(deployment.RepositoryFullName), CommitSHA: commitSHA}, spec)
+	if err != nil {
+		return err
+	}
+	specJSON, err := json.Marshal(plan.Spec())
+	if err != nil {
+		return err
+	}
+	encryptedSpec, err := encryptSecret(string(specJSON), s.cfg.AuthEncryptionKey.Value())
+	if err != nil {
+		return err
+	}
+	deployment.CommitSHA = commitSHA
+	deployment.SnapshotVersion = plan.Snapshot().Version
+	deployment.SpecHash = plan.Snapshot().SpecHash
+	deployment.SpecJSONEncrypted = encryptedSpec
+	deployment.SandboxID = ""
+	deployment.RuntimeID = ""
+	deployment.ProcessID = ""
+	deployment.ProcessTag = ""
+	return nil
 }
 
 func (s *Server) writeDeploymentReplay(w http.ResponseWriter, id string, accountID, installationID, repositoryID int64, input createDeploymentRequest) bool {

@@ -81,8 +81,9 @@ immediately; periodic reconciliation remains a fallback.
 The region comes from the effective scope's configured Sandbox endpoint. The
 region identifier, endpoint, encrypted credential and dedicated Deploy template
 binding are saved with admission, so changing global configuration cannot move
-an admitted deployment to another region or template. Retries retain the
-immutable source/template binding and resolve current scoped credentials again.
+an admitted deployment to another region or template. Retries resolve current
+scoped credentials again; the redeploy mode decides whether to refresh a branch
+source or reuse an immutable source/template binding.
 The platform CI fallback is disabled for Deploy unless
 `allow_admin_fallback: true`; its existing enabled/audience restrictions still
 apply. Deploy never uses fork sponsorship or Cache S3 credentials.
@@ -173,8 +174,10 @@ ID is resolved server-side.
   the tagged process and removes the deployment Sandbox. Cleanup failures remain
   visible as `failed` and are retried by the worker.
 - `POST /user/deployments/{id}/retry` requeues a terminal deployment only after
-  its prior Sandbox evidence has been cleaned; the immutable Commit and plan are
-  retained.
+  its prior Sandbox evidence has been cleaned. The JSON body may select
+  `{"mode":"latest"}` for a branch deployment, which resolves the branch again
+  and saves a new immutable plan, or `{"mode":"revision","revision_number":N}`
+  to reuse a retained revision. An omitted body reuses the current revision.
 
 Creation resolves the ref to a full Commit SHA, reads the configuration from
 that exact commit, creates a deployd immutable plan, encrypts the normalized
@@ -209,9 +212,10 @@ actions. Log read failures retain already loaded output and show a retry prompt.
 ## Deployment revisions and logs
 
 A Deployment remains a stable resource. Initial creation atomically inserts
-Revision #1; `POST /user/deployments/{id}/retry` creates the next revision using
-the same pinned Commit and encrypted plan. It does not resolve a moving branch
-again. Revision creation, queue evidence and audit commit together. Only the
+Revision #1; `POST /user/deployments/{id}/retry` creates the next revision. The
+latest-branch mode resolves a moving branch again, while revision mode copies
+the selected pinned Commit and encrypted plan. Revision creation, queue evidence
+and audit commit together. Only the
 current revision can advance; old revisions retain source, status, endpoint,
 confirmed Sandbox identity and log history. Execution attempts remain separate
 provider fencing evidence rather than revision identifiers.
