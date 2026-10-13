@@ -44,20 +44,21 @@ func TestDeploymentEventAfterCursorPreservesEveryPage(t *testing.T) {
 
 func deploymentFixture(id string, accountID int64) Deployment {
 	return Deployment{
-		ID:                   id,
-		AccountID:            accountID,
-		ScopeType:            AccountScopeTypeAccount,
-		ScopeID:              accountID,
-		GitHubInstallationID: 100 + accountID,
-		RepositoryID:         200 + accountID,
-		RepositoryFullName:   "owner/project",
-		Ref:                  "main",
-		CommitSHA:            strings.Repeat("a", 40),
-		ConfigPath:           ".qiniu/deploy.yaml",
-		SnapshotVersion:      1,
-		SpecHash:             "sha256:" + strings.Repeat("b", 64),
-		SpecJSONEncrypted:    "encrypted-spec",
-		ExpiresAt:            time.Now().UTC().Add(time.Hour),
+		ID:                     id,
+		AccountID:              accountID,
+		ScopeType:              AccountScopeTypeAccount,
+		ScopeID:                accountID,
+		GitHubInstallationID:   100 + accountID,
+		RepositoryID:           200 + accountID,
+		RepositoryFullName:     "owner/project",
+		Ref:                    "main",
+		CommitSHA:              strings.Repeat("a", 40),
+		ConfigPath:             ".qiniu/deploy.yaml",
+		SnapshotVersion:        1,
+		SpecHash:               "sha256:" + strings.Repeat("b", 64),
+		SpecJSONEncrypted:      "encrypted-spec",
+		DeploymentTemplateName: "base",
+		ExpiresAt:              time.Now().UTC().Add(time.Hour),
 	}
 }
 
@@ -223,6 +224,151 @@ func TestDeploymentRetryResetsAttemptEvidenceAndEventsPage(t *testing.T) {
 	events, more, err := store.ListDeploymentEvents(created.ID, 0, 10)
 	if err != nil || more || len(events) != 1 || events[0].EventType != "failure" {
 		t.Fatalf("deployment events = %#v more=%v err=%v", events, more, err)
+	}
+}
+
+func TestDeploymentRetryCreatesImmutableRevisionAndScopesEvents(t *testing.T) {
+	store := New(t.TempDir())
+	account, _, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "revision-user", OAuthLogin: "revision-user"}, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateDeployment(deploymentFixture("revision-deployment", account.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendDeploymentEvent(DeploymentEvent{DeploymentID: created.ID, Message: "first", EventType: "output"}); err != nil {
+		t.Fatal(err)
+	}
+	created.Status = DeploymentStatusCompleted
+	if err := store.UpdateDeployment(created); err != nil {
+		t.Fatal(err)
+	}
+	created.Version++
+	if err := store.RetryDeployment(created, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.GetDeployment(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.RevisionNumber != 2 {
+		t.Fatalf("revision number = %d, want 2", current.RevisionNumber)
+	}
+	if err := store.AppendDeploymentEvent(DeploymentEvent{DeploymentID: current.ID, Message: "second", EventType: "output"}); err != nil {
+		t.Fatal(err)
+	}
+	revisions, more, err := store.ListDeploymentRevisions(current.ID, 0, 10)
+	if err != nil || more || len(revisions) != 2 {
+		t.Fatalf("revisions=%#v more=%v err=%v", revisions, more, err)
+	}
+	first, _, err := store.ListDeploymentRevisionEvents(current.ID, 1, 0, 0, 20)
+	if err != nil || len(first) == 0 || first[len(first)-1].Message != "first" {
+		t.Fatalf("first revision events=%#v err=%v", first, err)
+	}
+	second, _, err := store.ListDeploymentRevisionEvents(current.ID, 2, 0, 0, 20)
+	if err != nil || len(second) == 0 || second[len(second)-1].Message != "second" {
+		t.Fatalf("second revision events=%#v err=%v", second, err)
+	}
+	if revisions[1].Status != DeploymentStatusCompleted || revisions[0].Status != DeploymentStatusQueued || revisions[1].SpecHash != created.SpecHash || revisions[1].CommitSHA != created.CommitSHA {
+		t.Fatalf("immutable history lost: %#v", revisions)
+	}
+	if err := store.AppendDeploymentEvent(DeploymentEvent{DeploymentID: current.ID, RevisionNumber: 1, Message: "stale output", EventType: "output"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale output error = %v", err)
+	}
+	if err := store.RetryDeployment(created, time.Now().Add(time.Hour)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale retry error = %v", err)
+	}
+	page, more, err := store.ListDeploymentRevisions(current.ID, 2, 1)
+	if err != nil || more || len(page) != 1 || page[0].RevisionNumber != 1 {
+		t.Fatalf("revision cursor=%#v more=%v err=%v", page, more, err)
+	}
+}
+
+func TestDeploymentRevisionLegacyUpgradePreservesHistory(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	d, err := store.CreateDeployment(deploymentFixture("legacy-revision", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendDeploymentEvent(DeploymentEvent{DeploymentID: d.ID, EventType: "output", Message: "old output", Attempt: 3}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().DropTable(&deploymentRevisionRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().DropIndex(&deploymentEventRecord{}, "idx_deployment_events_revision_id"); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{"ALTER TABLE deployments DROP COLUMN revision_number", "ALTER TABLE deployment_events DROP COLUMN revision_number"} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := store.migrate(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.GetDeployment(d.ID)
+	if err != nil || got.CommitSHA != d.CommitSHA || got.SpecJSONEncrypted != d.SpecJSONEncrypted || !got.UpdatedAt.Equal(d.UpdatedAt) || got.RevisionNumber != 1 {
+		t.Fatalf("upgrade lost deployment: %#v err=%v", got, err)
+	}
+	revisions, more, err := store.ListDeploymentRevisions(d.ID, 0, 100)
+	if err != nil || more || len(revisions) != 1 {
+		t.Fatalf("backfill %#v %v %v", revisions, more, err)
+	}
+	events, _, err := store.ListDeploymentRevisionEvents(d.ID, 1, 0, 0, 100)
+	if err != nil || len(events) != 1 || events[0].Message != "old output" || events[0].Attempt != 3 {
+		t.Fatalf("lost legacy output: %#v %v", events, err)
+	}
+	if !db.Migrator().HasIndex(&deploymentEventRecord{}, "idx_deployment_events_revision_id") {
+		t.Fatal("missing revision cursor index")
+	}
+	var plan []struct{ Detail string }
+	if err := db.Raw("EXPLAIN QUERY PLAN SELECT * FROM deployment_events WHERE deployment_id = ? AND revision_number = ? AND id < ? ORDER BY id DESC LIMIT 10", d.ID, 1, 1000).Scan(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range plan {
+		if strings.Contains(line.Detail, "TEMP B-TREE") {
+			t.Fatalf("revision cursor sort: %s", line.Detail)
+		}
+	}
+}
+
+func TestDeploymentRevisionRetryAuditFailureRollsBack(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	d, err := store.CreateDeployment(deploymentFixture("revision-audit", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Status = DeploymentStatusCompleted
+	if err := store.UpdateDeployment(d); err != nil {
+		t.Fatal(err)
+	}
+	d.Version++
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("CREATE TRIGGER reject_revision_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'audit failure'); END").Error; err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ApplyMutationWithAudit(AuditEvent{Actor: "test", Action: "deployment.retry", ResourceType: "deployment", ResourceID: d.ID}, func(tx Store) error { return tx.RetryDeployment(d, time.Now().Add(time.Hour)) })
+	if !errors.Is(err, ErrAuditEventPersistence) {
+		t.Fatalf("audit error = %v", err)
+	}
+	got, err := store.GetDeployment(d.ID)
+	if err != nil || got.RevisionNumber != 1 || got.Status != DeploymentStatusCompleted || got.Version != d.Version {
+		t.Fatalf("failed audit modified state: %#v %v", got, err)
+	}
+	revisions, _, err := store.ListDeploymentRevisions(d.ID, 0, 100)
+	if err != nil || len(revisions) != 1 {
+		t.Fatalf("failed audit created revision: %#v %v", revisions, err)
 	}
 }
 
@@ -428,6 +574,74 @@ func TestDeploymentScopeQuotaSQLBackends(t *testing.T) {
 			deployments, err := store.ListActiveDeployments()
 			if err != nil || len(deployments) != 1 || deployments[0].SandboxRegion != "region-a" || deployments[0].DeploymentTemplateID != "template-a" {
 				t.Fatalf("target snapshot=%#v %v", deployments, err)
+			}
+		})
+	}
+}
+
+func TestDeploymentRevisionsSQLBackends(t *testing.T) {
+	if os.Getenv("RUNNERD_CATALOG_BACKEND_TESTS") != "1" {
+		t.Skip("dedicated SQL backend gate")
+	}
+	for _, backend := range []struct{ name, dsn string }{{BackendPostgres, os.Getenv("RUNNERD_POSTGRES_TEST_DSN")}, {BackendMySQL, os.Getenv("RUNNERD_MYSQL_TEST_DSN")}} {
+		t.Run(backend.name, func(t *testing.T) {
+			store := NewWithOptions(Options{Backend: backend.name, DatabaseDSN: backend.dsn}).(*DBStore)
+			db, err := store.dbOrEnsure()
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireCatalogMatcherTestDatabase(t, db, backend.name)
+			resetSQLBackendTestTables(t, db)
+			defer closeTestDB(t, db)
+			defer resetSQLBackendTestTables(t, db)
+			if err := store.migrate(db); err != nil {
+				t.Fatal(err)
+			}
+			account, _, err := store.UpsertAccountForOAuthIdentity(OAuthIdentity{OAuthProvider: "github", OAuthSubject: "revision-sql", OAuthLogin: "revision-sql"}, "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := store.CreateDeploymentWithScopeLimit(deploymentFixture("revision-sql", account.ID), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AppendDeploymentEvent(DeploymentEvent{DeploymentID: d.ID, EventType: "output", Message: "first"}); err != nil {
+				t.Fatal(err)
+			}
+			d.Status = DeploymentStatusCompleted
+			if err := store.UpdateDeployment(d); err != nil {
+				t.Fatal(err)
+			}
+			d.Version++
+			_, err = store.ApplyMutationWithAudit(AuditEvent{Actor: "test", Action: "deployment.retry", ResourceType: "deployment", ResourceID: d.ID}, func(tx Store) error {
+				if err := tx.RetryDeploymentWithScopeLimit(d, time.Now().Add(time.Hour), 1); err != nil {
+					return err
+				}
+				return tx.AppendDeploymentEvent(DeploymentEvent{DeploymentID: d.ID, EventType: "lifecycle", Message: "second"})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.GetDeployment(d.ID)
+			if err != nil || got.RevisionNumber != 2 {
+				t.Fatalf("retry %#v %v", got, err)
+			}
+			revs, more, err := store.ListDeploymentRevisions(d.ID, 0, 10)
+			if err != nil || more || len(revs) != 2 || revs[1].Status != DeploymentStatusCompleted {
+				t.Fatalf("revisions %#v %v %v", revs, more, err)
+			}
+			for number, message := range map[int64]string{1: "first", 2: "second"} {
+				events, _, err := store.ListDeploymentRevisionEvents(d.ID, number, 0, 0, 10)
+				if err != nil || len(events) != 1 || events[0].Message != message {
+					t.Fatalf("revision %d events %#v %v", number, events, err)
+				}
+			}
+			if err := store.migrate(db); err != nil {
+				t.Fatal(err)
+			}
+			revs, _, err = store.ListDeploymentRevisions(d.ID, 0, 10)
+			if err != nil || len(revs) != 2 {
+				t.Fatalf("restart changed history %#v %v", revs, err)
 			}
 		})
 	}

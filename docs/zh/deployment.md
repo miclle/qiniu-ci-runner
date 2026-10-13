@@ -110,7 +110,8 @@ Installation ID 由服务端解析：
 - `GET /user/deployment-refs?installation_id=<local-id>&repository_full_name=<owner/repo>&source=branch|tag&page=1`
   每页最多返回 100 个引用名称及 `has_more`。读取前检查与创建相同的 owner 作用域和
   OAuth/App 精确仓库交集；OAuth 缺失或被拒绝时失败关闭。
-- `POST /user/deployments` 接收所选物理 `template_id`、已关联的本地 `installation_id`、精确的
+- `POST /user/deployments` 接收所选物理 `template_id`、可选的模板目录快照 `template_name`、
+  `template_cpu`、`template_memory_mb` 和 `template_disk_mb`、已关联的本地 `installation_id`、精确的
   `repository_full_name`、`ref`、可选的 `source`（`branch` 或 `tag`）、可选的 `config_path` 和可选的
   `ttl_seconds`（五分钟到 24 小时，默认一小时）。可以使用 `Idempotency-Key` 请求头安全重放同一请求。
   传入 `source` 时，服务端先将名称限定为 `refs/heads/<name>` 或 `refs/tags/<name>`，
@@ -118,8 +119,9 @@ Installation ID 由服务端解析：
   已知来源的响应返回来源和用于展示的原名称。
 - `GET /user/deployments` 按当前登录账号直接从本地数据库分页读取部署历史，保留账号隔离，
   不调用 GitHub 或 Sandbox。仓库权限改变或保存的 GitHub Token 过期后，历史仍可列出。
-- `GET /user/deployments/{id}` 检查记录归属、当前可管理 owner 作用域及 GitHub OAuth/App
-  精确仓库交集。事件与生命周期操作保留这些授权检查，列表可见不会额外授予这些权限。
+- `GET /user/deployments/{id}` 及其已保存事件按本地账号归属读取，不访问 GitHub 或
+  Sandbox。OAuth 过期、仓库或组织权限变更后，创建账号仍可查看自己的历史。创建与
+  生命周期操作仍检查当前可管理 owner 作用域及 GitHub OAuth/App 精确仓库交集。
 - `GET /user/deployments/{id}/events` 返回有界的生命周期／输出事件，并支持
   互斥的 exclusive `before_id`／`after_id` 游标。初次返回最新事件并按时间正序展示；
   `after_id` 返回后续正序页，使活动轮询能够连续补齐日志。
@@ -148,6 +150,33 @@ App 无法读取版本时，表单提示 Installation owner 批准 Contents 读�
 不依赖列表第一页。刷新和浏览器前进／后退保留选择。详情逐行展示阶段、stdout／stderr，
 轮询活动 attempt 并合并已有历史，支持更早日志和手动刷新；读取失败时保留已加载日志并显示重试提示。
 
+## 部署版本与日志
+
+Deployment 保持稳定的资源 ID。首次创建以事务保存版本 #1；
+`POST /user/deployments/{id}/retry` 为同一固定 Commit 和加密计划创建下一个版本，
+不会重新解析已移动的分支。新版本、排队日志及审计在同一事务中提交。
+只有当前版本可推进，旧版的来源、状态、地址、已确认 Sandbox 标识与日志独立保留。
+执行 attempt 继续用于 Provider fencing，与用户可见的版本编号分开。
+
+本地详情返回 `revision_number`、最新 100 条 `revisions`、`revisions_has_more` 和
+最近确认成功的版本编号。更早版本通过
+`GET /user/deployments/{id}/revisions?before_number=N` 获取；版本日志通过
+`GET /user/deployments/{id}/revisions/{number}/events` 获取，支持相同的排他
+`before_id`／`after_id` 游标。原 `/events` 接口读取当前版本。
+这些读取均校验本地账号归属，使用 `Cache-Control: no-store`，不请求 Provider，
+也不返回加密计划或服务凭据。
+
+详情上方展示已保存的目标配置，下方左侧为版本历史、右侧为所选版本的部署日志。
+日志逐行展示行号、毫秒时间戳和原始正文，stderr 与失败分别强调。
+切换版本后重置游标，拒绝前一版本的迟到响应。
+`/deployments/{id}?revision=N` 在刷新及浏览器历史导航后保留选择；
+即使所选旧版不在最新一页，也能直接读取。展示页面无需实时探测 Sandbox。
+
+升级以新增字段和索引方式兼容旧数据库，为缺少版本的部署补为 #1，保留原来源、
+凭据、时间戳、attempt 证据及日志。旧记录的更早执行日志一起保留在导入的 #1 中，
+不重建已经丢失的历史状态。日志数量与字节预算按版本分别计算。
+终态保留期结束后，在同一事务中删除 Deployment、所有版本及日志，审计仍保留。
+
 ## 实现迭代方案
 
 2026-10-13 的公开执行验收使用公共 `base` 模板，以及 `qiniu/deployment` 的完整 Commit
@@ -169,7 +198,7 @@ App 无法读取版本时，表单提示 Installation owner 批准 Contents 读�
 3. **生命周期 API（本地完成）**：后端已经提供停止／删除／重试、TTL 到期、有界部署事件
    和日志，以及带状态的清理证据；真实 Provider 故障注入验收仍待完成。
 4. **用户界面（首片已完成）**：`/deployments` 展示本地历史，`/deployments/new` 处理授权
-   仓库、分支／Tag、模板选择与不可变部署创建，`/deployments/{id}` 展示状态、地址、TTL、
+   仓库、分支／Tag、模板选择与不可变部署创建，`/deployments/{id}` 展示状态、地址、TTL、模板 CPU／内存／磁盘资源、
    生命周期／输出事件及停止／删除／重试操作。
    本地验证和已登录的公开仓库创建／详情／刷新／停止流程已通过；剩余真实验收见上文。
 5. **验收**：完成聚焦测试、本地启动／构建检查，再用真实 GitHub App 和 Sandbox

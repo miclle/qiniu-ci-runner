@@ -63,6 +63,7 @@ afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
   }
+	window.history.replaceState(null, "", "/")
 })
 
 afterAll(() => {
@@ -78,7 +79,7 @@ async function settle() {
 }
 
 const installation = (id, login = "miclle") => ({ id, account_login: login, account_type: "User", repositories: [`${login}/demo`], manageable: true })
-const deployment = (id, status = "running") => ({ id, repository_full_name: "miclle/demo", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", status, template_id: "public-base", created_at: "2026-10-13T00:00:00Z", expires_at: "2026-10-13T01:00:00Z" })
+const deployment = (id, status = "running") => ({ id, repository_full_name: "miclle/demo", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", status, template_id: "public-base", template_name: "base", template_cpu: 4, template_memory_mb: 8192, template_disk_mb: 40960, created_at: "2026-10-13T00:00:00Z", expires_at: "2026-10-13T01:00:00Z" })
 const event = (id, message) => ({ id, event_type: "output", stage: "installing", stream: "stdout", message, created_at: "2026-10-13T00:00:00Z" })
 async function mountPage(props, { chooseRepository = true, page = "create" } = {}) {
   const container = document.createElement("div")
@@ -105,6 +106,32 @@ async function selectOption(container, id, value) {
 }
 
 describe("deployment interaction", () => {
+	 test("switches immutable revisions, rejects delayed logs, and restores the URL selection", async () => {
+		let finishLatest
+		const latestOutput = new Promise((resolve) => { finishLatest = resolve })
+		const revisions = [2, 1].map((number) => ({ ...deployment(`versioned-r${number}`, "completed"), number, ref: "refs/heads/main" }))
+		const requests = []
+		const request = async (url) => {
+			requests.push(url)
+			if (url.startsWith("/user/deployments/versioned") && !url.includes("/events")) return { ...deployment("versioned", "completed"), revision_number: 2, revisions }
+			if (url.includes("/revisions/2/events")) return latestOutput
+			if (url.includes("/revisions/1/events")) return { events: [event(1, "first version retained")], has_more: false }
+			throw new Error(`unexpected request ${url}`)
+		}
+		const { container } = await mountPage({ request, deploymentID: "versioned" }, { page: "deployments" })
+		expect(requests.filter((url) => url.endsWith("/events"))).toEqual(["/user/deployments/versioned/revisions/2/events"])
+		await act(async () => [...container.querySelectorAll("button")].find((item) => item.textContent.includes("Revision #1")).click())
+		expect(window.location.search).toBe("?revision=1")
+		expect(container.textContent).toContain("first version retained")
+		await act(async () => finishLatest({ events: [event(10, "delayed second version")], has_more: false }))
+		expect(container.textContent).not.toContain("delayed second version")
+		expect(container.querySelector('[data-testid="deployment-logs"]').querySelector("time").textContent).toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}/)
+		await act(async () => button(container, "Refresh").click())
+		expect(container.querySelector('button[aria-pressed="true"]')?.textContent).toContain("Revision #1")
+		const restored = await mountPage({ request, deploymentID: "versioned" }, { page: "deployments" })
+		expect(restored.container.textContent).toContain("first version retained")
+		expect(restored.container.textContent).not.toContain("delayed second version")
+	})
   test("shows only the list and a creation link without loading form catalogs", async () => {
     const requested = []
     const request = async (url) => {
@@ -182,6 +209,7 @@ describe("deployment interaction", () => {
     await act(async () => { select.value = "custom"; select.dispatchEvent(new Event("change", { bubbles: true })) })
     await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
     expect(submitted.template_id).toBe("custom")
+    expect(submitted.template_name).toBe("My template")
     expect(submitted.source).toBe("branch")
     expect(submitted.ref).toBe("main")
     expect(submitted.repository_full_name).toBe("miclle/demo")
@@ -296,6 +324,10 @@ describe("deployment interaction", () => {
     const { container } = await mountPage({ request, deploymentID: "deep-link" }, { page: "deployments" })
     expect(requested).toContain("/user/deployments/deep-link")
     expect(requested).not.toContain("/user/deployments")
+    expect(container.textContent).toContain("base")
+    expect(container.textContent).toContain("4 vCPU")
+    expect(container.textContent).toContain("8192 MB")
+    expect(container.textContent).toContain("40960 MB")
     expect(container.querySelector("form")).toBeNull()
     await act(async () => button(container, "Load earlier logs").click())
     await act(async () => [...container.querySelectorAll("button")].filter((item) => item.textContent.trim() === "Refresh").at(-1).click())

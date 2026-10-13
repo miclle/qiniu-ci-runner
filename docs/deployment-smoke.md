@@ -384,9 +384,11 @@ acceptance record, never in repository files.
 6. Exercise stop, DELETE, TTL expiry, and a failed start. Each path must finish
    with provider evidence that the Sandbox is released; a cleanup failure stays
    visible and is retried.
-7. Verify an unauthorized account, a repository-only organization member, and
-   an installation/repository mismatch receive fail-closed responses for create,
-   detail, events, stop, delete, and retry. Create enough active deployments to
+7. Verify anonymous and different-account sessions cannot read deployment history
+   or saved events. The creating account can read its history without GitHub/provider
+   calls after OAuth expiry or repository/organization permission changes.
+   Repository-only organization members and installation/repository mismatches
+   still fail closed for create, stop, delete, and retry. Create enough active deployments to
    receive `429 deployment_quota_exceeded`, then release one and verify admission
    resumes. After the configured retention window, confirm terminal deployment
    rows/events are pruned while audit evidence remains.
@@ -408,3 +410,5 @@ stage/stdout/stderr logs must remain visible. Exercise earlier-log pagination
 and a failed event read without discarding existing history. Missing template
 or scoped credentials must reject creation with an actionable message. Verify
 the selected template ID remains bound through idempotent replay and retry.
+
+Deployment revision verification must cover initial #1, atomic next-version creation and audit rollback, frozen old state, revision-scoped cursor pages, stale-output rejection, repeated legacy SQLite upgrade, Postgres/MySQL schema and mutations, URL-restored selection, and delayed-response isolation. Verify the history/log columns stack on a narrow screen and read without provider calls.

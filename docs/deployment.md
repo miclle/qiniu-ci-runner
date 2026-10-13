@@ -147,7 +147,8 @@ ID is resolved server-side.
   lists at most 100 reference names per page, with `has_more`. It requires the
   same owner scope and exact OAuth/App repository intersection as creation;
   missing or rejected OAuth access fails closed.
-- `POST /user/deployments` accepts a selected physical `template_id`, a linked local `installation_id`, an exact
+- `POST /user/deployments` accepts a selected physical `template_id`, optional `template_name`, `template_cpu`,
+  `template_memory_mb`, and `template_disk_mb` snapshots from the template catalog, a linked local `installation_id`, an exact
   `repository_full_name`, a `ref`, an optional `source` (`branch` or `tag`), an optional `config_path`,
   and an optional `ttl_seconds` (five minutes to 24 hours; the default is one
   hour). The `Idempotency-Key` header can replay the same request safely.
@@ -159,10 +160,11 @@ ID is resolved server-side.
   from the local database, with account isolation and pagination. It does not call
   GitHub or Sandbox, so history remains listable after repository access changes
   or the stored GitHub access token expires.
-- `GET /user/deployments/{id}` checks ownership and the current owner-manageable
-  scope and exact GitHub OAuth/App repository intersection. Events and lifecycle
-  mutations retain that authorization check; local list visibility grants no
-  additional access to those operations.
+- `GET /user/deployments/{id}` and its persisted events check the local account
+  ownership, with no GitHub or Sandbox reads. History remains accessible to its
+  creating account after OAuth expiry or repository/organization access changes.
+  Creation and lifecycle mutations still require the current owner-manageable
+  scope and exact GitHub OAuth/App repository intersection.
 - `GET /user/deployments/{id}/events` returns bounded lifecycle/output events with
   exclusive `before_id` and `after_id` cursors (mutually exclusive). Initial pages
   contain the newest events in chronological order; `after_id` returns the next
@@ -204,6 +206,41 @@ detail shows chronological stage/stdout/stderr rows, polls active attempts,
 merges new pages with loaded history, and provides earlier-log and refresh
 actions. Log read failures retain already loaded output and show a retry prompt.
 
+## Deployment revisions and logs
+
+A Deployment remains a stable resource. Initial creation atomically inserts
+Revision #1; `POST /user/deployments/{id}/retry` creates the next revision using
+the same pinned Commit and encrypted plan. It does not resolve a moving branch
+again. Revision creation, queue evidence and audit commit together. Only the
+current revision can advance; old revisions retain source, status, endpoint,
+confirmed Sandbox identity and log history. Execution attempts remain separate
+provider fencing evidence rather than revision identifiers.
+
+The local detail response includes `revision_number`, the newest 100 `revisions`,
+`revisions_has_more`, and the last confirmed successful revision number. Use
+`GET /user/deployments/{id}/revisions?before_number=N` for earlier revisions.
+`GET /user/deployments/{id}/revisions/{number}/events` uses the same exclusive
+`before_id`/`after_id` contract as the existing event endpoint; the existing
+`/events` endpoint reads the current revision. These reads authorize local
+account ownership, set `Cache-Control: no-store`, and perform no provider I/O.
+Encrypted plans and service credentials are never included in these responses.
+
+The detail layout puts saved target configuration above a revision history and
+log viewer. Each row contains a line number, a millisecond timestamp and the
+raw retained message; stderr and failures have separate emphasis. Switching a
+revision resets its cursors and rejects responses from the previous revision.
+`/deployments/{id}?revision=N` preserves selection through refresh and history.
+A selected old revision outside the newest page is loaded directly. No live
+Sandbox probe is needed to render the page.
+
+Existing databases are upgraded additively with revision columns and indexes,
+and missing revisions are backfilled as #1 without changing existing source,
+secrets, timestamps, attempt evidence or logs. Earlier executions of a legacy
+row are retained together in its imported #1; lost historical state is not
+reconstructed. Log count/byte budgets apply separately to each revision.
+Terminal retention deletes the Deployment, all revisions and their logs
+atomically while retaining audit events.
+
 ## Iteration plan
 
 Public execution acceptance on 2026-10-13 used the public `base` template and
@@ -236,7 +273,7 @@ full process restart, and provider failure injection remain separate gates.
 4. **User surface (first slice done):** `/deployments` lists local history,
    `/deployments/new` handles authorized repository and Branch/Tag selection,
    template choice and immutable deployment creation, and `/deployments/{id}`
-   shows status, endpoint, TTL, lifecycle/output events and stop/delete/retry
+   shows status, endpoint, TTL, template resources (CPU, memory, and disk), lifecycle/output events and stop/delete/retry
    actions. Local verification and the authenticated public create/detail/reload/
    stop browser flow passed; the remaining real acceptance gates are listed above.
 5. **Acceptance:** run focused tests, local startup/build checks, then a real

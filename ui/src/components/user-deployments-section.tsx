@@ -18,9 +18,41 @@ export type Deployment = {
   config_path: string
   status: string
   template_id?: string
+  template_name?: string
+  template_cpu?: number
+  template_memory_mb?: number
+  template_disk_mb?: number
   sandbox_id?: string
+  sandbox_region?: string
   endpoint?: string
   endpoint_access?: string
+  failure_stage?: string
+  failure_reason?: string
+  expires_at: string
+  created_at: string
+  updated_at: string
+  last_successful_revision_number?: number
+  revision_number?: number
+  revisions?: DeploymentRevision[]
+  revisions_has_more?: boolean
+  selected_revision?: DeploymentRevision
+}
+
+export type DeploymentRevision = {
+  id: string
+  number: number
+  status: string
+  ref?: string
+  commit_sha: string
+  config_path: string
+  template_id?: string
+  template_name?: string
+  template_cpu?: number
+  template_memory_mb?: number
+  template_disk_mb?: number
+  sandbox_id?: string
+  sandbox_region?: string
+  endpoint?: string
   failure_stage?: string
   failure_reason?: string
   expires_at: string
@@ -40,6 +72,8 @@ type DeploymentEvent = {
 type Request = (url: string, options?: RequestInit) => Promise<unknown>
 
 type EventPage = { events?: DeploymentEvent[]; has_more?: boolean }
+
+type DeploymentResources = Pick<Deployment, "template_id" | "template_name" | "template_cpu" | "template_memory_mb" | "template_disk_mb" | "sandbox_id" | "sandbox_region" | "expires_at"> & { remote_error?: string }
 
 const activeStatuses = new Set(["queued", "planning", "creating", "running", "stopping"])
 
@@ -62,7 +96,50 @@ export function UserDeploymentsSection({
   const [action, setAction] = useState<string | null>(null)
   const generation = useRef(0)
   const selectedDeployment = deployments.find((item) => item.id === selectedID) ?? null
-  const deploymentEvents = useDeploymentEvents(request, selectedID, selectedDeployment?.status, currentLogin)
+  const [revisionSelection, setRevisionSelection] = useState<{ id: string; number?: number } | null>(null)
+  const requestedRevision = revisionSelection?.id === selectedID ? revisionSelection.number : revisionNumberFromURL()
+  const selectedRevisionNumber = requestedRevision ?? selectedDeployment?.revision_number
+  const selectRevision = useCallback((number: number) => {
+    if (!selectedID) return
+    setRevisionSelection({ id: selectedID, number })
+    const url = new URL(window.location.href)
+    url.searchParams.set("revision", String(number))
+    window.history.pushState(null, "", url)
+  }, [selectedID])
+  useEffect(() => {
+    const onHistory = () => setRevisionSelection({ id: selectedID ?? "", number: revisionNumberFromURL() })
+    window.addEventListener("popstate", onHistory)
+    return () => window.removeEventListener("popstate", onHistory)
+  }, [selectedID])
+  const selectedRevision = selectedDeployment?.revisions?.find((item) => item.number === selectedRevisionNumber) ?? (selectedDeployment?.selected_revision && selectedDeployment.selected_revision.number === selectedRevisionNumber ? selectedDeployment.selected_revision : null)
+  const deploymentEvents = useDeploymentEvents(request, selectedDeployment ? selectedID : null, selectedRevisionNumber, selectedRevision?.status ?? selectedDeployment?.status, currentLogin)
+  const selectedDeploymentID = selectedDeployment?.id
+  const [deploymentResources, setDeploymentResources] = useState<DeploymentResources | null>(null)
+  const [deploymentResourcesLoading, setDeploymentResourcesLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedDeploymentID) {
+      setDeploymentResources(null)
+      setDeploymentResourcesLoading(false)
+      return
+    }
+    let cancelled = false
+    setDeploymentResources(null)
+    setDeploymentResourcesLoading(true)
+    const revisionQuery = selectedRevisionNumber ? `?revision=${selectedRevisionNumber}` : ""
+    void request(`/user/deployments/${encodeURIComponent(selectedDeploymentID)}/resources${revisionQuery}`)
+      .then((value) => {
+        if (!cancelled) setDeploymentResources(value as DeploymentResources)
+      })
+      .catch(() => {
+        // Provider reads are best effort. The detail view still renders the
+        // immutable local snapshot when the Sandbox API is unavailable.
+      })
+      .finally(() => {
+        if (!cancelled) setDeploymentResourcesLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [request, selectedDeploymentID, selectedRevisionNumber])
 
   const formatTime = useCallback((value?: string) => {
     if (!value) return "—"
@@ -79,17 +156,23 @@ export function UserDeploymentsSection({
     setLoading(true)
     setError(null)
     try {
-      const data = await request(deploymentID ? `/user/deployments/${encodeURIComponent(deploymentID)}` : "/user/deployments") as { items?: Deployment[] } & Deployment
+      const data = await request(deploymentID ? `/user/deployments/${encodeURIComponent(deploymentID)}${requestedRevision ? `?revision=${requestedRevision}` : ""}` : "/user/deployments") as { items?: Deployment[] } & Deployment
       if (requestGeneration !== generation.current) return
       const next = deploymentID ? [data] : Array.isArray(data.items) ? data.items : []
-      setDeployments(next)
+      setDeployments((current) => next.map((item) => {
+        const previous = current.find((old) => old.id === item.id)
+        if (!previous?.revisions?.length || !item.revisions?.length) return item
+        const merged = new Map(previous.revisions.map((revision) => [revision.number, revision]))
+        item.revisions.forEach((revision) => merged.set(revision.number, revision))
+        return { ...item, revisions: [...merged.values()].sort((a, b) => b.number - a.number), revisions_has_more: previous.revisions.length > item.revisions.length ? previous.revisions_has_more : item.revisions_has_more }
+      }))
     } catch (cause) {
       if (requestGeneration !== generation.current) return
       setError(cause instanceof Error ? cause.message : t("user.deploymentLoadFailed"))
     } finally {
       if (requestGeneration === generation.current) setLoading(false)
     }
-  }, [request, t, deploymentID])
+  }, [request, t, deploymentID, requestedRevision])
 
   useEffect(() => {
     void loadDeployments()
@@ -106,13 +189,30 @@ export function UserDeploymentsSection({
     }
   }, [loadDeployments, deployments])
 
+  const loadOlderRevisions = async () => {
+    if (!selectedDeployment || !selectedDeployment.revisions_has_more) return
+    const id = selectedDeployment.id
+    const epoch = generation.current
+    const last = selectedDeployment.revisions?.[selectedDeployment.revisions.length - 1]?.number
+    if (!last) return
+    try {
+      const page = await request(`/user/deployments/${encodeURIComponent(id)}/revisions?before_number=${last}`) as { revisions: DeploymentRevision[]; has_more: boolean }
+      if (epoch !== generation.current) return
+      setDeployments((current) => current.map((item) => item.id === id ? { ...item, revisions: [...(item.revisions ?? []), ...page.revisions], revisions_has_more: page.has_more } : item))
+    } catch (cause) {
+      if (epoch === generation.current) setError(cause instanceof Error ? cause.message : t("user.deploymentLoadFailed"))
+    }
+  }
+
   async function runAction(kind: "stop" | "delete" | "retry") {
     if (!selectedDeployment || action) return
     setAction(kind)
     try {
       const path = `/user/deployments/${encodeURIComponent(selectedDeployment.id)}`
       const result = await request(kind === "delete" ? path : `${path}/${kind}`, { method: kind === "delete" ? "DELETE" : "POST" }) as Deployment
-      setDeployments((current) => kind === "delete" ? current.filter((item) => item.id !== selectedDeployment.id) : current.map((item) => item.id === result.id ? result : item))
+      if (kind === "retry") { setRevisionSelection({ id: result.id, number: result.revision_number }); const url = new URL(window.location.href); url.searchParams.delete("revision"); window.history.replaceState(null, "", url) }
+      setDeployments((current) => kind === "delete" ? current.filter((item) => item.id !== selectedDeployment.id) : current.map((item) => item.id === result.id ? { ...result, revisions: item.revisions, revisions_has_more: item.revisions_has_more } : item))
+      if (kind !== "delete") void loadDeployments()
       if (kind === "delete" && deploymentID) onOpenDeployment(null)
       toast.success(t(`user.deployment${kind[0].toUpperCase()}${kind.slice(1)}d` as "user.deploymentStopped" | "user.deploymentDeleted" | "user.deploymentRetried"))
     } catch (cause) {
@@ -153,7 +253,7 @@ export function UserDeploymentsSection({
                   <div className="mt-1 text-xs text-muted-foreground">{formatTime(deployment.created_at)}</div>
                 </a>)}
               </div> : null}
-              {selectedDeployment ? <DeploymentDetail deployment={selectedDeployment} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
+              {selectedDeployment ? <DeploymentDetail deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
             </div>
           )}
         </div>
@@ -162,28 +262,135 @@ export function UserDeploymentsSection({
   )
 }
 
-function DeploymentDetail({ deployment, eventState, formatTime, action, onAction }: { deployment: Deployment; eventState: ReturnType<typeof useDeploymentEvents>; formatTime: (value?: string) => string; action: string | null; onAction: (kind: "stop" | "delete" | "retry") => void }) {
-  const { t } = useTranslation()
+function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLoading, onSelectRevision, onLoadOlderRevisions, eventState, formatTime, action, onAction }: {
+  deployment: Deployment
+  selectedRevision: DeploymentRevision | null
+  resources: DeploymentResources | null
+  resourcesLoading: boolean
+  onSelectRevision: (number: number) => void
+  onLoadOlderRevisions: () => void
+  eventState: ReturnType<typeof useDeploymentEvents>
+  formatTime: (value?: string) => string
+  action: string | null
+  onAction: (kind: "stop" | "delete" | "retry") => void
+}) {
+  const { t, i18n } = useTranslation()
   const { events, loading, error, hasOlder, refresh, loadOlder } = eventState
   const canStop = activeStatuses.has(deployment.status)
   const canRetry = ["failed", "completed", "expired"].includes(deployment.status)
-  return <Card>
-    <CardHeader className="border-b">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><CardTitle className="truncate text-lg">{deployment.repository_full_name}</CardTitle><CardDescription className="mt-1">{deployment.config_path} · {deployment.ref || deployment.commit_sha.slice(0, 12)}</CardDescription></div><DeploymentStatus status={deployment.status} /></div>
-      <div className="flex flex-wrap gap-2 pt-2"><Button type="button" size="sm" variant="outline" disabled={!canStop || Boolean(action)} onClick={() => onAction("stop")}><Square className="h-3.5 w-3.5" />{t("user.stopDeployment")}</Button><Button type="button" size="sm" variant="outline" disabled={!canRetry || Boolean(action)} onClick={() => onAction("retry")}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button><Button type="button" size="sm" variant="ghost" disabled={Boolean(action)} onClick={() => onAction("delete")}><Trash2 className="h-3.5 w-3.5" />{t("common.delete")}</Button></div>
-    </CardHeader>
-    <CardContent className="space-y-5 pt-5">
-      <dl className="grid gap-4 sm:grid-cols-2"><Info label={t("user.deploymentCommit")} value={deployment.commit_sha} mono /><Info label={t("user.deploymentTemplate")} value={deployment.template_id || "—"} mono /><Info label={t("user.deploymentExpires")} value={formatTime(deployment.expires_at)} /><Info label={t("user.deploymentCreatedAt")} value={formatTime(deployment.created_at)} /><Info label={t("user.deploymentSandbox")} value={deployment.sandbox_id || "—"} mono /></dl>
-      {deployment.endpoint ? <div className="space-y-2"><a className="flex items-center gap-2 rounded-md border bg-muted/30 p-3 text-sm font-medium text-primary hover:underline" href={deployment.endpoint} target="_blank" rel="noopener noreferrer">{deployment.endpoint}<ExternalLink className="h-3.5 w-3.5" /></a>{deployment.endpoint_access === "public" ? <p className="text-xs text-muted-foreground">{t("user.deploymentEndpointPublic")}</p> : null}</div> : null}
-      {deployment.failure_reason ? <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"><div className="font-medium text-destructive">{deployment.failure_stage || t("user.deploymentFailure")}</div><div className="mt-1 text-muted-foreground">{deployment.failure_reason}</div></div> : null}
-      <div>
-        <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">{t("user.deploymentEvents")}</h3><Button type="button" variant="ghost" size="sm" disabled={loading} onClick={() => void refresh()}>{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{t("common.refresh")}</Button></div>
-        {error ? <p role="alert" className="mb-2 text-sm text-destructive">{t("user.deploymentEventsFailed")}: {error}</p> : null}
-        {hasOlder ? <Button type="button" variant="outline" size="sm" className="mb-2" disabled={loading} onClick={() => void loadOlder()}>{t("user.deploymentEventsOlder")}</Button> : null}
-        {events.length === 0 ? <p className="text-sm text-muted-foreground">{t("user.deploymentNoEvents")}</p> : <div data-testid="deployment-logs" className="max-h-[32rem] overflow-auto rounded-md border bg-muted/20 p-3 font-mono text-xs leading-relaxed">{events.map((event) => <div key={event.id} className="border-b border-border/40 py-1.5 last:border-0"><div className="flex flex-wrap gap-2 text-muted-foreground"><span>{event.stage || event.event_type}</span><span>{formatTime(event.created_at)}</span>{event.stream ? <span>{event.stream}</span> : null}</div><pre className="whitespace-pre-wrap break-words">{event.message}</pre></div>)}</div>}
-      </div>
-    </CardContent>
-  </Card>
+  const revisions = deployment.revisions ?? []
+  const resourceSnapshot = {
+    ...(selectedRevision ?? deployment),
+    ...(resources?.template_id ? { template_id: resources.template_id } : {}),
+    ...(resources?.template_name ? { template_name: resources.template_name } : {}),
+    ...(resources?.template_cpu ? { template_cpu: resources.template_cpu } : {}),
+    ...(resources?.template_memory_mb ? { template_memory_mb: resources.template_memory_mb } : {}),
+    ...(resources?.template_disk_mb ? { template_disk_mb: resources.template_disk_mb } : {}),
+    ...(resources?.sandbox_id ? { sandbox_id: resources.sandbox_id } : {}),
+    ...(resources?.sandbox_region ? { sandbox_region: resources.sandbox_region } : {}),
+    ...(resources?.expires_at ? { expires_at: resources.expires_at } : {}),
+  }
+  const formatLogTime = (value: string) => {
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return value
+    const time = new Intl.DateTimeFormat(i18n.resolvedLanguage === "zh" ? "zh-CN" : "en", {
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).format(parsed)
+    return `${time}.${String(parsed.getMilliseconds()).padStart(3, "0")}`
+  }
+  return <div className="space-y-3">
+    <Card className="gap-4 py-4">
+      <CardHeader className="px-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 space-y-3">
+            <CardTitle className="break-words text-xl sm:text-2xl">{deployment.repository_full_name}</CardTitle>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <DeploymentStatus status={deployment.status} />
+              <span>{deployment.ref || deployment.commit_sha.slice(0, 8)}</span>
+              <span aria-hidden="true">·</span><code>{deployment.commit_sha.slice(0, 8)}</code>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+              <span>{t("user.deploymentCreatedAt")} {formatTime(deployment.created_at)}</span>
+              {deployment.last_successful_revision_number ? <span>
+                {t("user.deploymentLastSuccessful")} <button type="button" className="text-primary hover:underline" onClick={() => onSelectRevision(deployment.last_successful_revision_number!)}>#{deployment.last_successful_revision_number}</button>
+              </span> : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={!canStop || Boolean(action)} onClick={() => onAction("stop")}><Square className="h-3.5 w-3.5" />{t("user.stopDeployment")}</Button>
+            <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => onAction("retry")}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
+            <Button type="button" size="sm" variant="outline" disabled={Boolean(action)} onClick={() => onAction("delete")}><Trash2 className="h-3.5 w-3.5" />{t("common.delete")}</Button>
+          </div>
+        </div>
+      </CardHeader>
+      {deployment.endpoint ? <CardContent className="space-y-2 px-5">
+        <a className="flex items-center gap-2 break-all rounded-md border bg-muted/30 p-3 text-sm font-medium text-primary hover:underline" href={deployment.endpoint} target="_blank" rel="noopener noreferrer">{deployment.endpoint}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></a>
+        {deployment.endpoint_access === "public" ? <p className="text-xs text-muted-foreground">{t("user.deploymentEndpointPublic")}</p> : null}
+      </CardContent> : null}
+    </Card>
+    <Card className="gap-4 py-4">
+      <CardHeader className="border-b px-5"><div className="flex items-center gap-2"><CardTitle>{t("user.deploymentResources")}</CardTitle>{resourcesLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label={t("common.loading")} /> : null}</div><CardDescription>{t("user.deploymentResourcesDescription")}</CardDescription></CardHeader>
+      <CardContent className="px-5 pt-1">
+        <dl className="grid gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-7">
+          <Info label={t("user.deploymentTemplate")} value={resourceSnapshot.template_name || resourceSnapshot.template_id || "—"} mono={!resourceSnapshot.template_name} />
+          <Info label={t("user.deploymentCPU")} value={resourceSnapshot.template_cpu ? `${resourceSnapshot.template_cpu} vCPU` : "—"} />
+          <Info label={t("user.deploymentMemory")} value={resourceSnapshot.template_memory_mb ? `${resourceSnapshot.template_memory_mb} MB` : "—"} />
+          <Info label={t("user.deploymentDisk")} value={resourceSnapshot.template_disk_mb ? `${resourceSnapshot.template_disk_mb} MB` : "—"} />
+          <Info label={t("user.deploymentSandboxRegion")} value={resourceSnapshot.sandbox_region || "—"} />
+          <Info label={t("user.deploymentSandbox")} value={resourceSnapshot.sandbox_id || "—"} mono />
+          <Info label={t("user.deploymentExpires")} value={formatTime(resourceSnapshot.expires_at)} />
+        </dl>
+      </CardContent>
+    </Card>
+    <div className="grid items-start gap-3 lg:grid-cols-[minmax(16rem,0.32fr)_minmax(0,1fr)]">
+      <Card className="min-w-0 gap-4 py-4" data-testid="deployment-history">
+        <CardHeader className="border-b px-5">
+          <div className="flex items-start justify-between gap-2"><div className="space-y-2"><CardTitle>{t("user.deploymentHistory")}</CardTitle><CardDescription>{t("user.deploymentHistoryDescription")}</CardDescription></div><Badge variant="secondary">{revisions.length}</Badge></div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {revisions.map((revision) => <button key={revision.id} type="button" aria-pressed={revision.number === selectedRevision?.number} onClick={() => onSelectRevision(revision.number)} className={cn("flex w-full items-start gap-3 border-l-2 px-4 py-2.5 text-left transition-colors", revision.number === selectedRevision?.number ? "border-primary bg-primary/5" : "border-transparent hover:bg-accent")}>
+            <span aria-hidden="true" className={cn("mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full", revision.status === "failed" ? "bg-destructive" : revision.status === "running" ? "bg-primary" : "bg-muted-foreground/50")} />
+            <span className="min-w-0 flex-1 space-y-2">
+              <span className="flex flex-wrap items-center gap-2 text-sm"><strong>{t("user.deploymentRevisionNumber", { number: revision.number })}</strong><DeploymentStatus status={revision.status} /></span>
+              <span className="block text-xs text-muted-foreground">{formatTime(revision.created_at)}</span>
+            </span>
+            <code className="mt-1 text-xs text-muted-foreground">{revision.commit_sha.slice(0, 8)}</code>
+          </button>)}
+          {deployment.revisions_has_more ? <Button type="button" variant="ghost" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
+        </CardContent>
+      </Card>
+      <Card className="min-w-0 gap-4 py-4">
+        <CardHeader className="border-b px-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 space-y-2">
+              <CardTitle>{t("user.deploymentEvents")}</CardTitle>
+              {selectedRevision ? <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span>{t("user.deploymentRevisionNumber", { number: selectedRevision.number })}</span>
+                {selectedRevision.ref ? <><span aria-hidden="true">·</span><span>{t(selectedRevision.ref.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} <code>{displayRevisionRef(selectedRevision.ref)}</code></span></> : null}
+                <span aria-hidden="true">·</span><code className="break-all">{selectedRevision.commit_sha}</code>
+              </CardDescription> : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+              <span>{t("user.deploymentLogLines", { count: events.length })}</span>
+              <Button type="button" variant="ghost" size="sm" disabled={loading} onClick={() => void refresh()}>{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{t("common.refresh")}</Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3 px-0 pt-3">
+          {selectedRevision?.failure_reason ? <p className="mx-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{selectedRevision.failure_stage || t("user.deploymentFailure")}: {selectedRevision.failure_reason}</p> : null}
+          {error ? <p role="alert" className="px-4 text-sm text-destructive">{t("user.deploymentEventsFailed")}: {error}</p> : null}
+          {hasOlder ? <Button type="button" variant="outline" size="sm" className="ml-4" disabled={loading} onClick={() => void loadOlder()}>{t("user.deploymentEventsOlder")}</Button> : null}
+          {events.length === 0 ? <p className="px-4 text-sm text-muted-foreground">{t("user.deploymentNoEvents")}</p> : <div data-testid="deployment-logs" className="overflow-x-auto rounded-md border bg-muted/20 font-mono text-xs leading-5 sm:text-sm">
+            {events.map((event, index) => <div data-testid="deployment-log-line" key={event.id} className={cn("grid grid-cols-[1.5rem_6rem_minmax(0,1fr)] gap-2 px-3 py-1 sm:grid-cols-[2rem_7.5rem_minmax(0,1fr)] sm:px-4", event.event_type === "failure" ? "bg-destructive/5 text-destructive" : event.stream === "stderr" ? "bg-amber-500/5 text-amber-700 dark:text-amber-400" : "") }>
+              <span aria-hidden="true" className="select-none text-right text-muted-foreground/60">{index + 1}</span>
+              <time dateTime={event.created_at} title={`${formatTime(event.created_at)} · ${event.stage || event.event_type}${event.stream ? ` · ${event.stream}` : ""}`} className="whitespace-nowrap text-muted-foreground">{formatLogTime(event.created_at)}</time>
+              <pre className="min-w-0 whitespace-pre-wrap break-words">{event.message}</pre>
+            </div>)}
+          </div>}
+        </CardContent>
+      </Card>
+    </div>
+  </div>
 }
 
 function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
@@ -196,7 +403,7 @@ function DeploymentStatus({ status }: { status: string }) {
   return <Badge variant={status === "failed" ? "destructive" : status === "running" ? "default" : "secondary"}>{label[status] || status}</Badge>
 }
 
-function useDeploymentEvents(request: Request, id: string | null, status?: string, login?: string) {
+function useDeploymentEvents(request: Request, id: string | null, revisionNumber?: number, status?: string, login?: string) {
   const [events, setEvents] = useState<DeploymentEvent[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -212,7 +419,7 @@ function useDeploymentEvents(request: Request, id: string | null, status?: strin
     setLoading(false)
     setHasOlder(false)
     return () => { generation.current += 1 }
-  }, [id, request, login])
+  }, [id, revisionNumber, request, login])
 
   const load = useCallback(async (older = false) => {
     if (!id || cursor.current.busy) return
@@ -225,7 +432,8 @@ function useDeploymentEvents(request: Request, id: string | null, status?: strin
       const initial = next === 0
       do {
         const query = next > 0 ? `?${older ? "before_id" : "after_id"}=${next}` : ""
-        const page = await request(`/user/deployments/${encodeURIComponent(id)}/events${query}`) as EventPage
+        const endpoint = revisionNumber ? `/user/deployments/${encodeURIComponent(id)}/revisions/${revisionNumber}/events` : `/user/deployments/${encodeURIComponent(id)}/events`
+        const page = await request(`${endpoint}${query}`) as EventPage
         if (epoch !== generation.current) return
         if (!Array.isArray(page.events)) throw new Error("Invalid deployment events response")
         const incoming = page.events
@@ -250,7 +458,7 @@ function useDeploymentEvents(request: Request, id: string | null, status?: strin
         setLoading(false)
       }
     }
-  }, [id, request])
+  }, [id, revisionNumber, request])
 
   const refresh = useCallback(() => load(false), [load])
   const loadOlder = useCallback(() => load(true), [load])
@@ -263,3 +471,13 @@ function useDeploymentEvents(request: Request, id: string | null, status?: strin
 
   return { events, loading, error, hasOlder, refresh, loadOlder }
 }
+
+function revisionNumberFromURL(): number | undefined {
+  if (typeof window === "undefined") return undefined
+  const value = new URLSearchParams(window.location.search).get("revision")
+  if (!value || !/^[1-9]\d*$/.test(value)) return undefined
+  const number = Number(value)
+  return Number.isSafeInteger(number) ? number : undefined
+}
+
+function displayRevisionRef(ref?: string) { return ref?.replace(/^refs\/(heads|tags)\//, "") ?? "" }

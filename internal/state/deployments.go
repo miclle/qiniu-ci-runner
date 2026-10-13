@@ -51,6 +51,7 @@ func (s *DBStore) CreateDeploymentWithScopeLimit(deployment Deployment, maxConcu
 }
 
 func (s *DBStore) createDeployment(db *gorm.DB, deployment Deployment) (Deployment, error) {
+	deployment.RevisionNumber = 1
 	deployment, err := normalizeDeployment(deployment)
 	if err != nil {
 		return Deployment{}, err
@@ -66,41 +67,52 @@ func (s *DBStore) createDeployment(db *gorm.DB, deployment Deployment) (Deployme
 		deployment.Status = DeploymentStatusQueued
 	}
 	record := deploymentRecord{
-		ID:                     deployment.ID,
-		AccountID:              deployment.AccountID,
-		ScopeType:              deployment.ScopeType,
-		ScopeID:                deployment.ScopeID,
-		GitHubInstallationID:   deployment.GitHubInstallationID,
-		RepositoryID:           deployment.RepositoryID,
-		RepositoryFullName:     deployment.RepositoryFullName,
-		Ref:                    deployment.Ref,
-		CommitSHA:              deployment.CommitSHA,
-		ConfigPath:             deployment.ConfigPath,
-		SnapshotVersion:        deployment.SnapshotVersion,
-		SpecHash:               deployment.SpecHash,
-		SpecJSONEncrypted:      deployment.SpecJSONEncrypted,
-		Status:                 deployment.Status,
-		SandboxID:              deployment.SandboxID,
-		Attempt:                deployment.Attempt,
-		RuntimeID:              deployment.RuntimeID,
-		ProcessID:              deployment.ProcessID,
-		ProcessTag:             deployment.ProcessTag,
-		SandboxAPIURL:          deployment.SandboxAPIURL,
-		SandboxAPIKeyEncrypted: deployment.SandboxAPIKeyEncrypted,
-		SandboxConfigSource:    deployment.SandboxConfigSource,
-		SandboxRegion:          deployment.SandboxRegion,
-		DeploymentTemplateID:   deployment.DeploymentTemplateID,
-		Endpoint:               deployment.Endpoint,
-		FailureStage:           deployment.FailureStage,
-		FailureReason:          deployment.FailureReason,
-		Error:                  deployment.Error,
-		ExpiresAt:              deployment.ExpiresAt,
-		CreatedAt:              deployment.CreatedAt,
-		UpdatedAt:              deployment.UpdatedAt,
-		Version:                deployment.Version,
+		RevisionNumber:             deployment.RevisionNumber,
+		ID:                         deployment.ID,
+		AccountID:                  deployment.AccountID,
+		ScopeType:                  deployment.ScopeType,
+		ScopeID:                    deployment.ScopeID,
+		GitHubInstallationID:       deployment.GitHubInstallationID,
+		RepositoryID:               deployment.RepositoryID,
+		RepositoryFullName:         deployment.RepositoryFullName,
+		Ref:                        deployment.Ref,
+		CommitSHA:                  deployment.CommitSHA,
+		ConfigPath:                 deployment.ConfigPath,
+		SnapshotVersion:            deployment.SnapshotVersion,
+		SpecHash:                   deployment.SpecHash,
+		SpecJSONEncrypted:          deployment.SpecJSONEncrypted,
+		Status:                     deployment.Status,
+		SandboxID:                  deployment.SandboxID,
+		Attempt:                    deployment.Attempt,
+		RuntimeID:                  deployment.RuntimeID,
+		ProcessID:                  deployment.ProcessID,
+		ProcessTag:                 deployment.ProcessTag,
+		SandboxAPIURL:              deployment.SandboxAPIURL,
+		SandboxAPIKeyEncrypted:     deployment.SandboxAPIKeyEncrypted,
+		SandboxConfigSource:        deployment.SandboxConfigSource,
+		SandboxRegion:              deployment.SandboxRegion,
+		DeploymentTemplateID:       deployment.DeploymentTemplateID,
+		DeploymentTemplateName:     deployment.DeploymentTemplateName,
+		DeploymentTemplateCPU:      deployment.DeploymentTemplateCPU,
+		DeploymentTemplateMemoryMB: deployment.DeploymentTemplateMemoryMB,
+		DeploymentTemplateDiskMB:   deployment.DeploymentTemplateDiskMB,
+		Endpoint:                   deployment.Endpoint,
+		FailureStage:               deployment.FailureStage,
+		FailureReason:              deployment.FailureReason,
+		Error:                      deployment.Error,
+		ExpiresAt:                  deployment.ExpiresAt,
+		CreatedAt:                  deployment.CreatedAt,
+		UpdatedAt:                  deployment.UpdatedAt,
+		Version:                    deployment.Version,
 	}
 	applyDeploymentTimestamps(&record, now)
-	if err := db.Create(&record).Error; err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&record).Error; err != nil {
+			return err
+		}
+		revision := revisionRecordFromDeployment(record, record.CreatedAt)
+		return tx.Create(&revision).Error
+	}); err != nil {
 		return Deployment{}, err
 	}
 	return deploymentFromRecord(record), nil
@@ -260,39 +272,49 @@ func (s *DBStore) UpdateDeployment(deployment Deployment) error {
 	}
 	applyDeploymentTimestamps(&timestampRecord, now)
 	updates := map[string]any{
-		"status":                    deployment.Status,
-		"sandbox_id":                strings.TrimSpace(deployment.SandboxID),
-		"attempt":                   deployment.Attempt,
-		"runtime_id":                strings.TrimSpace(deployment.RuntimeID),
-		"process_id":                strings.TrimSpace(deployment.ProcessID),
-		"process_tag":               strings.TrimSpace(deployment.ProcessTag),
-		"sandbox_api_url":           strings.TrimSpace(deployment.SandboxAPIURL),
-		"sandbox_api_key_encrypted": strings.TrimSpace(deployment.SandboxAPIKeyEncrypted),
-		"sandbox_config_source":     strings.TrimSpace(deployment.SandboxConfigSource),
-		"sandbox_region":            strings.TrimSpace(deployment.SandboxRegion),
-		"deployment_template_id":    strings.TrimSpace(deployment.DeploymentTemplateID),
-		"endpoint":                  strings.TrimSpace(deployment.Endpoint),
-		"failure_stage":             strings.TrimSpace(deployment.FailureStage),
-		"failure_reason":            strings.TrimSpace(deployment.FailureReason),
-		"error":                     deployment.Error,
-		"expires_at":                deployment.ExpiresAt,
-		"planning_at":               timestampRecord.PlanningAt,
-		"creating_at":               timestampRecord.CreatingAt,
-		"running_at":                timestampRecord.RunningAt,
-		"stopping_at":               timestampRecord.StoppingAt,
-		"completed_at":              timestampRecord.CompletedAt,
-		"failed_at":                 timestampRecord.FailedAt,
-		"updated_at":                deployment.UpdatedAt,
-		"version":                   deployment.Version + 1,
+		"status":                        deployment.Status,
+		"sandbox_id":                    strings.TrimSpace(deployment.SandboxID),
+		"attempt":                       deployment.Attempt,
+		"runtime_id":                    strings.TrimSpace(deployment.RuntimeID),
+		"process_id":                    strings.TrimSpace(deployment.ProcessID),
+		"process_tag":                   strings.TrimSpace(deployment.ProcessTag),
+		"sandbox_api_url":               strings.TrimSpace(deployment.SandboxAPIURL),
+		"sandbox_api_key_encrypted":     strings.TrimSpace(deployment.SandboxAPIKeyEncrypted),
+		"sandbox_config_source":         strings.TrimSpace(deployment.SandboxConfigSource),
+		"sandbox_region":                strings.TrimSpace(deployment.SandboxRegion),
+		"deployment_template_id":        strings.TrimSpace(deployment.DeploymentTemplateID),
+		"deployment_template_name":      strings.TrimSpace(deployment.DeploymentTemplateName),
+		"deployment_template_cpu":       deployment.DeploymentTemplateCPU,
+		"deployment_template_memory_mb": deployment.DeploymentTemplateMemoryMB,
+		"deployment_template_disk_mb":   deployment.DeploymentTemplateDiskMB,
+		"endpoint":                      strings.TrimSpace(deployment.Endpoint),
+		"failure_stage":                 strings.TrimSpace(deployment.FailureStage),
+		"failure_reason":                strings.TrimSpace(deployment.FailureReason),
+		"error":                         deployment.Error,
+		"expires_at":                    deployment.ExpiresAt,
+		"planning_at":                   timestampRecord.PlanningAt,
+		"creating_at":                   timestampRecord.CreatingAt,
+		"running_at":                    timestampRecord.RunningAt,
+		"stopping_at":                   timestampRecord.StoppingAt,
+		"completed_at":                  timestampRecord.CompletedAt,
+		"failed_at":                     timestampRecord.FailedAt,
+		"updated_at":                    deployment.UpdatedAt,
+		"version":                       deployment.Version + 1,
 	}
-	result := db.Model(&deploymentRecord{}).Where("id = ? AND version = ?", deployment.ID, deployment.Version).Updates(updates)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrConflict
-	}
-	return nil
+	return db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&deploymentRecord{}).Where("id = ? AND version = ?", deployment.ID, deployment.Version).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrConflict
+		}
+		var saved deploymentRecord
+		if err := tx.First(&saved, "id = ?", deployment.ID).Error; err != nil {
+			return err
+		}
+		return updateCurrentDeploymentRevision(tx, saved)
+	})
 }
 
 // RetryDeployment requeues a terminal deployment while preserving its
@@ -303,7 +325,7 @@ func (s *DBStore) RetryDeployment(deployment Deployment, expiresAt time.Time) er
 	if err != nil {
 		return err
 	}
-	return retryDeployment(db, deployment, expiresAt)
+	return db.Transaction(func(tx *gorm.DB) error { return retryDeployment(tx, deployment, expiresAt) })
 }
 
 // RetryDeploymentWithScopeLimit applies the same admission limit used for a
@@ -334,7 +356,9 @@ func retryDeployment(db *gorm.DB, deployment Deployment, expiresAt time.Time) er
 	if expiresAt.IsZero() {
 		expiresAt = time.Now().UTC().Add(time.Hour)
 	}
+	now := time.Now().UTC()
 	result := db.Model(&deploymentRecord{}).Where("id = ? AND version = ? AND status IN ?", deployment.ID, deployment.Version, []string{DeploymentStatusFailed, DeploymentStatusCompleted, DeploymentStatusExpired}).Updates(map[string]any{
+		"revision_number":           gorm.Expr("revision_number + 1"),
 		"sandbox_api_url":           deployment.SandboxAPIURL,
 		"sandbox_api_key_encrypted": deployment.SandboxAPIKeyEncrypted,
 		"sandbox_config_source":     deployment.SandboxConfigSource,
@@ -355,7 +379,7 @@ func retryDeployment(db *gorm.DB, deployment Deployment, expiresAt time.Time) er
 		"stopping_at":               nil,
 		"completed_at":              nil,
 		"failed_at":                 nil,
-		"updated_at":                time.Now().UTC(),
+		"updated_at":                now,
 		"version":                   deployment.Version + 1,
 	})
 	if result.Error != nil {
@@ -364,7 +388,13 @@ func retryDeployment(db *gorm.DB, deployment Deployment, expiresAt time.Time) er
 	if result.RowsAffected == 0 {
 		return ErrConflict
 	}
-	return nil
+	var saved deploymentRecord
+	if err := db.First(&saved, "id = ?", deployment.ID).Error; err != nil {
+		return err
+	}
+	revision := revisionRecordFromDeployment(saved, now)
+	revision.SandboxID, revision.Endpoint = "", ""
+	return db.Create(&revision).Error
 }
 
 // PruneDeployments removes only terminal records whose Sandbox evidence has
@@ -402,6 +432,9 @@ func (s *DBStore) PruneDeployments(before time.Time, limit int) (int, error) {
 				continue
 			}
 			if err := tx.Where("deployment_id = ?", record.ID).Delete(&deploymentEventRecord{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("deployment_id = ?", record.ID).Delete(&deploymentRevisionRecord{}).Error; err != nil {
 				return err
 			}
 			pruned++
@@ -451,20 +484,27 @@ func (s *DBStore) AppendDeploymentEvent(event DeploymentEvent) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", event.DeploymentID).First(&owner).Error; err != nil {
 			return err
 		}
+		if event.RevisionNumber <= 0 {
+			event.RevisionNumber = owner.RevisionNumber
+		}
+		if event.RevisionNumber != owner.RevisionNumber {
+			return ErrConflict
+		}
+		record.RevisionNumber = event.RevisionNumber
 		for {
 			var count int64
-			if err := tx.Model(&deploymentEventRecord{}).Where("deployment_id = ?", event.DeploymentID).Count(&count).Error; err != nil {
+			if err := tx.Model(&deploymentEventRecord{}).Where("deployment_id = ? AND revision_number = ?", event.DeploymentID, event.RevisionNumber).Count(&count).Error; err != nil {
 				return err
 			}
 			var bytes int64
-			if err := tx.Model(&deploymentEventRecord{}).Where("deployment_id = ?", event.DeploymentID).Select("COALESCE(SUM(LENGTH(message)), 0)").Scan(&bytes).Error; err != nil {
+			if err := tx.Model(&deploymentEventRecord{}).Where("deployment_id = ? AND revision_number = ?", event.DeploymentID, event.RevisionNumber).Select("COALESCE(SUM(LENGTH(message)), 0)").Scan(&bytes).Error; err != nil {
 				return err
 			}
 			if count < maxDeploymentEvents && bytes+int64(len(event.Message)) <= maxDeploymentEventBytes {
 				break
 			}
 			var oldest deploymentEventRecord
-			if err := tx.Where("deployment_id = ?", event.DeploymentID).Order("id ASC").First(&oldest).Error; err != nil {
+			if err := tx.Where("deployment_id = ? AND revision_number = ?", event.DeploymentID, event.RevisionNumber).Order("id ASC").First(&oldest).Error; err != nil {
 				return err
 			}
 			if err := tx.Delete(&oldest).Error; err != nil {
@@ -476,14 +516,14 @@ func (s *DBStore) AppendDeploymentEvent(event DeploymentEvent) error {
 }
 
 func (s *DBStore) ListDeploymentEvents(id string, beforeID int64, limit int) ([]DeploymentEvent, bool, error) {
-	return s.listDeploymentEvents(id, beforeID, 0, limit)
+	return s.listDeploymentEvents(id, 0, beforeID, 0, limit)
 }
 
 func (s *DBStore) ListDeploymentEventsAfter(id string, afterID int64, limit int) ([]DeploymentEvent, bool, error) {
-	return s.listDeploymentEvents(id, 0, afterID, limit)
+	return s.listDeploymentEvents(id, 0, 0, afterID, limit)
 }
 
-func (s *DBStore) listDeploymentEvents(id string, beforeID, afterID int64, limit int) ([]DeploymentEvent, bool, error) {
+func (s *DBStore) listDeploymentEvents(id string, revisionNumber, beforeID, afterID int64, limit int) ([]DeploymentEvent, bool, error) {
 	db, err := s.dbOrEnsure()
 	if err != nil {
 		return nil, false, err
@@ -494,6 +534,9 @@ func (s *DBStore) listDeploymentEvents(id string, beforeID, afterID int64, limit
 	}
 	limit = min(max(limit, 1), 500)
 	query := db.Where("deployment_id = ?", id)
+	if revisionNumber > 0 {
+		query = query.Where("revision_number = ?", revisionNumber)
+	}
 	if beforeID > 0 {
 		query = query.Where("id < ?", beforeID)
 	}
@@ -555,6 +598,10 @@ func normalizeDeployment(deployment Deployment) (Deployment, error) {
 	}
 	if !validDeploymentStatus(deployment.Status) && deployment.Status != "" {
 		return Deployment{}, fmt.Errorf("deployment status is invalid")
+	}
+	deployment.DeploymentTemplateName = strings.TrimSpace(deployment.DeploymentTemplateName)
+	if len(deployment.DeploymentTemplateName) > 256 || strings.IndexFunc(deployment.DeploymentTemplateName, unicode.IsControl) >= 0 {
+		return Deployment{}, fmt.Errorf("deployment template name is invalid")
 	}
 	if deployment.ExpiresAt.IsZero() {
 		return Deployment{}, fmt.Errorf("deployment expiry is required")
@@ -622,43 +669,48 @@ func applyDeploymentTimestamps(record *deploymentRecord, now time.Time) {
 
 func deploymentFromRecord(record deploymentRecord) Deployment {
 	return Deployment{
-		ID:                     record.ID,
-		AccountID:              record.AccountID,
-		ScopeType:              record.ScopeType,
-		ScopeID:                record.ScopeID,
-		GitHubInstallationID:   record.GitHubInstallationID,
-		RepositoryID:           record.RepositoryID,
-		RepositoryFullName:     record.RepositoryFullName,
-		Ref:                    record.Ref,
-		CommitSHA:              record.CommitSHA,
-		ConfigPath:             record.ConfigPath,
-		SnapshotVersion:        record.SnapshotVersion,
-		SpecHash:               record.SpecHash,
-		SpecJSONEncrypted:      record.SpecJSONEncrypted,
-		Status:                 record.Status,
-		SandboxID:              record.SandboxID,
-		Attempt:                record.Attempt,
-		RuntimeID:              record.RuntimeID,
-		ProcessID:              record.ProcessID,
-		ProcessTag:             record.ProcessTag,
-		SandboxAPIURL:          record.SandboxAPIURL,
-		SandboxAPIKeyEncrypted: record.SandboxAPIKeyEncrypted,
-		SandboxConfigSource:    record.SandboxConfigSource,
-		SandboxRegion:          record.SandboxRegion,
-		DeploymentTemplateID:   record.DeploymentTemplateID,
-		Endpoint:               record.Endpoint,
-		FailureStage:           record.FailureStage,
-		FailureReason:          record.FailureReason,
-		Error:                  record.Error,
-		ExpiresAt:              record.ExpiresAt,
-		CreatedAt:              record.CreatedAt,
-		PlanningAt:             pointerToTime(record.PlanningAt),
-		CreatingAt:             pointerToTime(record.CreatingAt),
-		RunningAt:              pointerToTime(record.RunningAt),
-		StoppingAt:             pointerToTime(record.StoppingAt),
-		CompletedAt:            pointerToTime(record.CompletedAt),
-		FailedAt:               pointerToTime(record.FailedAt),
-		UpdatedAt:              record.UpdatedAt,
-		Version:                record.Version,
+		RevisionNumber:             record.RevisionNumber,
+		ID:                         record.ID,
+		AccountID:                  record.AccountID,
+		ScopeType:                  record.ScopeType,
+		ScopeID:                    record.ScopeID,
+		GitHubInstallationID:       record.GitHubInstallationID,
+		RepositoryID:               record.RepositoryID,
+		RepositoryFullName:         record.RepositoryFullName,
+		Ref:                        record.Ref,
+		CommitSHA:                  record.CommitSHA,
+		ConfigPath:                 record.ConfigPath,
+		SnapshotVersion:            record.SnapshotVersion,
+		SpecHash:                   record.SpecHash,
+		SpecJSONEncrypted:          record.SpecJSONEncrypted,
+		Status:                     record.Status,
+		SandboxID:                  record.SandboxID,
+		Attempt:                    record.Attempt,
+		RuntimeID:                  record.RuntimeID,
+		ProcessID:                  record.ProcessID,
+		ProcessTag:                 record.ProcessTag,
+		SandboxAPIURL:              record.SandboxAPIURL,
+		SandboxAPIKeyEncrypted:     record.SandboxAPIKeyEncrypted,
+		SandboxConfigSource:        record.SandboxConfigSource,
+		SandboxRegion:              record.SandboxRegion,
+		DeploymentTemplateID:       record.DeploymentTemplateID,
+		DeploymentTemplateName:     record.DeploymentTemplateName,
+		DeploymentTemplateCPU:      record.DeploymentTemplateCPU,
+		DeploymentTemplateMemoryMB: record.DeploymentTemplateMemoryMB,
+		DeploymentTemplateDiskMB:   record.DeploymentTemplateDiskMB,
+		Endpoint:                   record.Endpoint,
+		FailureStage:               record.FailureStage,
+		FailureReason:              record.FailureReason,
+		Error:                      record.Error,
+		ExpiresAt:                  record.ExpiresAt,
+		CreatedAt:                  record.CreatedAt,
+		PlanningAt:                 pointerToTime(record.PlanningAt),
+		CreatingAt:                 pointerToTime(record.CreatingAt),
+		RunningAt:                  pointerToTime(record.RunningAt),
+		StoppingAt:                 pointerToTime(record.StoppingAt),
+		CompletedAt:                pointerToTime(record.CompletedAt),
+		FailedAt:                   pointerToTime(record.FailedAt),
+		UpdatedAt:                  record.UpdatedAt,
+		Version:                    record.Version,
 	}
 }

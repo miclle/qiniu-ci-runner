@@ -489,6 +489,7 @@ func (w *Worker) emit(d state.Deployment, event state.DeploymentEvent) {
 		return
 	}
 	event.DeploymentID = d.ID
+	event.RevisionNumber = d.RevisionNumber
 	if event.Attempt == 0 {
 		event.Attempt = d.Attempt
 	}

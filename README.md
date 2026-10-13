@@ -83,7 +83,7 @@ Organization owners can open **Settings → Fork sponsorship** to let trusted pe
 
 For local development, use `task dev` with `runnerd.local.yaml`. See [docs/testing.md](docs/testing.md) for detailed local setup including GitHub App creation and webhook forwarding.
 
-The Sandbox Deploy control-plane and execution slice is documented in [docs/deployment.md](docs/deployment.md). `/deployments` lists the signed-in account's local deployment history and links to `/deployments/new`. The creation page contains the repository, Branch/Tag and scoped Sandbox template form; `deploy.template_id` is an optional API default. Creation opens `/deployments/{id}`, where refresh preserves the deployment and its logs.
+The Sandbox Deploy control-plane and execution slice is documented in [docs/deployment.md](docs/deployment.md). `/deployments` lists the signed-in account's local deployment history and links to `/deployments/new`. The creation page contains the repository, Branch/Tag and scoped Sandbox template form; `deploy.template_id` is an optional API default. Creation opens `/deployments/{id}`, where refresh preserves the deployment and its logs. Lists, details and saved logs read only local account-owned history; creation and lifecycle mutations revalidate current GitHub permissions. Each deployment starts at Revision #1; redeploy creates a new numbered revision of the pinned plan and keeps earlier status/logs. Details show the selected template name and CPU, memory, and disk snapshot beside revision history and a chronological log viewer, and `?revision=N` preserves the selected version on reload.
 Application startup supplies the exact Sandbox hostname for Vite's Host allowlist, so Vite preview needs no repository-specific ingress domain.
 
 ## Configuration

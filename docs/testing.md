@@ -783,8 +783,10 @@ bounded locally. Worker regressions cover provider lookups that cross expiry
 and stale expiry observations that must not stop a replacement attempt.
 
 
-Deployment list API tests must prove local account isolation and pagination without
-GitHub/provider reads, including a missing OAuth token and anonymous rejection.
+Deployment list/detail/persisted-event API tests must prove local account isolation
+and pagination without GitHub/provider reads, including a missing OAuth token and
+anonymous rejection. Repository revocation and organization role changes do not
+remove the creating account's saved history; mutations still revalidate access.
 UI tests must prove that `/deployments` only loads history and links to
 `/deployments/new`, that creation only loads form dependencies, and that both
 routes reload directly. Deployment UI verification also covers Branch/Tag discovery, empty and error retry
@@ -795,3 +797,5 @@ interaction tests and `task ui-production-smoke`; its deployment fixture checks
 the production bundle, while authenticated real Sandbox acceptance remains separate.
 API regressions cover qualified branch/tag resolution, same-name idempotency
 conflicts, source-prefix length limits, and unauthorized discovery before provider reads.
+
+Deployment revision verification must cover initial #1, atomic next-version creation and audit rollback, frozen old state, revision-scoped cursor pages, stale-output rejection, repeated legacy SQLite upgrade, Postgres/MySQL schema and mutations, URL-restored selection, and delayed-response isolation. Verify the history/log columns stack on a narrow screen and read without provider calls.

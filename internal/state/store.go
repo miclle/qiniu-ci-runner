@@ -81,44 +81,56 @@ type RunnerRequest struct {
 // Source identity and the normalized execution Spec are immutable after create;
 // lifecycle and provider fields are updated with optimistic version checks.
 type Deployment struct {
-	ID                     string    `json:"id"`
-	AccountID              int64     `json:"account_id"`
-	ScopeType              string    `json:"scope_type"`
-	ScopeID                int64     `json:"scope_id"`
-	GitHubInstallationID   int64     `json:"github_installation_id"`
-	RepositoryID           int64     `json:"repository_id"`
-	RepositoryFullName     string    `json:"repository_full_name"`
-	Ref                    string    `json:"ref,omitempty"`
-	CommitSHA              string    `json:"commit_sha"`
-	ConfigPath             string    `json:"config_path"`
-	SnapshotVersion        int       `json:"snapshot_version"`
-	SpecHash               string    `json:"spec_hash"`
-	SpecJSONEncrypted      string    `json:"-"`
-	Status                 string    `json:"status"`
-	SandboxID              string    `json:"sandbox_id,omitempty"`
-	Attempt                int64     `json:"-"`
-	RuntimeID              string    `json:"-"`
-	ProcessID              string    `json:"-"`
-	ProcessTag             string    `json:"-"`
-	SandboxAPIURL          string    `json:"-"`
-	SandboxAPIKeyEncrypted string    `json:"-"`
-	SandboxConfigSource    string    `json:"sandbox_config_source,omitempty"`
-	SandboxRegion          string    `json:"sandbox_region,omitempty"`
-	DeploymentTemplateID   string    `json:"-"`
-	Endpoint               string    `json:"endpoint,omitempty"`
-	FailureStage           string    `json:"failure_stage,omitempty"`
-	FailureReason          string    `json:"failure_reason,omitempty"`
-	Error                  string    `json:"error,omitempty"`
-	ExpiresAt              time.Time `json:"expires_at"`
-	CreatedAt              time.Time `json:"created_at"`
-	PlanningAt             time.Time `json:"planning_at,omitempty"`
-	CreatingAt             time.Time `json:"creating_at,omitempty"`
-	RunningAt              time.Time `json:"running_at,omitempty"`
-	StoppingAt             time.Time `json:"stopping_at,omitempty"`
-	CompletedAt            time.Time `json:"completed_at,omitempty"`
-	FailedAt               time.Time `json:"failed_at,omitempty"`
-	UpdatedAt              time.Time `json:"updated_at"`
-	Version                int64     `json:"version"`
+	RevisionNumber             int64     `json:"revision_number"`
+	ID                         string    `json:"id"`
+	AccountID                  int64     `json:"account_id"`
+	ScopeType                  string    `json:"scope_type"`
+	ScopeID                    int64     `json:"scope_id"`
+	GitHubInstallationID       int64     `json:"github_installation_id"`
+	RepositoryID               int64     `json:"repository_id"`
+	RepositoryFullName         string    `json:"repository_full_name"`
+	Ref                        string    `json:"ref,omitempty"`
+	CommitSHA                  string    `json:"commit_sha"`
+	ConfigPath                 string    `json:"config_path"`
+	SnapshotVersion            int       `json:"snapshot_version"`
+	SpecHash                   string    `json:"spec_hash"`
+	SpecJSONEncrypted          string    `json:"-"`
+	Status                     string    `json:"status"`
+	SandboxID                  string    `json:"sandbox_id,omitempty"`
+	Attempt                    int64     `json:"-"`
+	RuntimeID                  string    `json:"-"`
+	ProcessID                  string    `json:"-"`
+	ProcessTag                 string    `json:"-"`
+	SandboxAPIURL              string    `json:"-"`
+	SandboxAPIKeyEncrypted     string    `json:"-"`
+	SandboxConfigSource        string    `json:"sandbox_config_source,omitempty"`
+	SandboxRegion              string    `json:"sandbox_region,omitempty"`
+	DeploymentTemplateID       string    `json:"-"`
+	DeploymentTemplateName     string    `json:"-"`
+	DeploymentTemplateCPU      int32     `json:"-"`
+	DeploymentTemplateMemoryMB int32     `json:"-"`
+	DeploymentTemplateDiskMB   int32     `json:"-"`
+	Endpoint                   string    `json:"endpoint,omitempty"`
+	FailureStage               string    `json:"failure_stage,omitempty"`
+	FailureReason              string    `json:"failure_reason,omitempty"`
+	Error                      string    `json:"error,omitempty"`
+	ExpiresAt                  time.Time `json:"expires_at"`
+	CreatedAt                  time.Time `json:"created_at"`
+	PlanningAt                 time.Time `json:"planning_at,omitempty"`
+	CreatingAt                 time.Time `json:"creating_at,omitempty"`
+	RunningAt                  time.Time `json:"running_at,omitempty"`
+	StoppingAt                 time.Time `json:"stopping_at,omitempty"`
+	CompletedAt                time.Time `json:"completed_at,omitempty"`
+	FailedAt                   time.Time `json:"failed_at,omitempty"`
+	UpdatedAt                  time.Time `json:"updated_at"`
+	Version                    int64     `json:"version"`
+}
+
+// DeploymentRevision preserves one immutable source/plan and its execution history.
+// Only the current revision can advance; completed revisions are never reused.
+type DeploymentRevision struct {
+	Deployment
+	RevisionID string `json:"revision_id"`
 }
 
 // DeploymentListOptions controls account-scoped deployment pagination.
@@ -129,14 +141,15 @@ type DeploymentListOptions struct {
 
 // DeploymentEvent is bounded, credential-free lifecycle evidence for one deployment.
 type DeploymentEvent struct {
-	ID           int64     `json:"id"`
-	DeploymentID string    `json:"deployment_id"`
-	Attempt      int64     `json:"attempt,omitempty"`
-	EventType    string    `json:"event_type"`
-	Stage        string    `json:"stage,omitempty"`
-	Stream       string    `json:"stream,omitempty"`
-	Message      string    `json:"message,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	RevisionNumber int64     `json:"revision_number"`
+	ID             int64     `json:"id"`
+	DeploymentID   string    `json:"deployment_id"`
+	Attempt        int64     `json:"attempt,omitempty"`
+	EventType      string    `json:"event_type"`
+	Stage          string    `json:"stage,omitempty"`
+	Stream         string    `json:"stream,omitempty"`
+	Message        string    `json:"message,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // DeploymentRepositoryAccess binds current repository identity to its installation.
@@ -621,6 +634,10 @@ type DeploymentStore interface {
 	UpdateDeployment(deployment Deployment) error
 	RetryDeployment(deployment Deployment, expiresAt time.Time) error
 	RetryDeploymentWithScopeLimit(deployment Deployment, expiresAt time.Time, maxConcurrent int) error
+	ListDeploymentRevisions(id string, beforeNumber int64, limit int) ([]DeploymentRevision, bool, error)
+	GetDeploymentRevision(id string, number int64) (DeploymentRevision, error)
+	LastSuccessfulDeploymentRevisionNumber(id string) (int64, error)
+	ListDeploymentRevisionEvents(id string, number, beforeID, afterID int64, limit int) ([]DeploymentEvent, bool, error)
 	PruneDeployments(before time.Time, limit int) (int, error)
 	AppendDeploymentEvent(event DeploymentEvent) error
 	ListDeploymentEvents(id string, beforeID int64, limit int) ([]DeploymentEvent, bool, error)

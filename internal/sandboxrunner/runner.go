@@ -192,6 +192,14 @@ type Catalog interface {
 	ListRunnerSandboxes(ctx context.Context) ([]CatalogSandbox, error)
 }
 
+// DeploymentSandboxInspector reads the provider-owned resource snapshot for a
+// Deploy Sandbox. It is deliberately separate from Catalog because Deploy
+// Sandboxes use their own metadata namespace and must not appear in the Runner
+// Sandbox catalog.
+type DeploymentSandboxInspector interface {
+	InspectDeploymentSandbox(context.Context, string) (CatalogSandbox, error)
+}
+
 // DefaultTemplateCatalog lists public templates available on the scoped Sandbox endpoint.
 type DefaultTemplateCatalog interface {
 	ListDefaultTemplates(ctx context.Context) ([]CatalogTemplate, error)
@@ -460,6 +468,46 @@ func (s *E2BService) ListRunnerSandboxes(ctx context.Context) ([]CatalogSandbox,
 		})
 	}
 	return result, nil
+}
+
+// InspectDeploymentSandbox finds one Deploy Sandbox by its persisted ID. The
+// provider list call is read-only and does not reconnect or extend the
+// Sandbox lifetime.
+func (s *E2BService) InspectDeploymentSandbox(ctx context.Context, sandboxID string) (CatalogSandbox, error) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return CatalogSandbox{}, ErrSandboxNotFound
+	}
+	metadata := "app=qiniu-deployd"
+	limit := int32(100)
+	items, err := s.client.List(ctx, &qnsandbox.ListParams{Metadata: &metadata, Limit: &limit})
+	if err != nil {
+		return CatalogSandbox{}, err
+	}
+	for _, item := range items {
+		if item.SandboxID != sandboxID {
+			continue
+		}
+		return CatalogSandbox{
+			SandboxID:  item.SandboxID,
+			TemplateID: item.TemplateID,
+			Alias:      sandboxAlias(item.Alias),
+			State:      string(item.State),
+			CPUCount:   item.CPUCount,
+			MemoryMB:   item.MemoryMB,
+			DiskSizeMB: item.DiskSizeMB,
+			StartedAt:  item.StartedAt,
+			ExpiresAt:  item.EndAt,
+		}, nil
+	}
+	return CatalogSandbox{}, ErrSandboxNotFound
+}
+
+func sandboxAlias(alias *string) string {
+	if alias == nil {
+		return ""
+	}
+	return *alias
 }
 
 func (s *E2BService) StartRunner(ctx context.Context, input StartInput) (StartResult, error) {

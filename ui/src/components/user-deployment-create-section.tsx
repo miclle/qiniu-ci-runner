@@ -12,7 +12,7 @@ import type { RequestError } from "@/user-auth-errors"
 import { toast } from "sonner"
 
 type Request = (url: string, options?: RequestInit) => Promise<unknown>
-type DeploymentTemplate = { template_id: string; names?: string[]; aliases?: string[] }
+type DeploymentTemplate = { template_id: string; names?: string[]; aliases?: string[]; cpu_count?: number; memory_mb?: number; disk_size_mb?: number }
 
 export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGitHubApp, request, onOpenDeployment }: {
   githubApp: GitHubAppConfig | null
@@ -182,6 +182,10 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
           config_path: configPath.trim(),
           ttl_seconds: Math.max(300, Math.min(86400, Number(ttlSeconds) || 3600)),
           template_id: selectedTemplate.template_id,
+          template_name: templateName(selectedTemplate),
+          template_cpu: selectedTemplate.cpu_count ?? 0,
+          template_memory_mb: selectedTemplate.memory_mb ?? 0,
+          template_disk_mb: selectedTemplate.disk_size_mb ?? 0,
         }),
       }) as Deployment
       onOpenDeployment(created.id)

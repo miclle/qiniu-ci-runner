@@ -90,7 +90,7 @@ func testUserCreateDeploymentPinsCommitAndAuditsPlan(t *testing.T, source string
 		t.Fatal(err)
 	}
 
-	payload := fmt.Sprintf(`{"installation_id":%d,"repository_full_name":"hubot/project","ref":"main","source":%q,"template_id":"deploy-template-a"}`, installation.ID, source)
+	payload := fmt.Sprintf(`{"installation_id":%d,"repository_full_name":"hubot/project","ref":"main","source":%q,"template_id":"deploy-template-a","template_name":"base","template_cpu":4,"template_memory_mb":8192,"template_disk_mb":40960}`, installation.ID, source)
 	req := httptest.NewRequest(http.MethodPost, "/user/deployments", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "deploy-1")
@@ -118,7 +118,7 @@ func testUserCreateDeploymentPinsCommitAndAuditsPlan(t *testing.T, source string
 	if source == "tag" {
 		wantRef = "refs/tags/main"
 	}
-	if err != nil || snapshot.DeploymentTemplateID != "deploy-template-a" || snapshot.Ref != wantRef || created.Source != source || created.Ref != "main" || created.SandboxRegion != "us-south-1" {
+	if err != nil || snapshot.DeploymentTemplateID != "deploy-template-a" || snapshot.DeploymentTemplateName != "base" || snapshot.DeploymentTemplateCPU != 4 || snapshot.DeploymentTemplateMemoryMB != 8192 || snapshot.DeploymentTemplateDiskMB != 40960 || created.TemplateName != "base" || created.TemplateCPU != 4 || created.TemplateMemoryMB != 8192 || created.TemplateDiskMB != 40960 || snapshot.Ref != wantRef || created.Source != source || created.Ref != "main" || created.SandboxRegion != "us-south-1" {
 		t.Fatalf("target snapshot = %#v response=%#v err=%v", snapshot, created, err)
 	}
 	if created.TemplateID != "deploy-template-a" || len(srv.deploymentNotify) != 1 {
@@ -435,7 +435,73 @@ func TestDeploymentResponseDeclaresPublicEndpointAccess(t *testing.T) {
 	}
 }
 
-func TestDeploymentResourcesRejectCrossAccountAndLostAuthorization(t *testing.T) {
+func TestUserDeploymentHistoryReadsLocallyWithoutOAuth(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("persisted deployment history must not request GitHub: %s", r.URL.Path)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer api.Close()
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, api.URL, &fakeSandbox{})
+	srv.Close()
+	account, _, err := store.GetAccountByOAuthIdentity("github", "hubot-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteAccountSecret(state.AccountScopeTypeAccount, account.ID, state.AccountSecretTypeGitHubOAuthToken); err != nil && !errors.Is(err, state.ErrNotFound) {
+		t.Fatal(err)
+	}
+	fixture := state.Deployment{ID: "local-history", AccountID: account.ID, ScopeType: state.AccountScopeTypeGitHubInstall, ScopeID: 987, GitHubInstallationID: 987, RepositoryID: 42, RepositoryFullName: "acme/project", Ref: "main", CommitSHA: strings.Repeat("a", 40), ConfigPath: ".qiniu/deploy.yaml", SnapshotVersion: 1, SpecHash: "hash", SpecJSONEncrypted: "private-spec", SandboxAPIKeyEncrypted: "private-key", Status: state.DeploymentStatusCompleted, ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := store.CreateDeployment(fixture); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendDeploymentEvent(state.DeploymentEvent{DeploymentID: fixture.ID, EventType: "output", Message: "saved-output"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "/events", "/events?limit=1", "/events?after_id=1", "/events?before_id=2", "/revisions", "/revisions/1/events", "/revisions/1/events?limit=1", "?revision=1"} {
+		path := "/user/deployments/" + fixture.ID + suffix
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+		rec := httptest.NewRecorder()
+		start := time.Now()
+		srv.ServeHTTP(rec, req)
+		t.Logf("local history %s: %s", suffix, time.Since(start))
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || strings.Contains(rec.Body.String(), "private-spec") || strings.Contains(rec.Body.String(), "private-key") {
+			t.Fatalf("%s: %d %s", suffix, rec.Code, rec.Body.String())
+		}
+		if suffix == "" && !strings.Contains(rec.Body.String(), `"id":"local-history"`) {
+			t.Fatalf("missing detail: %s", rec.Body.String())
+		}
+		if suffix == "/events" && !strings.Contains(rec.Body.String(), "saved-output") {
+			t.Fatalf("missing saved events: %s", rec.Body.String())
+		}
+		anonymous := httptest.NewRecorder()
+		srv.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, path, nil))
+		if anonymous.Code != http.StatusUnauthorized || strings.Contains(anonymous.Body.String(), "saved-output") {
+			t.Fatalf("anonymous history: %d %s", anonymous.Code, anonymous.Body.String())
+		}
+	}
+	for _, action := range []struct{ method, suffix string }{{"POST", "/stop"}, {"POST", "/retry"}, {"DELETE", ""}} {
+		req := httptest.NewRequest(action.method, "/user/deployments/"+fixture.ID+action.suffix, nil)
+		req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "REAUTH_REQUIRED") {
+			t.Fatalf("mutation without OAuth: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	for _, suffix := range []string{"", "/events", "/revisions", "/revisions/1/events"} {
+		req := httptest.NewRequest(http.MethodGet, "/user/deployments/missing"+suffix, nil)
+		req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("missing history: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestDeploymentHistoryIsAccountOwnedAndMutationsRecheckAuthorization(t *testing.T) {
 	for _, scenario := range []string{"different account", "repository revoked", "organization member"} {
 		t.Run(scenario, func(t *testing.T) {
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -479,13 +545,17 @@ func TestDeploymentResourcesRejectCrossAccountAndLostAuthorization(t *testing.T)
 				t.Fatal(err)
 			}
 			for _, action := range []struct{ method, path string }{
-				{"GET", ""}, {"GET", "/events"}, {"POST", "/stop"}, {"POST", "/retry"}, {"DELETE", ""},
+				{"GET", ""}, {"GET", "/events"}, {"GET", "/revisions"}, {"GET", "/revisions/1/events"}, {"POST", "/stop"}, {"POST", "/retry"}, {"DELETE", ""},
 			} {
 				req := httptest.NewRequest(action.method, "/user/deployments/"+fixture.ID+action.path, nil)
 				req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
 				rec := httptest.NewRecorder()
 				srv.ServeHTTP(rec, req)
-				if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "private-output") {
+				want := http.StatusNotFound
+				if action.method == http.MethodGet && scenario != "different account" {
+					want = http.StatusOK
+				}
+				if rec.Code != want || (want != http.StatusOK && strings.Contains(rec.Body.String(), "private-output")) {
 					t.Fatalf("%s %s: %d %s", action.method, action.path, rec.Code, rec.Body.String())
 				}
 			}
