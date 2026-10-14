@@ -243,7 +243,7 @@ describe("deployment interaction", () => {
     const pending = new Promise((resolve) => { resolveFirst = resolve })
     const request = async (url) => {
       if (url.includes("deployment-refs")) return { refs: ["main"], has_more: false }
-      if (url.includes("deployment-templates")) return url.endsWith("=12") ? pending : { templates: [{ template_id: "scope-13", names: ["base"] }] }
+      if (url.includes("deployment-templates")) return url.includes("installation_id=12&") ? pending : { templates: [{ template_id: "scope-13", names: ["base"] }] }
       if (url.includes("/repositories")) return { repositories: url.includes("/13/") ? ["other/demo"] : ["miclle/demo"] }
       return { items: [] }
     }
@@ -252,8 +252,47 @@ describe("deployment interaction", () => {
     const scope = container.querySelector("#deployment-installation")
     await act(async () => { scope.value = "13"; scope.dispatchEvent(new Event("change", { bubbles: true })) })
     await settle()
+    await selectOption(container, "#deployment-repository", "other/demo")
+    await settle()
     await act(async () => resolveFirst({ templates: [{ template_id: "stale-private", names: ["old"] }] }))
     expect(container.querySelector("#deployment-template").value).toBe("scope-13")
+    expect(container.textContent).not.toContain("stale-private")
+  })
+
+  test("allows a repository member to select an organization and deploy its public template", async () => {
+    let submitted
+    const requests = []
+    const request = async (url, options) => {
+      requests.push(url)
+      if (options?.method === "POST") { submitted = JSON.parse(options.body); return deployment("member-created", "queued") }
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "public-base", names: ["base"] }] }
+      if (url.includes("deployment-refs")) return { refs: ["main"] }
+      if (url.includes("/repositories")) return { repositories: ["acme/demo"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request, githubApp: { installations: [{ ...installation(12, "acme"), account_type: "Organization", manageable: false }] } })
+    expect(container.querySelector("#deployment-installation").value).toBe("12")
+    expect(requests.some((url) => url.includes("deployment-templates?") && url.includes("repository_full_name=acme%2Fdemo"))).toBe(true)
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(false)
+    await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submitted.repository_full_name).toBe("acme/demo")
+    expect(submitted.template_id).toBe("public-base")
+  })
+
+  test("discards delayed templates from another repository in the same installation", async () => {
+    let resolveFirst
+    const pending = new Promise((resolve) => { resolveFirst = resolve })
+    const request = async (url) => {
+      if (url.includes("deployment-templates")) return url.includes("miclle%2Fdemo") ? pending : { templates: [{ template_id: "current-public" }] }
+      if (url.includes("deployment-refs")) return { refs: ["main"] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo", "miclle/other"] }
+      return { items: [] }
+    }
+    const { container } = await mountPage({ request })
+    await selectOption(container, "#deployment-repository", "miclle/other")
+    await settle()
+    await act(async () => resolveFirst({ templates: [{ template_id: "stale-private" }] }))
+    expect(container.querySelector("#deployment-template").value).toBe("current-public")
     expect(container.textContent).not.toContain("stale-private")
   })
 

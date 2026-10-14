@@ -27,9 +27,9 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   const prefill = useMemo(() => deploymentPrefillFromSearch(locationSearch), [locationSearch])
   const [prefillActive, setPrefillActive] = useState(Boolean(prefill))
   const [commitSHA, setCommitSHA] = useState(prefill?.commitSHA ?? "")
-  const prefillInstallation = githubApp?.installations.find((item) => item.manageable !== false && (item.repositories?.includes(prefill?.repository ?? "") || item.account_login?.toLowerCase() === prefill?.repository.split("/")[0]?.toLowerCase()))
-  const initialInstallation = prefill ? prefillInstallation : githubApp?.installations.find((item) => item.manageable !== false && item.account_login?.toLowerCase() === currentLogin?.toLowerCase())
-    ?? githubApp?.installations.find((item) => item.manageable !== false)
+  const prefillInstallation = githubApp?.installations.find((item) => (item.repositories?.includes(prefill?.repository ?? "") || item.account_login?.toLowerCase() === prefill?.repository.split("/")[0]?.toLowerCase()))
+  const initialInstallation = prefill ? prefillInstallation : githubApp?.installations.find((item) => item.account_login?.toLowerCase() === currentLogin?.toLowerCase())
+    ?? githubApp?.installations[0]
   const [repositories, setRepositories] = useState<string[]>(initialInstallation?.repositories ?? [])
   const [loadingRepositories, setLoadingRepositories] = useState(false)
   const [installationID, setInstallationID] = useState(initialInstallation ? String(initialInstallation.id) : "")
@@ -45,17 +45,18 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   const [configPath, setConfigPath] = useState(".qiniu/deploy.yaml")
   const [ttlSeconds, setTTLSeconds] = useState("3600")
   const [submitting, setSubmitting] = useState(false)
-  const [templateCatalog, setTemplateCatalog] = useState<{ installationID: string; templates: DeploymentTemplate[]; region?: string } | null>(null)
+  const [templateCatalog, setTemplateCatalog] = useState<{ key: string; templates: DeploymentTemplate[]; region?: string } | null>(null)
   const [templateID, setTemplateID] = useState("")
   const [loadingTemplates, setLoadingTemplates] = useState(false)
   const [templateError, setTemplateError] = useState<string | null>(null)
   const [templateReload, setTemplateReload] = useState(0)
-  const manageableInstallations = useMemo(
-    () => (githubApp?.installations ?? []).filter((installation) => installation.manageable !== false),
+  const availableInstallations = useMemo(
+    () => githubApp?.installations ?? [],
     [githubApp?.installations],
   )
-  const selectedInstallation = manageableInstallations.find((item) => String(item.id) === installationID)
-  const templates = templateCatalog?.installationID === installationID ? templateCatalog.templates : []
+  const selectedInstallation = availableInstallations.find((item) => String(item.id) === installationID)
+  const templateKey = `${currentLogin}:${installationID}:${repository}`
+  const templates = templateCatalog?.key === templateKey ? templateCatalog.templates : []
   const selectedTemplate = templates.find((item) => item.template_id === templateID)
   const referenceKey = `${currentLogin}:${installationID}:${repository}:${source}`
   const catalogReferences = referenceCatalog?.key === referenceKey ? referenceCatalog.refs : []
@@ -69,11 +70,11 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   }, [t])
 
   useEffect(() => {
-    const first = (prefillActive ? prefillInstallation : undefined) ?? manageableInstallations.find((item) => item.account_login?.toLowerCase() === currentLogin?.toLowerCase()) ?? manageableInstallations[0]
-    if ((prefillActive && prefillInstallation && String(prefillInstallation.id) !== installationID) || !installationID || !manageableInstallations.some((item) => String(item.id) === installationID)) {
+    const first = (prefillActive ? prefillInstallation : undefined) ?? availableInstallations.find((item) => item.account_login?.toLowerCase() === currentLogin?.toLowerCase()) ?? availableInstallations[0]
+    if ((prefillActive && prefillInstallation && String(prefillInstallation.id) !== installationID) || !installationID || !availableInstallations.some((item) => String(item.id) === installationID)) {
       setInstallationID(first ? String(first.id) : "")
     }
-  }, [installationID, manageableInstallations, currentLogin, prefillActive, prefillInstallation])
+  }, [installationID, availableInstallations, currentLogin, prefillActive, prefillInstallation])
 
   useEffect(() => {
     if (!selectedInstallation) {
@@ -149,14 +150,14 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
     setTemplateCatalog(null)
     setTemplateID("")
     setTemplateError(null)
-    setLoadingTemplates(Boolean(installationID))
-    if (!installationID) return
-    request(`/user/deployment-templates?installation_id=${encodeURIComponent(installationID)}`)
+    setLoadingTemplates(Boolean(installationID && repository))
+    if (!installationID || !repository) return
+    request(`/user/deployment-templates?${new URLSearchParams({ installation_id: installationID, repository_full_name: repository })}`)
       .then((response) => {
         if (cancelled) return
         const data = response as { templates?: DeploymentTemplate[]; default_template_id?: string; region?: string }
         const next = Array.isArray(data.templates) ? data.templates : []
-        setTemplateCatalog({ installationID, templates: next, region: data.region })
+        setTemplateCatalog({ key: templateKey, templates: next, region: data.region })
         const preferred = next.find((item) => item.template_id === data.default_template_id)
           ?? next.find((item) => item.names?.includes("base") || item.aliases?.includes("base"))
           ?? next[0]
@@ -167,7 +168,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
       })
       .finally(() => { if (!cancelled) setLoadingTemplates(false) })
     return () => { cancelled = true }
-  }, [request, installationID, currentLogin, templateReload, t])
+  }, [request, installationID, repository, templateKey, currentLogin, templateReload, t])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -225,7 +226,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
                 <div className="space-y-2">
                   <Label htmlFor="deployment-installation">{t("user.deploymentScope")}</Label>
                   <select id="deployment-installation" value={installationID} onChange={(event) => changeSourceSelection(() => { setInstallationID(event.target.value); setRepository("") })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                    {manageableInstallations.map((installation) => <option key={installation.id} value={installation.id}>{installation.account_login || installation.account_name || installation.installation_id}</option>)}
+                    {availableInstallations.map((installation) => <option key={installation.id} value={installation.id}>{installation.account_login || installation.account_name || installation.installation_id}</option>)}
                   </select>
                 </div>
                 <div className="space-y-2">
@@ -256,8 +257,8 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
                   <select id="deployment-template" value={selectedTemplate?.template_id ?? ""} onChange={(event) => setTemplateID(event.target.value)} disabled={loadingTemplates || templates.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
                     {templates.length === 0 ? <option value="">{loadingTemplates ? t("user.deploymentTemplatesLoading") : t("user.deploymentTemplatesEmpty")}</option> : templates.map((item) => <option key={item.template_id} value={item.template_id}>{templateName(item)} · {item.template_id}</option>)}
                   </select>
-                  {templateCatalog?.installationID === installationID && templateCatalog.region ? <p className="text-xs text-muted-foreground">{templateCatalog.region}</p> : null}
-                  {templateError ? <div role="alert" className="space-y-1 text-sm"><p className="text-destructive">{templateError}</p><a className="text-primary underline" href={selectedInstallation?.account_type?.toLowerCase() === "organization" ? `/organizations/${encodeURIComponent(selectedInstallation.account_login ?? "")}/preferences` : "/account/preferences"}>{t("user.deploymentPreferences")}</a></div> : null}
+                  {templateCatalog?.key === templateKey && templateCatalog.region ? <p className="text-xs text-muted-foreground">{templateCatalog.region}</p> : null}
+                  {templateError ? <div role="alert" className="space-y-1 text-sm"><p className="text-destructive">{templateError}</p>{selectedInstallation?.manageable !== false ? <a className="text-primary underline" href={selectedInstallation?.account_type?.toLowerCase() === "organization" ? `/organizations/${encodeURIComponent(selectedInstallation.account_login ?? "")}/preferences` : "/account/preferences"}>{t("user.deploymentPreferences")}</a> : null}</div> : null}
                   <Button type="button" variant="ghost" size="sm" disabled={loadingTemplates} onClick={() => setTemplateReload((value) => value + 1)}><RefreshCw className="h-3.5 w-3.5" />{t("user.deploymentTemplatesRefresh")}</Button>
                 </div>
                 <div className="space-y-2"><Label htmlFor="deployment-config">{t("user.deploymentConfigPath")}</Label><Input id="deployment-config" value={configPath} onChange={(event) => setConfigPath(event.target.value)} /></div>
