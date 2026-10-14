@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	deploygit "github.com/miclle/deployd/source/git"
 	"github.com/qiniu/ci-runner/internal/config"
 	deployconfig "github.com/qiniu/ci-runner/internal/deployment/config"
+	deployruntime "github.com/qiniu/ci-runner/internal/deployment/runtime"
 	"github.com/qiniu/ci-runner/internal/sandboxrunner"
 	"github.com/qiniu/ci-runner/internal/state"
 )
@@ -91,8 +94,16 @@ func TestDeploymentLivePublicWorker(t *testing.T) {
 		t.Fatal("spec encrypt failed")
 	}
 	evidence := []map[string]any{}
-	for _, mode := range []string{"stop", "expiry"} {
+	for _, mode := range []string{"stop", "expiry", "create-timeout"} {
 		t.Run(mode, func(t *testing.T) {
+			originalHTTP := srv.sandboxHTTP
+			fault := &deploymentLostCreateResponse{base: originalHTTP.Transport, enabled: mode == "create-timeout"}
+			if mode == "create-timeout" {
+				client := *originalHTTP
+				client.Transport = fault
+				srv.sandboxHTTP = &client
+				defer func() { srv.sandboxHTTP = originalHTTP }()
+			}
 			store := state.New(t.TempDir())
 			worker := srv.newDeploymentWorker()
 			worker.Store = store
@@ -113,13 +124,63 @@ func TestDeploymentLivePublicWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() {
+				fault.disable()
 				cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 				defer cancel()
 				if err := worker.Stop(cleanup, record.ID, false); err != nil {
 					t.Error("deferred Sandbox cleanup failed")
 				}
+				if t.Failed() && mode == "create-timeout" {
+					// A regression may lose the local checkpoint. Retain an independent
+					// cleanup path for the real resource observed by this test.
+					if sandboxID, _, _ := fault.evidence(); sandboxID != "" {
+						probe := record
+						probe.SandboxID = sandboxID
+						factory := &serverDeploymentRuntimeFactory{server: srv, templateID: cfg.DeploymentTemplateID}
+						handle, err := factory.Connect(cleanup, probe)
+						if err != nil || (handle != nil && handle.Close(cleanup) != nil) {
+							t.Errorf("independent cleanup failed for sandbox=%s", sandboxID)
+						}
+					}
+				}
 			}()
 			started := time.Now().UTC()
+			if mode == "create-timeout" {
+				if err := worker.Process(ctx, record.ID); !errors.Is(err, deployruntime.ErrCreatePending) {
+					t.Fatalf("expected unresolved create, error_category=%T", err)
+				}
+				pending, err := store.GetDeployment(record.ID)
+				if err != nil || pending.Status != state.DeploymentStatusCreating || pending.Attempt != 1 || pending.SandboxID != "" {
+					t.Fatal("lost create response did not preserve the unresolved attempt")
+				}
+				fault.disable()
+				sandboxID, creates, lookups := fault.evidence()
+				if sandboxID == "" || creates != 1 || lookups == 0 {
+					t.Fatalf("fault injection incomplete: accepted=%v creates=%d blocked_lookups=%d", sandboxID != "", creates, lookups)
+				}
+				resumed := srv.newDeploymentWorker()
+				resumed.Store, resumed.Event = store, worker.Event
+				if err := resumed.RunOnce(ctx); err != nil {
+					t.Fatalf("real provider reconciliation failed, error_category=%T", err)
+				}
+				terminal, err := store.GetDeployment(record.ID)
+				if err != nil || terminal.Status != state.DeploymentStatusFailed || terminal.FailureStage != "recovery" || terminal.Attempt != 1 || terminal.SandboxID != "" {
+					t.Fatal("interrupted creation was not compensated on the original attempt")
+				}
+				_, creates, _ = fault.evidence()
+				if creates != 1 {
+					t.Fatal("reconciliation attempted a replacement create")
+				}
+				factory := &serverDeploymentRuntimeFactory{server: srv, templateID: cfg.DeploymentTemplateID}
+				probe := pending
+				probe.SandboxID = sandboxID
+				if handle, err := factory.Connect(ctx, probe); err != nil || handle != nil {
+					t.Fatalf("provider resource release not confirmed: exists=%v error_category=%T", handle != nil, err)
+				}
+				evidence = append(evidence, map[string]any{"mode": mode, "started_at": started, "finished_at": time.Now().UTC(), "deployment_id": record.ID, "sandbox_id": sandboxID, "terminal_status": terminal.Status, "failure_stage": terminal.FailureStage, "attempt": terminal.Attempt, "create_requests": creates, "blocked_initial_lookups": lookups, "provider_missing_after_cleanup": true})
+				t.Logf("lost create response recovered: deployment=%s sandbox=%s attempt=%d creates=%d provider_missing=true", record.ID, sandboxID, terminal.Attempt, creates)
+				return
+			}
 			if err := worker.Process(ctx, record.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -208,4 +269,57 @@ func TestDeploymentLivePublicWorker(t *testing.T) {
 			t.Fatal("evidence write failed")
 		}
 	}
+}
+
+// Forward one real create, discard its successful response, and temporarily
+// fail metadata lookup. Recovery must discover and clean up the real resource.
+// All other HTTP exchanges use the ordinary provider transport unchanged.
+type deploymentLostCreateResponse struct {
+	mu             sync.Mutex
+	base           http.RoundTripper
+	enabled        bool
+	creates        int
+	blockedLookups int
+	sandboxID      string
+}
+
+func (f *deploymentLostCreateResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	create := r.Method == http.MethodPost && r.URL.Path == "/sandboxes"
+	if create {
+		f.creates++
+		// Fail closed even after restoring lookup, so a regression cannot
+		// allocate a replacement that escapes this test's cleanup evidence.
+		if f.creates > 1 {
+			return nil, context.DeadlineExceeded
+		}
+	}
+	if f.enabled && r.Method == http.MethodGet && r.URL.Path == "/v2/sandboxes" {
+		f.blockedLookups++
+		return nil, context.DeadlineExceeded
+	}
+	response, err := f.base.RoundTrip(r)
+	if err != nil || !f.enabled || !create || response.StatusCode < 200 || response.StatusCode >= 300 {
+		return response, err
+	}
+	var accepted struct {
+		SandboxID string `json:"sandboxID"`
+	}
+	_ = json.NewDecoder(io.LimitReader(response.Body, 65536)).Decode(&accepted)
+	response.Body.Close()
+	f.sandboxID = accepted.SandboxID
+	return nil, context.DeadlineExceeded
+}
+
+func (f *deploymentLostCreateResponse) disable() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enabled = false
+}
+
+func (f *deploymentLostCreateResponse) evidence() (string, int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sandboxID, f.creates, f.blockedLookups
 }

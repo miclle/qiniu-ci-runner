@@ -777,6 +777,17 @@ GitHub admission authorization or a full runnerd process restart. Set
 credential-free results; no local account or physical template ID is embedded
 in the test. The test skips unless explicitly enabled.
 
+The `create-timeout` subtest forwards one real create, discards its successful
+response, and injects a timeout for the initial metadata lookup. It requires an
+unresolved `creating` attempt, then restores transport and starts a new worker
+to reconcile the exact resource, compensate it without another create, preserve
+the original failure, and confirm provider 404. Run only this case with the same
+environment and `-run '^TestDeploymentLivePublicWorker$/^create-timeout$'`.
+The transport faults are injected locally; provider operations remain real.
+This does not cover duplicate authenticated API requests. Worker regressions
+also verify that interruption during failed cleanup preserves failure status and
+cause in both the deployment and its revision.
+
 SDK protocol fixtures verify that application startup sends no remote
 `Connect-Timeout-Ms` deadline while response-header and PID confirmation remain
 bounded locally. Worker regressions cover provider lookups that cross expiry

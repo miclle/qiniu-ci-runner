@@ -751,6 +751,13 @@ go test ./internal/server -run '^TestDeploymentLivePublicWorker$' -count=1 -v -t
 可将 `RUNNERD_DEPLOY_LIVE_EVIDENCE` 设置为未跟踪文件的绝对路径，保存不含凭据的结果。
 测试未内置本地账号或物理模板 ID，未显式启用时会跳过。
 
+`create-timeout` 子测试转发一次真实创建，丢弃成功响应，并让首次元数据查询超时。
+它要求记录保持未确认的 `creating` attempt，随后恢复传输并使用新的 worker 找回精确资源，
+不重复创建，补偿清理后保留原始失败原因，并确认 Provider 404。使用相同环境变量，
+将筛选改为 `-run '^TestDeploymentLivePublicWorker$/^create-timeout$'` 可单独执行此项。
+故障在本地传输层注入，Provider 操作仍为真实调用；不覆盖重复的已登录 API 请求。
+worker 回归测试还验证失败清理过程中断后，部署及其版本仍保留失败状态和原因。
+
 SDK 协议 fixture 验证应用启动不发送远端 `Connect-Timeout-Ms` 截止时间，响应头等待与 PID
 确认仍受本地超时限制。worker 回归测试覆盖 Provider 查询跨过到期时间，以及旧到期观察
 不能停止替代 attempt 的边界。

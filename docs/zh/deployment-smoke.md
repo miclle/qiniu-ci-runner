@@ -348,6 +348,9 @@ Workflow 完成后确认：
 3. 确认源 GitHub Job 和 Runner 清理完成后服务仍可访问；Deploy 不得注册 GitHub Runner。
 4. 使用同一个 `Idempotency-Key` 重复提交，并人为制造 provider 创建超时。确认系统按精确的
    `qiniu-deployd` metadata 补偿查询，重试不会创建第二个 Sandbox。
+   [Testing](testing.md#sandbox-deploy-验证) 中主动启用的 `create-timeout` worker 子测试
+   可重复验证真实资源创建响应丢失及首次查询不可用的恢复；已登录的重复提交仍需单独验证。
+   补偿清理成功后，部署及版本必须保留原始失败阶段与原因。
 5. 服务运行期间重启 runnerd，确认恢复相同 Sandbox ID、runtime process tag、endpoint 和
    到期时间；旧 attempt 回调不能修改当前部署。
 6. 分别执行 stop、DELETE、TTL 到期和启动失败，确认 provider 证据最终表明 Sandbox 已释放；

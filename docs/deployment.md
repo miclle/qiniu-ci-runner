@@ -191,6 +191,8 @@ enabled, records advance through `planning`, `creating`, and `running`; expiry
 reconnects to the saved Sandbox/PID attempt, stops the tagged process, and
 deletes the Sandbox before recording `expired`. A failed create or cleanup is
 recorded as `failed` without claiming that remote cleanup succeeded.
+Successful compensation retains the original failure stage and reason in the
+deployment and revision, including recovery after an interruption during cleanup.
 
 `/deployments` shows only the deployment list and a Create deployment link to
 `/deployments/new`. It loads no GitHub App or form catalogs. `/deployments/new`
@@ -264,13 +266,32 @@ showed installation/start/readiness output, and preserved the detail and logs
 after reload. Public HTML returned HTTP 200 with no browser console/page errors.
 The stop API returned 200; the record reached `completed` and cleared its Sandbox
 reference. The Chinese form's Branch/Tag labels and empty-Tag submission guard
-were also checked. Private repository access, authenticated retry/delete flows,
-full process restart, and provider failure injection remain separate gates.
+were also checked. Private repository access and authenticated retry/delete flows
+remain separate gates.
 
 On 2026-10-14, the user confirmed that real Sandbox acceptance passed following
 the Web terminal implementation. This records user-performed acceptance; no
 additional command transcript or per-scenario results were supplied. The separate
 Issue #125 gates above remain open.
+
+An additional 2026-10-14 run used ordinary Google Chrome, the same public source
+Commit and `base`. Creation and reload preserved the short deployment ID and
+logs. A full runnerd process restart changed the PID from 99226 to 4048 while
+preserving deployment ID, revision #1, attempt #1, Sandbox ID, runtime ID,
+process ID/tag, endpoint, expiry and Commit. Public HTML returned HTTP 200 both
+before and after restart. The authenticated stop then reached `completed` with
+an empty Sandbox reference. This run did not separately probe provider 404 after
+stop or exercise concurrent CI Jobs.
+
+Real provider fault injection on 2026-10-14 used the opt-in `create-timeout`
+worker subtest: one successful Sandbox create response was discarded and the
+first metadata lookup was forced to time out. The record remained `creating`
+with attempt #1 and no confirmed Sandbox ID. A new worker then recovered the
+exact operation, compensated it, retained `failed` / `recovery`, and confirmed
+provider 404 after cleanup. Only one create request reached the transport.
+The transport faults are synthetic; creation, metadata reconciliation and
+resource release use the real provider. This is worker evidence, not proof of
+duplicate authenticated API submissions or an actual provider outage.
 
 1. **Preflight and plan (done):** strict repository configuration, immutable
    Commit resolution, exact OAuth/App repository intersection, encrypted Spec
@@ -282,7 +303,7 @@ Issue #125 gates above remain open.
    create outcomes by reconciling exact provider operation metadata before retry.
 3. **Lifecycle API (done locally):** stop/delete/retry operations, TTL expiry,
    bounded deployment events and logs, and status-aware cleanup evidence are now
-   available in the backend; real provider failure-injection acceptance remains.
+   available in the backend; real lost-response reconciliation and cleanup passed.
 4. **User surface (first slice done):** `/deployments` lists local history,
    `/deployments/new` handles authorized repository and Branch/Tag selection,
    template choice and immutable deployment creation, and `/deployments/{id}`

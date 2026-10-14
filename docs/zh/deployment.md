@@ -156,6 +156,8 @@ App 无法读取版本时，表单提示 Installation owner 批准 Contents 读�
 
 ## 部署版本与日志
 
+失败后的补偿清理成功时，部署及版本仍保留原始失败阶段与原因；清理过程中断后恢复也遵循此规则。
+
 Deployment 保持稳定的资源 ID。首次创建以事务保存版本 #1；
 `POST /user/deployments/{id}/retry` 创建下一个版本。使用分支最新代码时会重新解析
 已移动的分支，复用版本时复制所选固定 Commit 和加密计划。新版本、排队日志及审计在同一事务中提交。
@@ -192,10 +194,23 @@ Deployment 保持稳定的资源 ID。首次创建以事务保存版本 #1；
 创建返回 201，跳转到详情，展示安装／启动／就绪日志，刷新后保持同一详情和日志。
 公网 HTML 返回 HTTP 200，浏览器无 console/page 错误。停止 API 返回 200，记录进入
 `completed` 并清空 Sandbox 引用。中文表单的分支／Tag 字段和空 Tag 禁止提交也已验证。
-私有仓库权限、已登录的 retry/delete 流程、完整进程重启及 Provider 故障注入仍需单独验收。
+私有仓库权限和已登录的 retry/delete 流程仍需单独验收。
 
 2026-10-14，用户在 Web 终端实现后确认真实 Sandbox 验收已通过。此处记录用户完成的
 验收，未附加命令记录或逐项场景结果；上述 Issue #125 的独立验收项仍保持待完成。
+
+2026-10-14 的另一轮验收使用普通 Google Chrome、相同的公开仓库 Commit 与 `base`。
+创建和刷新保留短部署 ID 与日志。完整重启 runnerd 后，PID 从 99226 变为 4048，部署 ID、
+版本 #1、attempt #1、Sandbox ID、runtime ID、进程 ID／tag、endpoint、到期时间及 Commit
+均保持不变；重启前后公网 HTML 均返回 HTTP 200。随后通过已登录浏览器停止，记录进入
+`completed` 并清空 Sandbox 引用。本轮未单独查询停止后的 Provider 404，也未同时运行 CI Job。
+
+2026-10-14 的真实 Provider 故障注入通过主动启用的 `create-timeout` worker 子测试完成：
+丢弃一次真实 Sandbox 创建成功的响应，并让首次元数据查询超时。记录保持 `creating`、
+attempt #1，未记录尚未确认的 Sandbox ID。新的 worker 按精确操作恢复资源并补偿清理，
+保留 `failed`／`recovery`，清理后通过 Provider 404 确认释放；传输层仅接到一次创建请求。
+传输故障由测试注入，创建、元数据查询与释放使用真实 Provider。这是 worker 层证据，
+不代表重复的已登录 API 提交或真实 Provider 服务中断已验收。
 
 1. **预检与计划（已完成）**：严格解析仓库配置，固定完整 Commit，校验 OAuth/App
    精确仓库交集，加密保存 Spec 快照，并以审计事务持久化部署状态。
@@ -203,7 +218,7 @@ Deployment 保持稳定的资源 ID。首次创建以事务保存版本 #1；
    创建独立 Sandbox，检出固定 Commit，运行 `deployd.Apply`，持久化 checkpoint，
    使用 Sandbox/PID/attempt fencing，并在重试前按精确的 Provider 元数据补偿结果未知的创建操作。
 3. **生命周期 API（本地完成）**：后端已经提供停止／删除／重试、TTL 到期、有界部署事件
-   和日志，以及带状态的清理证据；真实 Provider 故障注入验收仍待完成。
+   和日志，以及带状态的清理证据；真实创建响应丢失后的恢复与清理已验证。
 4. **用户界面（首片已完成）**：`/deployments` 展示本地历史，`/deployments/new` 处理授权
    仓库、分支／Tag、模板选择与不可变部署创建，`/deployments/{id}` 展示状态、地址、TTL、模板 CPU／内存／磁盘资源、
    生命周期／输出事件及停止／删除／重试操作。

@@ -388,8 +388,9 @@ func (w *Worker) stop(ctx context.Context, id string, expired bool, observed *st
 	if observed != nil && d.Version != observed.Version {
 		return state.ErrConflict
 	}
-	preserveFailed := d.Status == state.DeploymentStatusFailed
-	if (d.Status == state.DeploymentStatusCompleted || d.Status == state.DeploymentStatusExpired || preserveFailed) && strings.TrimSpace(d.SandboxID) == "" {
+	preserveFailed := d.Status == state.DeploymentStatusFailed ||
+		(d.Status == state.DeploymentStatusStopping && d.FailureReason != "")
+	if (d.Status == state.DeploymentStatusCompleted || d.Status == state.DeploymentStatusExpired || d.Status == state.DeploymentStatusFailed) && strings.TrimSpace(d.SandboxID) == "" {
 		return nil
 	}
 	if d.SandboxID == "" && d.Attempt > 0 && (d.Status == state.DeploymentStatusCreating || d.Status == state.DeploymentStatusStopping) {
@@ -461,9 +462,15 @@ func (w *Worker) stop(ctx context.Context, id string, expired bool, observed *st
 }
 
 func (w *Worker) transition(d *state.Deployment, status, stage, reason string) error {
+	// Cleanup emits its own lifecycle stage, but successful compensation must
+	// retain the failure that caused it for the deployment and its revision.
+	preserveFailure := d.Status == state.DeploymentStatusFailed ||
+		(d.Status == state.DeploymentStatusStopping && d.FailureReason != "")
+	if status != state.DeploymentStatusStopping || !preserveFailure {
+		d.FailureStage = stage
+		d.FailureReason = reason
+	}
 	d.Status = status
-	d.FailureStage = stage
-	d.FailureReason = reason
 	err := w.persist(d)
 	if err == nil {
 		w.emit(*d, state.DeploymentEvent{Attempt: d.Attempt, EventType: "lifecycle", Stage: stage, Message: "status: " + status})

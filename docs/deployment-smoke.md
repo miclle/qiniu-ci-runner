@@ -378,6 +378,11 @@ acceptance record, never in repository files.
 4. Submit the same `Idempotency-Key` twice and force a provider create timeout.
    Reconcile by the exact `qiniu-deployd` metadata and confirm that retrying does
    not create a second Sandbox.
+   The opt-in `create-timeout` worker subtest in [Testing](testing.md#sandbox-deploy-verification)
+   provides repeatable real-resource fault injection for a lost create response
+   and unavailable initial lookup; authenticated duplicate submissions remain a
+   separate check. Successful compensation must retain the original failure
+   stage/reason in the deployment and revision.
 5. Restart runnerd while the service is running. The same Sandbox ID, runtime
    process tag, endpoint, and expiry must be recovered; an old attempt callback
    must not change the current deployment.

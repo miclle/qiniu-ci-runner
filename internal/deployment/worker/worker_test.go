@@ -321,10 +321,41 @@ func TestWorkerRecoversInterruptedCreationWithoutNewSandbox(t *testing.T) {
 				if got.Status != state.DeploymentStatusFailed || got.SandboxID != "" || !factory.runtime.closed {
 					t.Fatalf("interrupted create cleanup = %#v", got)
 				}
+				if got.FailureStage != "recovery" || got.FailureReason != "deployment execution was interrupted" {
+					t.Fatalf("successful cleanup erased the original failure: stage=%q reason=%q", got.FailureStage, got.FailureReason)
+				}
 			} else if got.Status != state.DeploymentStatusCreating {
 				t.Fatalf("unknown outcome was declared terminal: %#v", got)
 			}
 		})
+	}
+}
+
+func TestWorkerResumesFailedCleanupWithoutErasingCause(t *testing.T) {
+	store := state.New(t.TempDir())
+	fixture := deploymentFixture(t)
+	fixture.Status = state.DeploymentStatusStopping
+	fixture.SandboxID, fixture.RuntimeID = "sandbox-1", "sandbox-1"
+	fixture.Attempt = 1
+	fixture.FailureStage, fixture.FailureReason = "recovery", "deployment execution was interrupted"
+	if _, err := store.CreateDeployment(fixture); err != nil {
+		t.Fatal(err)
+	}
+	factory := &fakeFactory{runtime: &fakeRuntime{id: "sandbox-1"}}
+	w := New(store, factory, nil, nil, t.TempDir())
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetDeployment(fixture.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != state.DeploymentStatusFailed || got.FailureStage != fixture.FailureStage || got.FailureReason != fixture.FailureReason || got.SandboxID != "" || !factory.runtime.closed {
+		t.Fatalf("resumed cleanup lost failure evidence: %#v", got)
+	}
+	revision, err := store.GetDeploymentRevision(fixture.ID, 1)
+	if err != nil || revision.Status != state.DeploymentStatusFailed || revision.FailureStage != fixture.FailureStage || revision.FailureReason != fixture.FailureReason {
+		t.Fatalf("revision lost failure evidence: %#v err=%v", revision, err)
 	}
 }
 
