@@ -360,6 +360,21 @@ absence. The first CI attempt completed before overlap was observed and was not
 counted as acceptance. This proves the public same-source cleanup path, not
 private/fork execution or multi-instance recovery.
 
+Real public fork acceptance on 2026-10-14 used
+[`miclle/qiniu-deployment` branch `example/vite`](https://github.com/miclle/qiniu-deployment/tree/example/vite)
+and [draft PR `qiniu/deployment#1`](https://github.com/qiniu/deployment/pull/1).
+The fixture adds only HTML repository/version markers; deployment commands and
+Vite Host validation remain unchanged. Branch deployment
+`ifad75cgk6eyltqlltfhdbecnu` pinned Commit `9885680` and served `fork-preview-v1`.
+After the branch and PR head advanced to `90a244a` (`fork-preview-v2`), PR deployment
+`qrshzidd2vu7aupytig7l4yyqu` still pinned full SHA
+`98856804498a253e8ae8ca35f19cd951b88ea769`, retained source repository
+`miclle/qiniu-deployment`, and served `fork-preview-v1` with HTTP 200.
+Both real API runs passed concurrent idempotency, scope quota/re-admission,
+terminal replay, DELETE and provider-confirmed release of all their test resources.
+This proves public fork and older PR Commit execution; live GitHub access
+revocation, private Contents permissions and a second user's access remain separate gates.
+
 1. **Preflight and plan (done):** strict repository configuration, immutable
    Commit resolution, exact OAuth/App repository intersection, encrypted Spec
    snapshot, and audited durable state.

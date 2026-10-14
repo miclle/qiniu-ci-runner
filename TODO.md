@@ -4,7 +4,7 @@ This file tracks active project work. Completed behavior should move into `READM
 
 ## Active Roadmap
 
-- Complete real fork PR Sandbox acceptance for the [GitHub context workflow](docs/deployment.md#github-context-routes), including an older Job commit and revoked source access. Automated admission and browser fixtures cover these boundaries; they do not prove real fork execution.
+- Complete real revoked-repository-access acceptance for the [GitHub context workflow](docs/deployment.md#github-context-routes). Public fork branch and older fork PR Commit execution with provider-confirmed cleanup passed on 2026-10-14; automated revocation tests remain supporting evidence and do not prove live GitHub access revocation.
 
 - Before Issue #125 can close, complete the remaining acceptance gates below and retain the endpoint, per-scope quota, and terminal retention evidence against a deployed runnerd. The first implementation uses public HTTPS endpoints, a transactional per-scope concurrency limit, and configurable terminal retention; an authenticated reverse proxy remains a follow-up if product requirements change.
 

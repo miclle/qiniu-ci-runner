@@ -428,3 +428,9 @@ or scoped credentials must reject creation with an actionable message. Verify
 the selected template ID remains bound through idempotent replay and retry.
 
 Deployment revision verification must cover initial #1, atomic next-version creation and audit rollback, frozen old state, revision-scoped cursor pages, stale-output rejection, repeated legacy SQLite upgrade, Postgres/MySQL schema and mutations, URL-restored selection, and delayed-response isolation. Verify the history/log columns stack on a narrow screen and read without provider calls.
+
+For a designated public fork PR, use the optional repository/source/Commit and
+HTML-marker parameters of the live API gate in [Testing](testing.md#sandbox-deploy-verification).
+Advance the PR head and deploy an older full SHA; confirm saved fork identity,
+old page content, and provider absence after DELETE. Record this separately from
+live GitHub permission revocation, private repository Contents, and second-user access.

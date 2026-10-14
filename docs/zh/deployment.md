@@ -261,6 +261,19 @@ API 验收最后停止了自己创建的全部部署，Provider 确认资源释�
 因错过并行阶段未计入验收。本轮证明公开同源部署的清理独立性，不代表私有仓库／fork
 执行或多实例恢复已经验收。
 
+2026-10-14 的真实公开 fork 验收使用
+[`miclle/qiniu-deployment` 的 `example/vite` 分支](https://github.com/miclle/qiniu-deployment/tree/example/vite)
+及 [草稿 PR `qiniu/deployment#1`](https://github.com/qiniu/deployment/pull/1)。
+fixture 仅增加 HTML 仓库／版本标记，部署命令及 Vite Host 校验保持不变。
+分支部署 `ifad75cgk6eyltqlltfhdbecnu` 固定 Commit `9885680`，返回 `fork-preview-v1`。
+将分支及 PR head 推进至 `90a244a`（`fork-preview-v2`）后，PR 部署
+`qrshzidd2vu7aupytig7l4yyqu` 仍固定完整 SHA
+`98856804498a253e8ae8ca35f19cd951b88ea769`，保留来源仓库
+`miclle/qiniu-deployment`，公网 HTTP 200 且页面仍包含 `fork-preview-v1`。
+两轮真实 API 验收均通过并发幂等、作用域配额／释放后重新准入、终态重放及 DELETE，
+全部测试资源均由 Provider 确认释放。本轮证明公开 fork 及 PR 历史 Commit 的执行；
+真实 GitHub 权限撤销、私有仓库 Contents 权限和第二个用户的权限仍需独立验收。
+
 1. **预检与计划（已完成）**：严格解析仓库配置，固定完整 Commit，校验 OAuth/App
    精确仓库交集，加密保存 Spec 快照，并以审计事务持久化部署状态。
 2. **Sandbox 执行与恢复（本地完成）**：解析作用域 Sandbox 服务和独立 Deploy 模板，

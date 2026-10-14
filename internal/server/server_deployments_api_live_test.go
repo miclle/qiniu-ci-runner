@@ -24,11 +24,29 @@ import (
 // This opt-in check targets an already running local runnerd. It signs a short
 // session for an existing account, keeping the cookie in memory. GitHub admission,
 // the queue, deployd and provider cleanup all run in the actual server process.
-// It does not test OAuth login, private repositories, or a second GitHub user.
+// Sources may select a designated public fork or PR; this does not test OAuth
+// login, private repositories, or a second GitHub user.
 func TestDeploymentLivePublicAPI(t *testing.T) {
 	if os.Getenv("RUNNERD_DEPLOY_LIVE_API") != "1" {
 		t.Skip("manual authenticated local runnerd acceptance")
 	}
+	repository := os.Getenv("RUNNERD_DEPLOY_LIVE_REPOSITORY")
+	if repository == "" {
+		repository = "qiniu/deployment"
+	}
+	ref := os.Getenv("RUNNERD_DEPLOY_LIVE_REF")
+	if ref == "" {
+		ref = "example/vite"
+	}
+	source := os.Getenv("RUNNERD_DEPLOY_LIVE_SOURCE")
+	if source == "" {
+		source = "branch"
+	}
+	commit := os.Getenv("RUNNERD_DEPLOY_LIVE_COMMIT_SHA")
+	if err := validateCreateDeploymentRequest(createDeploymentRequest{InstallationID: 1, RepositoryFullName: repository, Ref: ref, Source: source, CommitSHA: commit}); err != nil {
+		t.Fatal("invalid live deployment source")
+	}
+	owner, _, _ := strings.Cut(repository, "/")
 	base, err := url.Parse(os.Getenv("RUNNERD_DEPLOY_LIVE_BASE_URL"))
 	if err != nil || base.Scheme != "http" || (base.Hostname() != "127.0.0.1" && base.Hostname() != "::1") || base.User != nil || base.Path != "" || base.RawQuery != "" || base.Fragment != "" {
 		t.Fatal("RUNNERD_DEPLOY_LIVE_BASE_URL must be a loopback HTTP origin")
@@ -73,21 +91,25 @@ func TestDeploymentLivePublicAPI(t *testing.T) {
 	}
 	var installation state.GitHubInstallation
 	for _, candidate := range installations {
-		if strings.EqualFold(candidate.AccountLogin, "qiniu") {
+		if strings.EqualFold(candidate.AccountLogin, owner) {
 			installation = candidate
 			break
 		}
 	}
 	if installation.ID == 0 {
-		t.Fatal("qiniu installation must be linked to the configured account")
+		t.Fatal("repository owner installation must be linked to the configured account")
+	}
+	scope := accountPreferenceScope{Type: state.AccountScopeTypeAccount, ID: accountID}
+	if installation.AccountType == "organization" {
+		scope = accountPreferenceScope{Type: state.AccountScopeTypeGitHubInstall, ID: installation.InstallationID}
 	}
 	active, err := store.ListActiveDeployments()
 	if err != nil {
 		t.Fatal("active deployments unavailable")
 	}
 	for _, d := range active {
-		if d.ScopeType == state.AccountScopeTypeGitHubInstall && d.ScopeID == installation.InstallationID {
-			t.Fatal("quota acceptance requires no existing active deployment in the qiniu scope")
+		if d.ScopeType == scope.Type && d.ScopeID == scope.ID {
+			t.Fatal("quota acceptance requires no existing active deployment in the selected scope")
 		}
 	}
 	probe := New(cfg, store, nil, nil, nil)
@@ -120,7 +142,7 @@ func TestDeploymentLivePublicAPI(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	status, body, err := call(ctx, "GET", fmt.Sprintf("/user/deployment-templates?installation_id=%d&repository_full_name=qiniu/deployment", installation.ID), "", nil)
+	status, body, err := call(ctx, "GET", fmt.Sprintf("/user/deployment-templates?installation_id=%d&repository_full_name=%s", installation.ID, url.QueryEscape(repository)), "", nil)
 	if err != nil || status != 200 {
 		t.Fatalf("template discovery status=%d", status)
 	}
@@ -145,7 +167,7 @@ func TestDeploymentLivePublicAPI(t *testing.T) {
 	if template == "" {
 		t.Fatal("runnable public base template not available")
 	}
-	payload, _ := json.Marshal(createDeploymentRequest{InstallationID: installation.ID, RepositoryFullName: "qiniu/deployment", Ref: "example/vite", Source: "branch", TemplateID: template, TTLSeconds: 600})
+	payload, _ := json.Marshal(createDeploymentRequest{InstallationID: installation.ID, RepositoryFullName: repository, Ref: ref, Source: source, CommitSHA: commit, TemplateID: template, TTLSeconds: 600})
 	ids := []string{}
 	// Always stop only this test's submissions, including failures before an HTTP
 	// response arrives. Keep history for inspection; DELETE is a lifecycle stop.
@@ -244,6 +266,12 @@ func TestDeploymentLivePublicAPI(t *testing.T) {
 	if running.Attempt != 1 || running.RevisionNumber != 1 {
 		t.Fatal("duplicate requests created another execution attempt")
 	}
+	if commit != "" && running.CommitSHA != commit {
+		t.Fatal("deployment did not preserve the requested Commit")
+	}
+	if expected := os.Getenv("RUNNERD_DEPLOY_LIVE_SOURCE_REPOSITORY"); expected != "" && running.SourceRepositoryFullName != expected {
+		t.Fatal("deployment did not preserve the expected fork source")
+	}
 	public, err := (&http.Client{Timeout: 15 * time.Second}).Get(running.Endpoint)
 	if err != nil {
 		t.Fatal("public endpoint unavailable")
@@ -252,6 +280,9 @@ func TestDeploymentLivePublicAPI(t *testing.T) {
 	public.Body.Close()
 	if readErr != nil || public.StatusCode != 200 || !bytes.Contains(bytes.ToLower(html), []byte("<!doctype html>")) {
 		t.Fatalf("public response status=%d", public.StatusCode)
+	}
+	if marker := os.Getenv("RUNNERD_DEPLOY_LIVE_HTML_MARKER"); marker != "" && !bytes.Contains(html, []byte(marker)) {
+		t.Fatal("public endpoint did not serve the expected source marker")
 	}
 	var ciEvidence map[string]any
 	if ciRunID != 0 {
@@ -328,7 +359,7 @@ func TestDeploymentLivePublicAPI(t *testing.T) {
 			}
 		}
 	}
-	evidence := map[string]any{"recorded_at": time.Now().UTC(), "repository": "qiniu/deployment", "ref": "example/vite", "deployment_id": id, "commit_sha": running.CommitSHA, "sandbox_id": running.SandboxID, "concurrent_idempotency_single_attempt": true, "scope_limit": cfg.DeploymentMaxConcurrent, "quota_status": 429, "admission_after_release": true, "public_http_status": public.StatusCode, "delete_status": replay.Status, "provider_missing_after_delete": true, "retained_events": len(events), "terminal_replay_preserved": true}
+	evidence := map[string]any{"recorded_at": time.Now().UTC(), "repository": repository, "ref": ref, "source": source, "source_repository": running.SourceRepositoryFullName, "pull_request_number": deploymentPullRequestNumber(running.Ref), "deployment_id": id, "commit_sha": running.CommitSHA, "sandbox_id": running.SandboxID, "concurrent_idempotency_single_attempt": true, "scope_limit": cfg.DeploymentMaxConcurrent, "quota_status": 429, "admission_after_release": true, "public_http_status": public.StatusCode, "html_marker": os.Getenv("RUNNERD_DEPLOY_LIVE_HTML_MARKER"), "delete_status": replay.Status, "provider_missing_after_delete": true, "retained_events": len(events), "terminal_replay_preserved": true}
 	if ciEvidence != nil {
 		evidence["ci_independence"] = ciEvidence
 	}

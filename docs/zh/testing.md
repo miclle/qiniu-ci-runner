@@ -775,13 +775,27 @@ RUNNERD_DEPLOY_LIVE_EVIDENCE=/tmp/deployment-api-evidence.json \
 go test ./internal/server -run '^TestDeploymentLivePublicAPI$' -count=1 -v -timeout 12m
 ```
 
-测试需要运行中服务的配置、已关联的 `qiniu` Installation、该组织没有其他活动部署、
+默认测试使用 `qiniu/deployment` 的 `example/vite` 分支。需要运行中服务的配置、
+已关联目标仓库 owner 的 Installation、所选作用域没有其他活动部署、
 可运行的公共 `base` 模板，以及 1–3 的作用域并发上限。测试为指定的已有账号在内存中签发
 短期 session，仅发送到 loopback 地址，不验证 OAuth 登录。真实 GitHub 授权、API 准入、
 worker 与 Sandbox 调用均在已有服务进程中执行。同键并发请求只能生成一个资源／attempt；
 配额拒绝不留记录，DELETE 释放 Sandbox 并保留历史，终态重放保持幂等，容量释放后准入恢复。
 最多创建“作用域上限＋1”个新部署，只停止本次提交，保留终态记录供检查。不证明第二个账号的
-权限、私有仓库 Contents 权限或 fork PR 执行。不要发布 cookie 或配置。
+权限；默认来源也不证明私有仓库 Contents 权限或 fork PR 执行。不要发布 cookie 或配置。
+
+使用指定的公开 fork／PR fixture 时，可设置：
+
+- `RUNNERD_DEPLOY_LIVE_REPOSITORY`：默认 `qiniu/deployment`。
+- `RUNNERD_DEPLOY_LIVE_SOURCE`：`branch`、`tag` 或 `pull_request`，默认 `branch`。
+- `RUNNERD_DEPLOY_LIVE_REF`：分支／Tag 名称或正数 PR 编号，默认 `example/vite`。
+- `RUNNERD_DEPLOY_LIVE_COMMIT_SHA`：可选，固定部署的完整 SHA。
+- `RUNNERD_DEPLOY_LIVE_SOURCE_REPOSITORY`：可选，要求 PR head 的来源仓库匹配。
+- `RUNNERD_DEPLOY_LIVE_HTML_MARKER`：可选，要求公网 HTML 包含该标记。
+
+配额验收使用所选个人账号或 Organization 作用域。验收 fork PR 的历史 Commit 时，
+先推进 fixture 分支，再固定旧 SHA 和页面标记，核对保存的 fork 身份和实际旧版内容。
+该公开验收不会撤销 GitHub 权限，也不能证明私有仓库 Contents 权限。
 
 如需同时验收 CI 生命周期独立性，在上述 API 验收环境中增加
 `RUNNERD_DEPLOY_LIVE_CI_RUN_ID=<单 Job 的 Run ID>` 与

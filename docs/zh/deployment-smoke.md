@@ -385,3 +385,8 @@ scope 的可用模板。引用为空或加载失败时不能提交旧版本，�
 幂等重放和重试必须保留所选模板 ID。
 
 部署版本验证需覆盖首次 #1、新版与审计原子提交及回滚、旧版状态保留、版本内游标分页、旧版迟到输出拒绝、旧 SQLite 重复升级、Postgres/MySQL 迁移及事务、URL 版本恢复与迟到响应隔离。确认窄屏下历史和日志上下排列，读取无需 Provider 请求。
+
+指定公开 fork PR 时，使用 [Testing](testing.md#sandbox-deploy-验证) 的真实 API 验收参数，
+指定仓库、来源、Commit 和 HTML 标记。推进 PR head 后部署历史完整 SHA，核对保存的 fork
+身份、旧版页面内容及 DELETE 后的 Provider 资源不存在。真实 GitHub 权限撤销、私有仓库
+Contents 权限及第二个用户的访问保持独立验收。

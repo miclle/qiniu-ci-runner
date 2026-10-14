@@ -807,8 +807,9 @@ RUNNERD_DEPLOY_LIVE_EVIDENCE=/tmp/deployment-api-evidence.json \
 go test ./internal/server -run '^TestDeploymentLivePublicAPI$' -count=1 -v -timeout 12m
 ```
 
-This check requires the running server's config, a linked `qiniu` installation,
-no existing active deployment in that organization, a runnable public `base`
+By default this check uses `qiniu/deployment` at branch `example/vite`. It requires
+the running server's config, a linked installation for the repository owner,
+no existing active deployment in the selected scope, a runnable public `base`
 template, and a per-scope limit of 1–3. It signs an in-memory short session for
 the configured existing account and sends it only to a loopback origin; it does
 not test OAuth login. Real GitHub authorization, API admission, workers and
@@ -818,7 +819,21 @@ Sandbox while retaining history, terminal replay must remain idempotent, and
 admission must recover after capacity is released. It creates at most the scope
 limit plus one new deployment, stops only its own submissions, and preserves
 those terminal records for inspection. It does not prove a second user's access,
-private Contents permissions or fork PR execution. Never publish cookies/configs.
+private Contents permissions or fork PR execution with its default source. Never publish cookies/configs.
+
+To use a designated public fork or PR fixture, set:
+
+- `RUNNERD_DEPLOY_LIVE_REPOSITORY` (default `qiniu/deployment`).
+- `RUNNERD_DEPLOY_LIVE_SOURCE`: `branch`, `tag`, or `pull_request` (default `branch`).
+- `RUNNERD_DEPLOY_LIVE_REF`: branch/Tag name or positive PR number (default `example/vite`).
+- `RUNNERD_DEPLOY_LIVE_COMMIT_SHA`: optional full immutable SHA to deploy.
+- `RUNNERD_DEPLOY_LIVE_SOURCE_REPOSITORY`: optional expected PR head repository.
+- `RUNNERD_DEPLOY_LIVE_HTML_MARKER`: optional text required in the public HTML.
+
+The quota check follows the selected personal account or Organization scope.
+For an older fork PR Commit, advance the fixture branch first, then pin the old
+SHA and its HTML marker; the saved fork identity and served old content must match.
+This public gate does not revoke GitHub access or prove private Contents permissions.
 
 To additionally verify CI lifecycle independence, set
 `RUNNERD_DEPLOY_LIVE_CI_RUN_ID=<single-job-run-id>` and
