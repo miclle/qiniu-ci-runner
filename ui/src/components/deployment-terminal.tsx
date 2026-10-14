@@ -34,7 +34,7 @@ export default function DeploymentTerminal({ endpoint, request }: Props) {
     </CardHeader>
     <CardContent className="space-y-3 px-5">
       <div className="relative rounded-md bg-[#111318] p-2">
-        <div ref={terminalEl} className="h-[400px] min-w-0 overflow-hidden" />
+        <div ref={terminalEl} className="deployment-console h-[400px] min-w-0 overflow-hidden" />
         {!terminalSession && !terminalConnecting ? <p className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-center text-sm text-slate-400">{t("user.connectInteractiveShell")}</p> : null}
       </div>
       {terminalError ? <p role="alert" className="text-sm text-destructive">{terminalError}</p> : null}
