@@ -665,6 +665,7 @@ export const en = {
     deploymentDeleted: "Deployment deleted",
     deploymentRetried: "Deployment queued for retry",
     deploymentPlanning: "Planning",
+    deploymentStatusStopped: "Stopped",
     deploymentExpired: "Expired",
     deploymentCommit: "Pinned commit",
     deploymentCopyCommit: "Copy full commit SHA",

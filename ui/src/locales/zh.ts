@@ -665,6 +665,7 @@ export const zh = {
     deploymentDeleted: "部署已删除",
     deploymentRetried: "部署已重新排队",
     deploymentPlanning: "规划中",
+    deploymentStatusStopped: "已停止",
     deploymentExpired: "已过期",
     deploymentCommit: "固定 Commit",
     deploymentCopyCommit: "复制完整 Commit SHA",

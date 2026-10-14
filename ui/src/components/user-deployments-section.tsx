@@ -504,8 +504,8 @@ function Info({ label, value, mono = false }: { label: string; value: string; mo
 
 function DeploymentStatus({ status }: { status: string }) {
   const { t } = useTranslation()
-  const label: Record<string, string> = { queued: t("common.statusQueued"), planning: t("user.deploymentPlanning"), creating: t("common.statusCreating"), running: t("common.statusRunning"), stopping: t("common.statusStopping"), completed: t("common.statusCompleted"), expired: t("user.deploymentExpired"), failed: t("common.statusFailed") }
-  return <Badge variant={status === "failed" ? "destructive" : status === "running" ? "default" : "secondary"}>{label[status] || status}</Badge>
+  const label: Record<string, string> = { queued: t("common.statusQueued"), planning: t("user.deploymentPlanning"), creating: t("common.statusCreating"), running: t("common.statusRunning"), stopping: t("common.statusStopping"), completed: t("user.deploymentStatusStopped"), expired: t("user.deploymentExpired"), failed: t("common.statusFailed") }
+  return <Badge variant={status === "failed" ? "destructive" : status === "running" ? "success" : "secondary"}>{label[status] || status}</Badge>
 }
 
 function useDeploymentEvents(request: Request, id: string | null, revisionNumber?: number, status?: string, login?: string) {
