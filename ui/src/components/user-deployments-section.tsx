@@ -3,6 +3,7 @@ import { ArrowLeft, CalendarDays, Copy, GitBranch, GitCommitHorizontal, External
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
+import { AppLink } from "@/components/app-link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -268,7 +269,7 @@ export function UserDeploymentsSection({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            {!deploymentID ? <Button asChild><a href={deploymentCreatePath(context)}><Plus className="h-4 w-4" />{t("user.createDeployment")}</a></Button> : null}
+            {!deploymentID ? <Button asChild><AppLink href={deploymentCreatePath(context)}><Plus className="h-4 w-4" />{t("user.createDeployment")}</AppLink></Button> : null}
             <Button type="button" variant="outline" onClick={() => void loadDeployments()} disabled={loading}>
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
               {t("common.refresh")}
@@ -283,7 +284,7 @@ export function UserDeploymentsSection({
           {loading && deployments.length === 0 ? <div className="flex items-center gap-2 rounded-lg border p-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("user.loadingDeployments")}</div> : deployments.length === 0 ? <div className="rounded-lg border border-dashed p-8 text-center"><h2 className="font-semibold">{t("user.noDeployments")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("user.noDeploymentsDescription")}</p></div> : (
             <div className="space-y-4">
               {!deploymentID ? <div className="divide-y border-y" data-testid="deployment-list">
-                {deployments.map((deployment) => <a key={deployment.id} href={deploymentPath(deployment, deployment.selected_revision)} className="group relative flex w-full items-start gap-3 bg-background/60 px-4 py-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                {deployments.map((deployment) => <AppLink key={deployment.id} href={deploymentPath(deployment, deployment.selected_revision)} className="group relative flex w-full items-start gap-3 bg-background/60 px-4 py-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
                   <span aria-hidden="true" className={cn("absolute inset-y-0 left-0 w-1", deployment.status === "failed" ? "bg-destructive" : deployment.status === "running" ? "bg-emerald-500" : activeStatuses.has(deployment.status) ? "bg-yellow-500" : "bg-muted-foreground/40")} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-all text-sm font-semibold">{deployment.repository_full_name}</span><DeploymentStatus status={deployment.status} /></div>
@@ -293,7 +294,7 @@ export function UserDeploymentsSection({
                       <span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" />{formatTime(deployment.created_at)}</span>
                     </div>
                   </div>
-                </a>)}
+                </AppLink>)}
               </div> : null}
               {selectedDeployment ? <DeploymentDetail request={request} selectedRevisionNumber={selectedRevisionNumber} deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
             </div>

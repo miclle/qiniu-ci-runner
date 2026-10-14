@@ -170,6 +170,32 @@ describe("deployment interaction", () => {
     expect(container.querySelector('[data-testid="deployment-logs"]')).toBeNull()
   })
 
+  test("navigates deployment links without a reload while preserving native modified clicks", async () => {
+    window.history.replaceState(null, "", "/deployments")
+    const { container } = await mountPage({ request: async () => ({ items: [deployment("existing", "completed")] }) }, { page: "deployments" })
+    const createLink = container.querySelector('a[href="/deployments/new"]')
+    const locations = []
+    const onHistory = () => locations.push(window.location.pathname)
+    window.addEventListener("popstate", onHistory)
+    try {
+      for (const options of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+        const click = new MouseEvent("click", { bubbles: true, cancelable: true, ...options })
+        await act(async () => createLink.dispatchEvent(click))
+        expect(click.defaultPrevented).toBe(false)
+      }
+      expect(locations).toEqual([])
+      window.history.replaceState(null, "", "/deployments")
+      for (const link of [createLink, container.querySelector('a[href="/deployments/existing"]')]) {
+        const click = new MouseEvent("click", { bubbles: true, cancelable: true })
+        await act(async () => link.dispatchEvent(click))
+        expect(click.defaultPrevented).toBe(true)
+      }
+      expect(locations).toEqual(["/deployments/new", "/deployments/existing"])
+    } finally {
+      window.removeEventListener("popstate", onHistory)
+    }
+  })
+
   test("loads only creation dependencies and provides a link back to the list", async () => {
     const requested = []
     const request = async (url) => {

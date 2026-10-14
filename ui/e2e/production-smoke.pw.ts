@@ -403,6 +403,7 @@ test("deploys a historical PR Job through the repository context", async ({ page
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
 
   const diagnostics = observeBrowserDiagnostics(page)
+  const pageLoads = observePageLoads(page)
   let submitted: Record<string, unknown> = {}
   const runners = fixtureRunners(100)
   const selected = { ...runners[0], pull_request_number: 42 }
@@ -469,11 +470,13 @@ test("deploys a historical PR Job through the repository context", async ({ page
   await expect(page).toHaveURL(/\/github\/fixture\/repository-0\/pull_requests\/42\/jobs\?job=fixture-previous-job$/)
   await page.reload({ waitUntil: "networkidle" })
   await expect(page.getByRole("link", { name: "Deployment history", exact: true })).toHaveAttribute("href", "/github/fixture/repository-0/pull_requests/42/deployments")
+  const jobLoads = pageLoads()
   await page.getByRole("link", { name: "Deploy this commit", exact: true }).click()
   await expect(page.locator("#deployment-installation")).toHaveValue("1")
   await expect(page.locator("#deployment-source")).toHaveValue("pull_request")
   await expect(page.locator("#deployment-ref")).toHaveValue("42")
   await expect(page.getByText(previous.head_sha!, { exact: true })).toBeVisible()
+  expect(pageLoads()).toEqual(jobLoads)
   await page.reload({ waitUntil: "networkidle" })
   await expect(page.locator("#deployment-ref")).toHaveValue("42")
   await page.locator('button[type="submit"]').click()
@@ -913,6 +916,16 @@ function observeBrowserDiagnostics(page: Page) {
   }
 }
 
+function observePageLoads(page: Page) {
+  let documents = 0
+  let sessions = 0
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documents += 1
+    if (new URL(request.url()).pathname === "/auth/session") sessions += 1
+  })
+  return () => ({ documents, sessions })
+}
+
 function fixtureRunners(count: number): RunnerState[] {
   return Array.from({ length: count }, (_, index) => {
     const createdAt = new Date(Date.UTC(2026, 7, 12, 0, 0, count - index)).toISOString()
@@ -954,6 +967,7 @@ function fixtureRunnerEvents() {
 test("separates deployment list, creation, and refreshable detail pages", async ({ page }) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
   const diagnostics = observeBrowserDiagnostics(page)
+  const pageLoads = observePageLoads(page)
   const terminalInputs: string[] = []
   let terminalClosed = false
   await page.addInitScript(() => {
@@ -1006,14 +1020,27 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await expect(page.getByRole("heading", { name: "Deployments", exact: true })).toBeVisible()
   await expect(page.locator("form")).toHaveCount(0)
   expect(requestedPaths).toEqual(["/user/deployments"])
+  const initialLoads = pageLoads()
   await page.getByRole("link", { name: "Create deployment", exact: true }).click()
   await expect(page).toHaveURL(/\/deployments\/new$/)
   await expect(page.locator("form")).toHaveCount(1)
   await expect(page.locator('[data-testid="deployment-list"]')).toHaveCount(0)
   await expect(page.locator('[data-testid="deployment-logs"]')).toHaveCount(0)
+  expect(pageLoads()).toEqual(initialLoads)
+  await page.goBack()
+  await expect(page.getByRole("heading", { name: "Deployments", exact: true })).toBeVisible()
+  await page.goForward()
+  await expect(page.locator("#deployment-source")).toBeVisible()
+  await page.getByRole("link", { name: "Back to deployments", exact: true }).click()
+  await expect(page.getByRole("heading", { name: "Deployments", exact: true })).toBeVisible()
+  await page.getByRole("link", { name: "Create deployment", exact: true }).click()
+  await expect(page.locator("#deployment-source")).toBeVisible()
+  expect(pageLoads()).toEqual(initialLoads)
   await page.reload({ waitUntil: "networkidle" })
   await expect(page).toHaveURL(/\/deployments\/new$/)
   await expect(page.locator("#deployment-source")).toBeVisible()
+  expect(pageLoads()).toEqual({ documents: initialLoads.documents + 1, sessions: initialLoads.sessions + 1 })
+  const formLoads = pageLoads()
   await page.locator("#deployment-repository").selectOption("fixture-user/project")
   await page.locator("#deployment-template").selectOption("custom-template")
   await page.locator("#deployment-source").selectOption("tag")
@@ -1026,6 +1053,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   expect(submittedRef).toBe("v1.0")
   await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
   await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
+  expect(pageLoads()).toEqual(formLoads)
   await page.reload({ waitUntil: "networkidle" })
   await expect(page).toHaveURL(/\/github\/fixture-user\/project\/deployments\/deployment-fixture\?tag=v1.0$/)
   await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
@@ -1040,12 +1068,15 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await expect.poll(() => terminalInputs.join("")).toContain("pwd\r")
   await page.getByRole("tab", { name: "Deployment logs", exact: true }).click()
   await expect.poll(() => terminalClosed).toBe(true)
+  const detailLoads = pageLoads()
   await page.getByRole("button", { name: "Back to deployments" }).click()
   await expect(page).toHaveURL(/\/github\/fixture-user\/project\/deployments\?tag=v1.0$/)
   await expect(page.locator("form")).toHaveCount(0)
   await expect(page.locator('[data-testid="deployment-list"]')).toContainText("fixture-user/project")
   await page.locator('[data-testid="deployment-list"] a').click()
   await expect(page).toHaveURL(/\/github\/fixture-user\/project\/deployments\/deployment-fixture\?tag=v1.0$/)
+  await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
+  expect(pageLoads()).toEqual(detailLoads)
   await page.goto("/deployments/deployment-fixture?revision=1", { waitUntil: "networkidle" })
   await page.getByRole("tab", { name: "Terminal", exact: true }).click()
   await expect(page.getByText("The terminal is available only for the current running revision.")).toBeVisible()
@@ -1106,6 +1137,7 @@ test("creates a PR deployment and reloads its GitHub context", async ({ page }) 
 test("keeps deployment path IDs and readable source filters through history", async ({ page }) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
   const diagnostics = observeBrowserDiagnostics(page)
+  const pageLoads = observePageLoads(page)
   const runners = fixtureRunners(3)
   runners[0] = { ...runners[0], status: "completed", head_branch: "example/vite" }
   runners[1] = { ...runners[1], repository_full_name: runners[0].repository_full_name, head_branch: "main" }
@@ -1147,10 +1179,12 @@ test("keeps deployment path IDs and readable source filters through history", as
   await expect(page).toHaveURL(new URL(jobURL, page.url()).href)
   await expect(page.locator("main aside button").filter({ hasText: repository })).toHaveCount(1)
   await page.reload({ waitUntil: "networkidle" })
+  const jobLoads = pageLoads()
   await page.getByRole("link", { name: "Deployment history", exact: true }).click()
   const historyURL = `/github/${repository}/deployments?branch=example/vite`
   expect(new URL(page.url()).pathname + new URL(page.url()).search).toBe(historyURL)
   await expect(page.locator('[data-testid="deployment-list"] a')).toHaveCount(1)
+  expect(pageLoads()).toEqual(jobLoads)
   const listQuery = new URLSearchParams(listQueries.at(-1))
   expect(listQuery.get("repository_full_name")).toBe(repository)
   expect(listQuery.get("ref")).toBe("refs/heads/example/vite")
@@ -1162,6 +1196,7 @@ test("keeps deployment path IDs and readable source filters through history", as
   await page.goForward({ waitUntil: "networkidle" })
   await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
   expect(new URL(page.url()).searchParams.has("commit")).toBe(false)
+  expect(pageLoads()).toEqual(jobLoads)
   await page.reload({ waitUntil: "networkidle" })
   expect(new URL(page.url()).searchParams.has("commit")).toBe(false)
   await page.goto(`${historyURL}&commit=${sha}`, { waitUntil: "networkidle" })

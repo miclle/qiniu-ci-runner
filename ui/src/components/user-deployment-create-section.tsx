@@ -4,6 +4,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useTranslation } from "react-i18next"
 
 import type { GitHubAppConfig } from "@/admin-types"
+import { AppLink } from "@/components/app-link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -214,7 +215,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <section className="mx-auto w-full max-w-2xl space-y-4 p-4 lg:p-6">
-        <Button asChild variant="outline" className="w-fit"><a href="/deployments">{t("user.deploymentBack")}</a></Button>
+        <Button asChild variant="outline" className="w-fit"><AppLink href="/deployments">{t("user.deploymentBack")}</AppLink></Button>
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{t("user.createDeployment")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{t("user.createDeploymentDescription")}</p>
@@ -258,7 +259,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
                     {templates.length === 0 ? <option value="">{loadingTemplates ? t("user.deploymentTemplatesLoading") : t("user.deploymentTemplatesEmpty")}</option> : templates.map((item) => <option key={item.template_id} value={item.template_id}>{templateName(item)} · {item.template_id}</option>)}
                   </select>
                   {templateCatalog?.key === templateKey && templateCatalog.region ? <p className="text-xs text-muted-foreground">{templateCatalog.region}</p> : null}
-                  {templateError ? <div role="alert" className="space-y-1 text-sm"><p className="text-destructive">{templateError}</p>{selectedInstallation?.manageable !== false ? <a className="text-primary underline" href={selectedInstallation?.account_type?.toLowerCase() === "organization" ? `/organizations/${encodeURIComponent(selectedInstallation.account_login ?? "")}/preferences` : "/account/preferences"}>{t("user.deploymentPreferences")}</a> : null}</div> : null}
+                  {templateError ? <div role="alert" className="space-y-1 text-sm"><p className="text-destructive">{templateError}</p>{selectedInstallation?.manageable !== false ? <AppLink className="text-primary underline" href={selectedInstallation?.account_type?.toLowerCase() === "organization" ? `/organizations/${encodeURIComponent(selectedInstallation.account_login ?? "")}/preferences` : "/account/preferences"}>{t("user.deploymentPreferences")}</AppLink> : null}</div> : null}
                   <Button type="button" variant="ghost" size="sm" disabled={loadingTemplates} onClick={() => setTemplateReload((value) => value + 1)}><RefreshCw className="h-3.5 w-3.5" />{t("user.deploymentTemplatesRefresh")}</Button>
                 </div>
                 <div className="space-y-2"><Label htmlFor="deployment-config">{t("user.deploymentConfigPath")}</Label><Input id="deployment-config" value={configPath} onChange={(event) => setConfigPath(event.target.value)} /></div>

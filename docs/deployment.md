@@ -208,6 +208,12 @@ deployment and revision, including recovery after an interruption during cleanup
 `/deployments/new`. It loads no GitHub App or form catalogs. `/deployments/new`
 shows only the creation form and loads no deployment list or logs.
 
+Deployment links use in-app navigation, including list/create/detail transitions
+and deployment actions from Jobs. These transitions retain the current session
+without reloading the document or repeating the initial sign-in check. Browser
+back/forward and opening links in a new tab remain supported; a full reload still
+checks the session, and every API request retains server-side authorization.
+
 The creation form waits for an explicit repository selection,
 then offers Version source (Branch/Tag) and
 Select branch or Select Tag from the repository's live reference list. Switching
