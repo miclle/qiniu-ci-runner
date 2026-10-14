@@ -91,3 +91,15 @@ describe("authentication route pages", () => {
     expect(html).toContain("Try again")
   })
 })
+
+test("repository-first Job and deployment routes preserve OAuth destinations", () => {
+  for (const [returnTo, label] of [
+    ["/github/octo/repo/pr/12/jobs?job=old-job", "Pull request jobs"],
+    ["/github/octo/repo/branch/feature%2Fpreview/jobs?commit=abc", "Branch jobs"],
+    ["/github/octo/repo/pr/12/deployments?deployment=d1&revision=2", "Deployments"],
+  ]) {
+    const html = renderToStaticMarkup(createElement(SignInPage, { oauthEnabled: true, returnTo }))
+    expect(html).toContain(label)
+    expect(html).toContain(`return_to=${encodeURIComponent(returnTo)}`)
+  }
+})

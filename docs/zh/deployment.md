@@ -228,18 +228,32 @@ shell 中的修改仅作用于当前 Sandbox。
 
 ## GitHub 上下文路由
 
-Jobs 和部署共享 `/github/pulls/{owner}/{repo}/{number}` 与
-`/github/branches/{owner}/{repo}/{sha}` 上下文前缀，以 `/jobs` 或 `/deployments`
-结尾。Tag 使用 `/github/tags/{owner}/{repo}/{sha}/deployments`。
-分支与 Tag 名称通过 `?branch=` 或 `?tag=` 编码，兼容包含斜杠的名称。
-`deployment={id}` 选择部署，`revision=N` 选择不可变版本；未选择部署时展示当前账号
-在该上下文的部署历史。`/deployments` 保留为账号全局列表，`/deployments/new` 保留为创建表单。
+Jobs 和部署使用仓库在前的路由：
+
+- `/github/{owner}/{repo}/pr/{number}/jobs` 或 `/deployments`
+- `/github/{owner}/{repo}/branch/{encoded-name}/jobs` 或 `/deployments`
+- `/github/{owner}/{repo}/tag/{encoded-name}/deployments`
+- `/github/{owner}/{repo}/run/{number}/jobs` 用于缺少来源上下文的 Jobs
+
+分支与 Tag 名称占一个编码后的路径段，斜杠编码为 `%2F`。
+`commit={sha}` 可将历史限定到不可变提交，Jobs 分组链接始终携带它。
+`job={id}`、`deployment={id}` 选择资源，`revision=N` 选择部署的不可变版本。
+未选择部署时展示当前账号在该上下文的部署历史。`/deployments` 保留为账号全局列表，
+`/deployments/new` 保留为创建表单。旧的来源在前的 GitHub 路由和 `/jobs/...` 链接继续兼容。
 
 旧 `/deployments/{id}` 链接读取本地记录后替换为保存的来源地址，历史版本使用自己的
 SHA／ref。URL 中的仓库与来源不授予权限：详情仍按本地账号和部署 ID 授权，再修正展示地址。
 `GET /user/deployments` 的 `repository_full_name`、`ref`、`commit_sha` 和
 `pull_request_number` 筛选在分页前查询已保存版本，`selected_revision` 标识匹配的历史版本。
-这些读取不请求 GitHub 或 Sandbox。PR 上下文路由与创建已就绪；Jobs 入口是下一交付阶段。
+这些读取不请求 GitHub 或 Sandbox。
+
+Jobs 分组及独立详情提供“部署历史”和“部署此提交”，使用当前选中 Job 自己的仓库、
+PR／分支与 SHA，包括历史 Job。创建链接使用
+`/deployments/new?repository=...&source=...&ref=...&commit_sha=...`，参数仅用于预填。
+表单等待已授权、可管理账号的目录加载，保留显式指定但已关闭的 PR，并显示固定 SHA。
+修改仓库、版本来源或 ref 会清除旧 SHA；“改用版本来源的最新提交”可主动解除固定。
+提交时由 GitHub 校验最终来源。缺少完整 SHA 或来源信息的 Job 不展示这些入口。
+PR 合成 merge SHA 无法通过 head 提交归属校验，会明确拒绝。
 
 ## PR 部署
 

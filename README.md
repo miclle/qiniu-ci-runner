@@ -88,7 +88,7 @@ The Sandbox Deploy control-plane and execution slice is documented in [docs/depl
 Running deployment details also offer a Web terminal for the current revision. Connect manually to inspect processes and application log files; leaving the terminal closes the shell. Terminal access revalidates repository and organization permissions and uses the saved Sandbox credentials.
 Application startup supplies the exact Sandbox hostname for Vite's Host allowlist, so Vite preview needs no repository-specific ingress domain.
 
-Deployment links now share GitHub source-context paths with Jobs; `deployment` and `revision` query parameters preserve selection. Legacy ID links remain supported. See [context routes](docs/deployment.md#github-context-routes).
+Jobs provide deployment history and a creation link pinned to the selected Job commit. Repository-first routes share branch/Tag/PR context; historical source-first links remain compatible. See [GitHub context routes](docs/deployment.md#github-context-routes).
 
 ## Configuration
 
@@ -307,7 +307,7 @@ The built-in web UI provides:
 | `/admin/audit` | Audit event history |
 | `/admin/diagnostics` | runnerd runtime diagnostics with redacted summary, pprof discovery, and on-demand expvar |
 
-`/` is always the public Qiniu CI Runner product landing page. `/docs` and its fixed guide routes are public, same-origin, and available in English and Simplified Chinese. The ordinary-user Jobs homepage is `/jobs`; other protected routes include `/repositories`, PR job groups (`/github/pulls/{owner}/{repo}/{number}/jobs`), and account settings (`/account/preferences`, `/account/sandbox-templates`, `/account/sandbox-instances`), with matching `/organizations/{login}/...` routes. Opening a protected route without a session shows a focused GitHub sign-in page and returns to the original URL after OAuth.
+`/` is always the public Qiniu CI Runner product landing page. `/docs` and its fixed guide routes are public, same-origin, and available in English and Simplified Chinese. The ordinary-user Jobs homepage is `/jobs`; other protected routes include `/repositories`, PR job groups (`/github/{owner}/{repo}/pr/{number}/jobs`), and account settings (`/account/preferences`, `/account/sandbox-templates`, `/account/sandbox-instances`), with matching `/organizations/{login}/...` routes. Opening a protected route without a session shows a focused GitHub sign-in page and returns to the original URL after OAuth.
 
 Job details open **Runner logs** by default and retain the Web Console and request details. Jobs and admin request details share one event timeline: mixed control/stdout/stderr records, timestamps, stages, stream filters, older-page loading, and incremental refresh every five seconds while active. `GET /user/runner_requests/{id}/events` requires the same exact installation/repository authorization as Job details and returns the same event pages as the admin endpoint. In the Jobs panel, the job name links to the GitHub Job and the workflow name links to its Run. Standalone Job details provide **View job on GitHub**, falling back to the Workflow Run when its repository and Run ID are known. runnerd does not download or duplicate GitHub Actions logs. The retired `/user/runner_requests/{id}/github-log` endpoint returns `404`.
 

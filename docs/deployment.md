@@ -314,14 +314,20 @@ closed/disconnected streams receive the existing thirty-second idle cleanup.
 
 ## GitHub context routes
 
-Jobs and deployments share `/github/pulls/{owner}/{repo}/{number}` and
-`/github/branches/{owner}/{repo}/{sha}` context prefixes, ending in `/jobs` or
-`/deployments`. Tags use `/github/tags/{owner}/{repo}/{sha}/deployments`.
-Branch and Tag names are encoded in `?branch=` or `?tag=` so names containing
-slashes remain unambiguous. `deployment={id}` selects a resource and `revision=N`
-selects its immutable revision. Without a selection the page lists the account's
-saved deployments in that context. `/deployments` remains the global account
-history; `/deployments/new` remains the creation form.
+Jobs and deployments use repository-first paths:
+
+- `/github/{owner}/{repo}/pr/{number}/jobs` or `/deployments`
+- `/github/{owner}/{repo}/branch/{encoded-name}/jobs` or `/deployments`
+- `/github/{owner}/{repo}/tag/{encoded-name}/deployments`
+- `/github/{owner}/{repo}/run/{number}/jobs` for Jobs without source context
+
+Branch and Tag names occupy one percent-encoded segment, including `%2F` for
+slashes. `commit={sha}` optionally filters their history to an immutable commit;
+Jobs group links always include it. `job={id}` and `deployment={id}` select the
+resource, and `revision=N` selects an immutable deployment revision. Without a
+deployment selection the page lists saved deployments in that context.
+`/deployments` remains global account history; `/deployments/new` is the form.
+Old source-first GitHub paths and `/jobs/...` links remain compatible.
 
 Legacy `/deployments/{id}` links load the local record and replace the URL with
 its saved source context. Historical revisions use their own saved SHA/ref.
@@ -330,7 +336,17 @@ by local account and deployment ID, then canonicalize the display URL. History
 filters (`repository_full_name`, `ref`, `commit_sha`, `pull_request_number`) on
 `GET /user/deployments` run before pagination and match persisted revisions;
 `selected_revision` identifies the matching historical revision. These reads do
-not query GitHub or the Sandbox provider. PR context routing and creation are available; the Jobs entry is the next delivery stage.
+not query GitHub or the Sandbox provider.
+
+Both grouped and standalone ordinary-user Jobs provide deployment history and
+"Deploy this commit" links using the selected Job's repository, PR/branch, and
+SHA, including historical Jobs. Creation uses `/deployments/new?repository=...&source=...&ref=...&commit_sha=...`;
+these values only prefill the form. The form waits for authorized manageable
+account catalogs, preserves an explicitly selected PR even if it is closed,
+and displays the fixed SHA. Changing repository/source/ref clears that pin;
+"Use latest source commit" explicitly removes it. GitHub validates the final
+source on submission. Jobs without a full SHA or source context omit the links.
+Synthetic PR merge SHAs are rejected by the PR head-commit membership check.
 
 ## Pull request deployments
 

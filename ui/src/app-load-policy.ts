@@ -254,6 +254,7 @@ export function signInURL(path: string, search = ""): string {
 export function isUserJobsRoute(path: string): boolean {
   return (
     path === "/jobs" ||
+    (path.endsWith("/jobs") && Boolean(githubContextFromPath(path))) ||
     /^\/github\/(pulls|runs)\/[^/]+\/[^/]+\/[^/]+\/jobs$/.test(path) ||
     /^\/github\/branches\/[^/]+\/[^/]+\/.+\/jobs$/.test(path) ||
     /^\/jobs\/(pulls|runs)\/[^/]+\/[^/]+\/\d+$/.test(path) ||

@@ -1,3 +1,4 @@
+import { deploymentPrefillFromSearch } from "@/github-context-routes"
 import { Loader2, Plus, RefreshCw } from "lucide-react"
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -14,7 +15,8 @@ import { toast } from "sonner"
 type Request = (url: string, options?: RequestInit) => Promise<unknown>
 type DeploymentTemplate = { template_id: string; names?: string[]; aliases?: string[]; cpu_count?: number; memory_mb?: number; disk_size_mb?: number }
 
-export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGitHubApp, request, onOpenDeployment }: {
+export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGitHubApp, request, onOpenDeployment, locationSearch = "" }: {
+  locationSearch?: string
   githubApp: GitHubAppConfig | null
   currentLogin?: string
   loadingGitHubApp: boolean
@@ -22,14 +24,18 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   onOpenDeployment: (id: string | null) => void
 }) {
   const { t } = useTranslation()
-  const initialInstallation = githubApp?.installations.find((item) => item.manageable !== false && item.account_login?.toLowerCase() === currentLogin?.toLowerCase())
+  const prefill = useMemo(() => deploymentPrefillFromSearch(locationSearch), [locationSearch])
+  const [prefillActive, setPrefillActive] = useState(Boolean(prefill))
+  const [commitSHA, setCommitSHA] = useState(prefill?.commitSHA ?? "")
+  const prefillInstallation = githubApp?.installations.find((item) => item.manageable !== false && (item.repositories?.includes(prefill?.repository ?? "") || item.account_login?.toLowerCase() === prefill?.repository.split("/")[0]?.toLowerCase()))
+  const initialInstallation = prefill ? prefillInstallation : githubApp?.installations.find((item) => item.manageable !== false && item.account_login?.toLowerCase() === currentLogin?.toLowerCase())
     ?? githubApp?.installations.find((item) => item.manageable !== false)
   const [repositories, setRepositories] = useState<string[]>(initialInstallation?.repositories ?? [])
   const [loadingRepositories, setLoadingRepositories] = useState(false)
   const [installationID, setInstallationID] = useState(initialInstallation ? String(initialInstallation.id) : "")
-  const [repository, setRepository] = useState("")
-  const [ref, setRef] = useState("main")
-  const [source, setSource] = useState<"branch" | "tag" | "pull_request">("branch")
+  const [repository, setRepository] = useState(prefill?.repository ?? "")
+  const [ref, setRef] = useState(prefill?.ref ?? "main")
+  const [source, setSource] = useState<"branch" | "tag" | "pull_request">(prefill?.source ?? "branch")
   const [referenceCatalog, setReferenceCatalog] = useState<{ key: string; refs: string[]; page: number; hasMore: boolean } | null>(null)
   const [loadingReferences, setLoadingReferences] = useState(false)
   const [referenceError, setReferenceError] = useState<string | null>(null)
@@ -52,7 +58,9 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   const templates = templateCatalog?.installationID === installationID ? templateCatalog.templates : []
   const selectedTemplate = templates.find((item) => item.template_id === templateID)
   const referenceKey = `${currentLogin}:${installationID}:${repository}:${source}`
-  const references = referenceCatalog?.key === referenceKey ? referenceCatalog.refs : []
+  const catalogReferences = referenceCatalog?.key === referenceKey ? referenceCatalog.refs : []
+  const prefilledRef = prefillActive && prefill?.repository === repository && prefill.source === source ? prefill.ref : ""
+  const references = prefilledRef && !catalogReferences.includes(prefilledRef) ? [prefilledRef, ...catalogReferences] : catalogReferences
   const selectedRef = references.includes(ref) ? ref : ""
   const currentRepositories = repositoryScopeID === installationID ? repositories : selectedInstallation?.repositories ?? []
   const referenceErrorMessage = useCallback((cause: unknown) => {
@@ -61,16 +69,15 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   }, [t])
 
   useEffect(() => {
-    const first = manageableInstallations.find((item) => item.account_login?.toLowerCase() === currentLogin?.toLowerCase()) ?? manageableInstallations[0]
-    if (!installationID || !manageableInstallations.some((item) => String(item.id) === installationID)) {
+    const first = (prefillActive ? prefillInstallation : undefined) ?? manageableInstallations.find((item) => item.account_login?.toLowerCase() === currentLogin?.toLowerCase()) ?? manageableInstallations[0]
+    if ((prefillActive && prefillInstallation && String(prefillInstallation.id) !== installationID) || !installationID || !manageableInstallations.some((item) => String(item.id) === installationID)) {
       setInstallationID(first ? String(first.id) : "")
     }
-  }, [installationID, manageableInstallations, currentLogin])
+  }, [installationID, manageableInstallations, currentLogin, prefillActive, prefillInstallation])
 
   useEffect(() => {
     if (!selectedInstallation) {
       setRepositories([])
-      setRepository("")
       setLoadingRepositories(false)
       return
     }
@@ -79,7 +86,6 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
     setRepositoryScopeID(String(selectedInstallation.id))
     const initial = selectedInstallation.repositories ?? []
     setRepositories(initial)
-    setRepository((current) => initial.includes(current) ? current : "")
     request(`/user/github-app/installations/${encodeURIComponent(String(selectedInstallation.id))}/repositories`)
       .then((data) => {
         if (cancelled) return
@@ -103,7 +109,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   useEffect(() => {
     const epoch = ++referenceEpoch.current
     setReferenceCatalog(null)
-    setRef("")
+    if (prefilledRef) setRef(prefilledRef)
     setReferenceError(null)
     const enabled = Boolean(installationID && repository && repositoryIsCurrent)
     setLoadingReferences(enabled)
@@ -114,12 +120,12 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
         const data = response as { refs?: string[]; has_more?: boolean }
         const next = Array.isArray(data.refs) ? data.refs : []
         setReferenceCatalog({ key: referenceKey, refs: next, page: 1, hasMore: Boolean(data.has_more) })
-        setRef(next.includes("main") ? "main" : next[0] ?? "")
+        setRef((current) => prefilledRef || (next.includes(current) ? current : next.includes("main") ? "main" : next[0] ?? ""))
       })
       .catch((cause) => { if (epoch === referenceEpoch.current) setReferenceError(referenceErrorMessage(cause)) })
       .finally(() => { if (epoch === referenceEpoch.current) setLoadingReferences(false) })
     return () => { referenceEpoch.current += 1 }
-  }, [request, referencePath, referenceKey, repositoryIsCurrent, installationID, repository, referenceReload, referenceErrorMessage])
+  }, [request, referencePath, referenceKey, repositoryIsCurrent, installationID, repository, referenceReload, referenceErrorMessage, prefilledRef])
 
   async function loadMoreReferences() {
     if (loadingReferences || referenceCatalog?.key !== referenceKey || !referenceCatalog.hasMore) return
@@ -165,7 +171,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!installationID || !repository || !selectedRef || loadingReferences || !selectedTemplate || loadingTemplates || submitting) return
+    if (!installationID || !repositoryIsCurrent || !repository || !selectedRef || loadingReferences || !selectedTemplate || loadingTemplates || submitting) return
     setSubmitting(true)
     try {
       const created = await request("/user/deployments", {
@@ -179,6 +185,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
           repository_full_name: repository,
           ref: selectedRef,
           source,
+          ...(commitSHA ? { commit_sha: commitSHA } : {}),
           config_path: configPath.trim(),
           ttl_seconds: Math.max(300, Math.min(86400, Number(ttlSeconds) || 3600)),
           template_id: selectedTemplate.template_id,
@@ -197,6 +204,12 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
     }
   }
 
+  function changeSourceSelection(change: () => void) {
+    setPrefillActive(false)
+    setCommitSHA("")
+    change()
+  }
+
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <section className="mx-auto w-full max-w-2xl space-y-4 p-4 lg:p-6">
@@ -211,30 +224,32 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
               <form className="space-y-4" onSubmit={submit}>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-installation">{t("user.deploymentScope")}</Label>
-                  <select id="deployment-installation" value={installationID} onChange={(event) => setInstallationID(event.target.value)} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                  <select id="deployment-installation" value={installationID} onChange={(event) => changeSourceSelection(() => { setInstallationID(event.target.value); setRepository("") })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
                     {manageableInstallations.map((installation) => <option key={installation.id} value={installation.id}>{installation.account_login || installation.account_name || installation.installation_id}</option>)}
                   </select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-repository">{t("common.repository")}</Label>
-                  <select id="deployment-repository" value={repository} onChange={(event) => setRepository(event.target.value)} disabled={loadingRepositories || repositories.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                  <select id="deployment-repository" value={repository} onChange={(event) => changeSourceSelection(() => setRepository(event.target.value))} disabled={loadingRepositories || repositories.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
                     <option value="">{loadingRepositories ? t("repositories.loadingRepositories") : repositories.length === 0 ? t("user.noDeploymentRepositories") : t("user.deploymentSelectRepository")}</option>
                     {repositories.map((item) => <option key={item} value={item}>{item}</option>)}
                   </select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-source">{t("user.deploymentVersionSource")}</Label>
-                  <select id="deployment-source" value={source} onChange={(event) => setSource(event.target.value as "branch" | "tag" | "pull_request")} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="branch">{t("user.deploymentBranch")}</option><option value="tag">{t("user.deploymentTag")}</option><option value="pull_request">{t("user.deploymentPullRequest")}</option></select>
+                  <select id="deployment-source" value={source} onChange={(event) => changeSourceSelection(() => setSource(event.target.value as "branch" | "tag" | "pull_request"))} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="branch">{t("user.deploymentBranch")}</option><option value="tag">{t("user.deploymentTag")}</option><option value="pull_request">{t("user.deploymentPullRequest")}</option></select>
                 </div>
                 {source === "pull_request" ? <p className="text-sm text-muted-foreground">{t("user.deploymentPullRequestHint")}</p> : null}
                 <div className="space-y-2">
                   <Label htmlFor="deployment-ref">{t(source === "pull_request" ? "user.deploymentSelectPullRequest" : source === "branch" ? "user.deploymentSelectBranch" : "user.deploymentSelectTag")}</Label>
-                  <select id="deployment-ref" value={selectedRef} onChange={(event) => setRef(event.target.value)} disabled={loadingReferences || references.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+                  <select id="deployment-ref" value={selectedRef} onChange={(event) => changeSourceSelection(() => setRef(event.target.value))} disabled={loadingReferences || references.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
                     {references.length === 0 ? <option value="">{loadingReferences ? t("user.deploymentReferencesLoading") : t("user.deploymentReferencesEmpty")}</option> : references.map((name) => <option key={name} value={name}>{source === "pull_request" ? `#${name}` : name}</option>)}
                   </select>
                   {referenceError ? <p role="alert" className="text-sm text-destructive">{referenceError}</p> : null}
                   <div className="flex gap-2"><Button type="button" variant="ghost" size="sm" disabled={loadingReferences} onClick={() => setReferenceReload((value) => value + 1)}><RefreshCw className="h-3.5 w-3.5" />{t("user.deploymentReferencesRefresh")}</Button>{referenceCatalog?.key === referenceKey && referenceCatalog.hasMore ? <Button type="button" variant="ghost" size="sm" disabled={loadingReferences} onClick={() => void loadMoreReferences()}>{t("user.deploymentReferencesMore")}</Button> : null}</div>
                 </div>
+                {commitSHA ? <div className="space-y-1 rounded-md bg-muted/50 p-3 text-sm"><p>{t("user.deploymentPinnedCommit")}</p><code className="block break-all font-mono text-xs">{commitSHA}</code><p className="text-xs text-muted-foreground">{t("user.deploymentPinnedCommitHint")}</p><Button type="button" variant="ghost" size="sm" onClick={() => setCommitSHA("")}>{t("user.deploymentUseLatest")}</Button></div> : null}
+                {prefillActive && !loadingGitHubApp && !loadingRepositories && !repositoryIsCurrent ? <p role="alert" className="text-sm text-destructive">{t("user.deploymentPrefillUnavailable")}</p> : null}
                 <div className="space-y-2"><Label htmlFor="deployment-ttl">{t("user.deploymentTTL")}</Label><Input id="deployment-ttl" type="number" min={300} max={86400} step={60} value={ttlSeconds} onChange={(event) => setTTLSeconds(event.target.value)} /></div>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-template">{t("user.deploymentTemplate")}</Label>
@@ -246,7 +261,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
                   <Button type="button" variant="ghost" size="sm" disabled={loadingTemplates} onClick={() => setTemplateReload((value) => value + 1)}><RefreshCw className="h-3.5 w-3.5" />{t("user.deploymentTemplatesRefresh")}</Button>
                 </div>
                 <div className="space-y-2"><Label htmlFor="deployment-config">{t("user.deploymentConfigPath")}</Label><Input id="deployment-config" value={configPath} onChange={(event) => setConfigPath(event.target.value)} /></div>
-                <Button type="submit" className="w-full" disabled={submitting || !repository || !installationID || loadingReferences || !selectedRef || loadingTemplates || !selectedTemplate}>{submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{submitting ? t("user.creatingDeployment") : t("user.createDeployment")}</Button>
+                <Button type="submit" className="w-full" disabled={submitting || !repositoryIsCurrent || !repository || !installationID || loadingReferences || !selectedRef || loadingTemplates || !selectedTemplate}>{submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}{submitting ? t("user.creatingDeployment") : t("user.createDeployment")}</Button>
               </form>
             )}
           </CardContent>

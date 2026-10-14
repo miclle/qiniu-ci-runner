@@ -1,4 +1,4 @@
-import { githubContextPath } from "@/github-context-routes"
+import { githubContextFromPath, githubContextPath } from "@/github-context-routes"
 import { lazy, Suspense, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
@@ -967,7 +967,7 @@ function App() {
   }, [locationPath])
 
   useEffect(() => {
-    if (!isUserJobsRoute(locationPath)) return
+    if (!isUserJobsRoute(locationPath, locationSearch)) return
     const key = userJobsGroupKeyFromLocation(locationPath, locationSearch)
     setUserSelectedKey(key)
     const canonicalPath = userJobsPath(key)
@@ -1184,8 +1184,8 @@ function App() {
     toast.success(t("app.runnerIDCopied"))
   }
 
-  const openUserJob = (id: string) => {
-    const groupPath = userSelectedKey ? userJobsPath(userSelectedKey) : ""
+  const openUserJob = (id: string, groupKey = userSelectedKey) => {
+    const groupPath = groupKey ? userJobsPath(groupKey) : ""
     const nextPath = groupPath && groupPath !== "/jobs" ? withSearchParam(groupPath, "job", id) : `/jobs/${encodeURIComponent(id)}`
     window.history.pushState(null, "", nextPath)
     setLocationPath(window.location.pathname)
@@ -1597,8 +1597,8 @@ function isRunnerJobGroupResponse(value: unknown): value is { key: string } {
   return Boolean(value && typeof value === "object" && typeof (value as { key?: unknown }).key === "string")
 }
 
-function isUserJobsRoute(path: string) {
-  return path === "/jobs" || Boolean(userJobsGroupKeyFromPath(path))
+function isUserJobsRoute(path: string, search = "") {
+  return path === "/jobs" || Boolean(userJobsGroupKeyFromPath(path, search))
 }
 
 function userJobsGroupKeyFromLocation(path: string, search: string) {
@@ -1609,19 +1609,14 @@ function userJobsGroupKeyFromLocation(path: string, search: string) {
 }
 
 function userJobsGroupKeyFromPath(path: string, search = "") {
-  const pullRequestMatch = path.match(/^\/github\/pulls\/([^/]+)\/([^/]+)\/(\d+)\/jobs$/)
-  if (pullRequestMatch) {
-    return `pr:${decodeRepositoryPath(pullRequestMatch[1], pullRequestMatch[2])}:${pullRequestMatch[3]}`
-  }
+  const context = path.endsWith("/jobs") ? githubContextFromPath(path, search) : null
+  if (context?.kind === "pulls") return `pr:${context.repository}:${context.reference}`
+  if (context?.kind === "runs") return `run:${context.repository}:${context.reference}`
+  if (context?.kind === "branches" && context.name && context.reference) return `branch:${context.repository}:${context.name}:${context.reference}`
 
   const legacyPullRequestMatch = path.match(/^\/jobs\/pulls\/([^/]+)\/([^/]+)\/(\d+)$/)
   if (legacyPullRequestMatch) {
     return `pr:${decodeRepositoryPath(legacyPullRequestMatch[1], legacyPullRequestMatch[2])}:${legacyPullRequestMatch[3]}`
-  }
-
-  const runMatch = path.match(/^\/github\/runs\/([^/]+)\/([^/]+)\/(\d+)\/jobs$/)
-  if (runMatch) {
-    return `run:${decodeRepositoryPath(runMatch[1], runMatch[2])}:${runMatch[3]}`
   }
 
   const legacyRunMatch = path.match(/^\/jobs\/runs\/([^/]+)\/([^/]+)\/(\d+)$/)
@@ -1634,15 +1629,6 @@ function userJobsGroupKeyFromPath(path: string, search = "") {
     const repository = decodeRepositoryPath(branchMatch[1], branchMatch[2])
     const branch = safeDecodePathSegment(branchMatch[3])
     const sha = safeDecodePathSegment(branchMatch[4])
-    if (!branch || !sha) return ""
-    return `branch:${repository}:${branch}:${sha}`
-  }
-
-  const branchQueryMatch = path.match(/^\/github\/branches\/([^/]+)\/([^/]+)\/([^/]+)\/jobs$/)
-  if (branchQueryMatch) {
-    const repository = decodeRepositoryPath(branchQueryMatch[1], branchQueryMatch[2])
-    const sha = safeDecodePathSegment(branchQueryMatch[3])
-    const branch = new URLSearchParams(search).get("branch") || ""
     if (!branch || !sha) return ""
     return `branch:${repository}:${branch}:${sha}`
   }

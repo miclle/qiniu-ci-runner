@@ -1,4 +1,4 @@
-import { deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "@/github-context-routes"
+import { deploymentCreatePath, deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "@/github-context-routes"
 import { ArrowLeft, CalendarDays, GitBranch, GitCommitHorizontal, ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -261,7 +261,7 @@ export function UserDeploymentsSection({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            {!deploymentID ? <Button asChild><a href="/deployments/new"><Plus className="h-4 w-4" />{t("user.createDeployment")}</a></Button> : null}
+            {!deploymentID ? <Button asChild><a href={deploymentCreatePath(context)}><Plus className="h-4 w-4" />{t("user.createDeployment")}</a></Button> : null}
             <Button type="button" variant="outline" onClick={() => void loadDeployments()} disabled={loading}>
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
               {t("common.refresh")}

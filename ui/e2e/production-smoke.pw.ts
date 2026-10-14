@@ -399,9 +399,11 @@ test("reloads Jobs after returning from another page while an older list request
   }
 })
 
-test("loads older jobs for the default visible group beyond the initial Jobs page", async ({ page }) => {
+test("deploys a historical PR Job through the repository context", async ({ page }) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
 
+  const diagnostics = observeBrowserDiagnostics(page)
+  let submitted: Record<string, unknown> = {}
   const runners = fixtureRunners(100)
   const selected = { ...runners[0], pull_request_number: 42 }
   runners[0] = selected
@@ -418,6 +420,7 @@ test("loads older jobs for the default visible group beyond the initial Jobs pag
     completed_at: "2026-08-11T00:00:00Z",
   }
 
+  const deployment = { id: "historical-pr", repository_full_name: selected.repository_full_name, source: "pull_request", ref: "42", pull_request_number: 42, commit_sha: previous.head_sha, revision_number: 1, status: "queued", created_at: previous.created_at, expires_at: previous.created_at }
   await page.route("**/auth/session", (route) => route.fulfill({
     json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" },
   }))
@@ -426,7 +429,7 @@ test("loads older jobs for the default visible group beyond the initial Jobs pag
     if (url.pathname === "/user/runner_requests") {
       await route.fulfill({ headers: { "X-Total-Count": "101" }, json: runners })
     } else if (url.pathname === "/user/github-app") {
-      await route.fulfill({ json: { setup_url: "/github-app/setup", installations: [] } })
+      await route.fulfill({ json: { setup_url: "/github-app/setup", installations: [{ id: 1, account_login: "fixture", account_type: "Organization", manageable: true, repositories: [selected.repository_full_name] }] } })
     } else if (url.pathname === "/user/onboarding/product-tour") {
       await route.fulfill({ json: { version: 1, status: "completed", tour_seen: true } })
     } else if (url.pathname.startsWith("/user/github/pulls/")) {
@@ -439,6 +442,19 @@ test("loads older jobs for the default visible group beyond the initial Jobs pag
         head_sha: selected.head_sha, head_branch: selected.head_branch,
         pull_request_number: 42,
       } })
+    } else if (url.pathname.endsWith("/repositories")) {
+      await route.fulfill({ json: { repositories: [selected.repository_full_name] } })
+    } else if (url.pathname === "/user/deployment-refs") {
+      await route.fulfill({ json: { refs: [], has_more: false } })
+    } else if (url.pathname === "/user/deployment-templates") {
+      await route.fulfill({ json: { templates: [{ template_id: "base", names: ["base"] }] } })
+    } else if (url.pathname === "/user/deployments" && route.request().method() === "POST") {
+      submitted = route.request().postDataJSON()
+      await route.fulfill({ status: 201, json: deployment })
+    } else if (url.pathname === "/user/deployments/historical-pr") {
+      await route.fulfill({ json: deployment })
+    } else if (url.pathname.endsWith("/resources")) {
+      await route.fulfill({ json: {} })
     } else if (url.pathname.endsWith("/events")) {
       await route.fulfill({ json: fixtureRunnerEvents() })
     } else {
@@ -449,6 +465,23 @@ test("loads older jobs for the default visible group beyond the initial Jobs pag
   await page.goto("/jobs", { waitUntil: "domcontentloaded" })
   await expect(page.getByRole("button", { name: /fixture\/repository-0/ })).toBeVisible()
   await expect(page.getByRole("button", { name: "Historical workflow" })).toBeVisible()
+  await page.getByRole("button", { name: "Historical workflow" }).click()
+  await expect(page).toHaveURL(/\/github\/fixture\/repository-0\/pr\/42\/jobs\?job=fixture-previous-job$/)
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(page.getByRole("link", { name: "Deployment history", exact: true })).toHaveAttribute("href", "/github/fixture/repository-0/pr/42/deployments")
+  await page.getByRole("link", { name: "Deploy this commit", exact: true }).click()
+  await expect(page.locator("#deployment-installation")).toHaveValue("1")
+  await expect(page.locator("#deployment-source")).toHaveValue("pull_request")
+  await expect(page.locator("#deployment-ref")).toHaveValue("42")
+  await expect(page.getByText(previous.head_sha!, { exact: true })).toBeVisible()
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(page.locator("#deployment-ref")).toHaveValue("42")
+  await page.locator('button[type="submit"]').click()
+  expect(submitted).toMatchObject({ repository_full_name: selected.repository_full_name, source: "pull_request", ref: "42", commit_sha: previous.head_sha })
+  await expect(page).toHaveURL(/\/github\/fixture\/repository-0\/pr\/42\/deployments\?deployment=historical-pr$/)
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
+  diagnostics.expectClean()
 })
 
 test("does not show the previous account preferences during an in-place session change", async ({ page }) => {
@@ -987,14 +1020,14 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await expect(page.getByText("Select Tag", { exact: true })).toBeVisible()
   await page.locator("#deployment-ref").selectOption("v1.0")
   await page.locator('button[type="submit"]').click()
-  await expect(page).toHaveURL(/\/github\/tags\/fixture-user\/project\/a{40}\/deployments\?tag=v1.0&deployment=deployment-fixture$/)
+  await expect(page).toHaveURL(/\/github\/fixture-user\/project\/tag\/v1.0\/deployments\?commit=a{40}&deployment=deployment-fixture$/)
   expect(submittedTemplate).toBe("custom-template")
   expect(submittedSource).toBe("tag")
   expect(submittedRef).toBe("v1.0")
   await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
   await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
   await page.reload({ waitUntil: "networkidle" })
-  await expect(page).toHaveURL(/\/github\/tags\/fixture-user\/project\/a{40}\/deployments\?tag=v1.0&deployment=deployment-fixture$/)
+  await expect(page).toHaveURL(/\/github\/fixture-user\/project\/tag\/v1.0\/deployments\?commit=a{40}&deployment=deployment-fixture$/)
   await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
   await expect(page.locator("#deployment-template")).toHaveCount(0)
   await page.getByRole("tab", { name: "Terminal", exact: true }).click()
@@ -1008,11 +1041,11 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await page.getByRole("tab", { name: "Deployment logs", exact: true }).click()
   await expect.poll(() => terminalClosed).toBe(true)
   await page.getByRole("button", { name: "Back to deployments" }).click()
-  await expect(page).toHaveURL(/\/github\/tags\/fixture-user\/project\/a{40}\/deployments\?tag=v1.0$/)
+  await expect(page).toHaveURL(/\/github\/fixture-user\/project\/tag\/v1.0\/deployments\?commit=a{40}$/)
   await expect(page.locator("form")).toHaveCount(0)
   await expect(page.locator('[data-testid="deployment-list"]')).toContainText("fixture-user/project")
   await page.locator('[data-testid="deployment-list"] a').click()
-  await expect(page).toHaveURL(/\/github\/tags\/fixture-user\/project\/a{40}\/deployments\?tag=v1.0&deployment=deployment-fixture$/)
+  await expect(page).toHaveURL(/\/github\/fixture-user\/project\/tag\/v1.0\/deployments\?commit=a{40}&deployment=deployment-fixture$/)
   await page.goto("/deployments/deployment-fixture?revision=1", { waitUntil: "networkidle" })
   await page.getByRole("tab", { name: "Terminal", exact: true }).click()
   await expect(page.getByText("The terminal is available only for the current running revision.")).toBeVisible()
@@ -1061,7 +1094,7 @@ test("creates a PR deployment and reloads its GitHub context", async ({ page }) 
   await page.locator("#deployment-source").selectOption("pull_request")
   await expect(page.getByText("Select PR", { exact: true })).toBeVisible()
   await page.locator('button[type="submit"]').click()
-  await expect(page).toHaveURL(/\/github\/pulls\/fixture-user\/project\/7\/deployments\?deployment=pr-deployment$/)
+  await expect(page).toHaveURL(/\/github\/fixture-user\/project\/pr\/7\/deployments\?deployment=pr-deployment$/)
   expect(submitted.source).toBe("pull_request")
   expect(submitted.ref).toBe("7")
   await expect(page.getByText("contributor/fork:feature/preview", { exact: true })).toBeVisible()

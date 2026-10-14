@@ -362,3 +362,68 @@ describe("deployment interaction", () => {
     expect(container.querySelector('[data-testid="deployment-logs"]').querySelectorAll("pre").length).toBe(6)
   })
 })
+
+describe("Job deployment prefill", () => {
+  test("preserves a historical PR and pinned SHA through delayed account catalogs", async () => {
+    const sha = "b".repeat(40)
+    const locationSearch = `?repository=team%2Fdemo&source=pull_request&ref=7&commit_sha=${sha}`
+    let submitted
+    const request = async (url, options) => {
+      if (url.endsWith("/repositories")) return { repositories: ["team/demo"] }
+      if (url.startsWith("/user/deployment-refs")) return { refs: ["8"], has_more: false }
+      if (url.startsWith("/user/deployment-templates")) return { templates: [{ template_id: "base" }] }
+      if (url === "/user/deployments" && options?.method === "POST") { submitted = JSON.parse(options.body); return deployment("pinned") }
+      throw new Error(url)
+    }
+    const mounted = await mountPage({ request, locationSearch, githubApp: null, loadingGitHubApp: true }, { chooseRepository: false })
+    await act(async () => mounted.root.render(createElement(UserDeploymentCreateSection, { ...mounted.props, githubApp: { installations: [installation(12), installation(22, "team")] }, loadingGitHubApp: false })))
+    await settle()
+    expect(mounted.container.querySelector("#deployment-installation").value).toBe("22")
+    expect(mounted.container.querySelector("#deployment-repository").value).toBe("team/demo")
+    expect(mounted.container.querySelector("#deployment-source").value).toBe("pull_request")
+    expect(mounted.container.querySelector("#deployment-ref").value).toBe("7")
+    await act(async () => mounted.container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submitted).toMatchObject({ installation_id: 22, repository_full_name: "team/demo", source: "pull_request", ref: "7", commit_sha: sha })
+    await act(async () => button(mounted.container, "Use latest source commit").click())
+    await act(async () => mounted.container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submitted.ref).toBe("7")
+    expect(submitted.commit_sha).toBeUndefined()
+  })
+
+  test("source changes discard the old pin and reject delayed ref results", async () => {
+    let finishRefs
+    const delayed = new Promise((resolve) => { finishRefs = resolve })
+    let submitted
+    const request = async (url, options) => {
+      if (url.endsWith("/repositories")) return { repositories: ["miclle/demo"] }
+      if (url.startsWith("/user/deployment-refs")) return new URL(url, "https://example.com").searchParams.get("source") === "pull_request" ? delayed : { refs: ["main"], has_more: false }
+      if (url.startsWith("/user/deployment-templates")) return { templates: [{ template_id: "base" }] }
+      if (url === "/user/deployments") { submitted = JSON.parse(options.body); return deployment("new-branch") }
+      throw new Error(url)
+    }
+    const { container } = await mountPage({ request, locationSearch: `?repository=miclle%2Fdemo&source=pull_request&ref=7&commit_sha=${"a".repeat(40)}` }, { chooseRepository: false })
+    await selectOption(container, "#deployment-source", "branch")
+    await settle()
+    await act(async () => finishRefs({ refs: ["7", "8"] }))
+    expect(container.querySelector("#deployment-ref").value).toBe("main")
+    expect(container.textContent).not.toContain("Pinned commit")
+    await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submitted).toMatchObject({ source: "branch", ref: "main" })
+    expect(submitted.commit_sha).toBeUndefined()
+  })
+
+  test("an inaccessible prefilled repository cannot be submitted", async () => {
+    let posted = false
+    const request = async (url, options) => {
+      if (options?.method === "POST") posted = true
+      if (url.endsWith("/repositories")) return { repositories: ["miclle/demo"] }
+      if (url.startsWith("/user/deployment-templates")) return { templates: [{ template_id: "base" }] }
+      return {}
+    }
+    const { container } = await mountPage({ request, locationSearch: `?repository=private%2Fother&source=branch&ref=main&commit_sha=${"a".repeat(40)}` }, { chooseRepository: false })
+    expect(container.textContent).toContain("This repository is not available")
+    expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
+    await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(posted).toBe(false)
+  })
+})

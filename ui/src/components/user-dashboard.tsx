@@ -1,3 +1,5 @@
+import { githubContextFromPath } from "@/github-context-routes"
+import { JobDeploymentLinks } from "@/components/job-deployment-links"
 import {
   AlertCircle,
   Boxes,
@@ -170,7 +172,7 @@ export function UserDashboard({
   onOpenDeployment: (id: string | null) => void
   onNavigateRepositoryAccount: (accountLogin: string | undefined) => void
   onNavigateAccountSettings: (accountLogin: string | undefined, tab: AccountSettingsTab) => void
-  onOpenJob: (id: string) => void
+  onOpenJob: (id: string, groupKey?: string) => void
   onLoadJobGroup: (key: string) => Promise<unknown>
   onLoadRunnerHistory: () => void
   request: (url: string, options?: RequestInit) => Promise<unknown>
@@ -179,7 +181,9 @@ export function UserDashboard({
 }) {
   const { t } = useTranslation()
   const groups = useMemo(() => groupRunnersByBuildContext(runners, t), [runners, t])
-  const selected = groups.find((group) => group.key === selectedKey) || (selectedKey ? undefined : groups[0])
+  const sourceContext = githubContextFromPath(locationPath, locationSearch)
+  const sourceGroup = sourceContext?.kind === "branches" && !sourceContext.reference ? groups.find((group) => group.repository === sourceContext.repository && group.headBranch === sourceContext.name && !group.pullRequestNumber) : undefined
+  const selected = groups.find((group) => group.key === selectedKey) || (selectedKey ? undefined : sourceContext?.kind === "branches" && !sourceContext.reference ? sourceGroup : groups[0])
   const [loadedJobGroup, setLoadedJobGroup] = useState<{ key: string; group: RunnerJobGroup } | null>(null)
   const selectedJobGroup = loadedJobGroup && selected && loadedJobGroup.key === selected.key ? loadedJobGroup.group : null
   const installations = useMemo(
@@ -353,6 +357,8 @@ export function UserDashboard({
 
       {page === "deployments" ? (
         locationPath === "/deployments/new" ? <UserDeploymentCreateSection
+          key={`${authSession.login}:${locationSearch}`}
+          locationSearch={locationSearch}
           githubApp={githubApp}
           currentLogin={authSession.login}
           loadingGitHubApp={loadingGitHubApp}
@@ -411,7 +417,7 @@ export function UserDashboard({
           canSyncGitHubInstallations={canSyncGitHubInstallations}
           syncingGitHubInstallations={syncingGitHubInstallations}
           onSyncGitHubInstallations={onSyncGitHubInstallations}
-          onOpenJob={onOpenJob}
+          onOpenJob={(id) => onOpenJob(id, selected?.key)}
           request={request}
           runnerCount={runners.length}
           runnerTotal={runnerTotal}
@@ -1366,8 +1372,9 @@ function PullRequestsPage({
         <section className="min-h-0 overflow-y-auto">
           {selected ? (
             <div className="flex min-h-full flex-col">
-              <div className="border-b px-4 py-4 lg:px-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-4 lg:px-6">
                 <h2 className="truncate text-2xl font-semibold">{selected.repository}</h2>
+                {selectedJob ? <JobDeploymentLinks job={selectedJob} /> : null}
               </div>
               <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 lg:p-6">
                 <div className="shrink-0 border-b pb-4">
@@ -1378,8 +1385,8 @@ function PullRequestsPage({
                   <div className="mt-3 space-y-4 text-sm">
                     <section>
                       <div className="grid gap-3 sm:grid-cols-3">
-                        <JobField label={t("user.branch")} value={selectedJobGroup?.head_branch || selected.headBranch || selected.subtitle || t("common.unknown")} />
-                        <JobField label={t("user.commit")} value={shortSHA(selectedJobGroup?.head_sha || selected.headSHA) || t("common.unknown")} />
+                        <JobField label={t("user.branch")} value={selectedJob?.head_branch || selectedJobGroup?.head_branch || selected.headBranch || selected.subtitle || t("common.unknown")} />
+                        <JobField label={t("user.commit")} value={shortSHA(selectedJob?.head_sha || selectedJobGroup?.head_sha || selected.headSHA) || t("common.unknown")} />
                         <JobField label={t("user.lastUpdated")} value={formatTime(selectedJobGroup?.updated_at || selected.updatedAt, i18n.resolvedLanguage)} />
                       </div>
                     </section>
