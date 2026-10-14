@@ -259,6 +259,28 @@ describe("deployment interaction", () => {
     expect(submitted.ref).toBe("v1.0")
   })
 
+  test("creates a PR deployment without losing the selected template", async () => {
+    let submitted
+    const request = async (url, options) => {
+      if (options?.method === "POST") { submitted = JSON.parse(options.body); return { ...deployment("pr-preview"), source: "pull_request", pull_request_number: 7 } }
+      if (url.includes("deployment-refs")) return { refs: url.includes("source=pull_request") ? ["7", "8"] : ["main"], has_more: false }
+      if (url.includes("deployment-templates")) return { templates: [{ template_id: "base-template", names: ["base"] }] }
+      if (url.includes("/repositories")) return { repositories: ["miclle/demo"] }
+      throw new Error(`unexpected request ${url}`)
+    }
+    const opened = []
+    const { container } = await mountPage({ request, onOpenDeployment: (id) => opened.push(id) })
+    await selectOption(container, "#deployment-source", "pull_request")
+    await settle()
+    expect(container.querySelector('label[for="deployment-ref"]').textContent).toBe("Select PR")
+    expect(container.querySelector("#deployment-ref").selectedOptions[0].textContent).toBe("#7")
+    await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(submitted.source).toBe("pull_request")
+    expect(submitted.ref).toBe("7")
+    expect(submitted.template_id).toBe("base-template")
+    expect(opened).toEqual(["pr-preview"])
+  })
+
   test("blocks creation for an empty Tag list and retries a failed version discovery", async () => {
     let tagRequests = 0, submissions = 0
     const request = async (url, options) => {

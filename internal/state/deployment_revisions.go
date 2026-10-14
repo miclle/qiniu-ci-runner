@@ -14,6 +14,7 @@ func revisionRecordFromDeployment(d deploymentRecord, created time.Time) deploym
 		d.RevisionNumber = 1
 	}
 	return deploymentRevisionRecord{
+		SourceRepositoryID: d.SourceRepositoryID, SourceRepositoryFullName: d.SourceRepositoryFullName, SourceRef: d.SourceRef,
 		ID: fmt.Sprintf("%s-r%d", d.ID, d.RevisionNumber), DeploymentID: d.ID, Number: d.RevisionNumber,
 		Ref: d.Ref, CommitSHA: d.CommitSHA, ConfigPath: d.ConfigPath, SnapshotVersion: d.SnapshotVersion,
 		SpecHash: d.SpecHash, SpecJSONEncrypted: d.SpecJSONEncrypted, TemplateID: d.DeploymentTemplateID, TemplateName: d.DeploymentTemplateName,
@@ -79,6 +80,7 @@ func backfillDeploymentRevisions(db *gorm.DB) error {
 func revisionFromRecord(r deploymentRevisionRecord, d deploymentRecord) DeploymentRevision {
 	return DeploymentRevision{
 		Deployment: Deployment{
+			SourceRepositoryID: r.SourceRepositoryID, SourceRepositoryFullName: r.SourceRepositoryFullName, SourceRef: r.SourceRef,
 			ID: d.ID, AccountID: d.AccountID, ScopeType: d.ScopeType, ScopeID: d.ScopeID,
 			GitHubInstallationID: d.GitHubInstallationID, RepositoryID: d.RepositoryID, RepositoryFullName: d.RepositoryFullName,
 			Ref: r.Ref, CommitSHA: r.CommitSHA, ConfigPath: r.ConfigPath, SnapshotVersion: r.SnapshotVersion,

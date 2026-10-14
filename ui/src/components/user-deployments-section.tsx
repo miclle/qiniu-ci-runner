@@ -18,7 +18,10 @@ export type Deployment = {
   github_installation_id: number
   repository_full_name: string
   ref?: string
-  source?: "branch" | "tag"
+  source?: "branch" | "tag" | "pull_request"
+  pull_request_number?: number
+  source_repository_full_name?: string
+  source_ref?: string
   commit_sha: string
   config_path: string
   status: string
@@ -315,7 +318,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
   const terminalAvailable = deployment.status === "running" && Boolean(deployment.sandbox_id) && selectedRevisionNumber === deployment.revision_number
   const revisions = deployment.revisions ?? []
   const [redeployOpen, setRedeployOpen] = useState(false)
-  const [redeployMode, setRedeployMode] = useState<"latest" | "revision">(deployment.source === "branch" ? "latest" : "revision")
+  const [redeployMode, setRedeployMode] = useState<"latest" | "revision">(deployment.source === "branch" || deployment.source === "pull_request" ? "latest" : "revision")
   const [redeployRevision, setRedeployRevision] = useState(selectedRevision?.number ?? deployment.revision_number ?? revisions[0]?.number ?? 1)
   const resourceSnapshot = {
     ...(selectedRevision ?? deployment),
@@ -344,7 +347,8 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
             <CardTitle className="break-words text-2xl">{deployment.repository_full_name}</CardTitle>
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <DeploymentStatus status={deployment.status} />
-              <span>{deployment.ref || deployment.commit_sha.slice(0, 8)}</span>
+              <span>{deployment.pull_request_number ? `#${deployment.pull_request_number}` : displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</span>
+              {deployment.source_repository_full_name ? <span>{deployment.source_repository_full_name}:{deployment.source_ref}</span> : null}
               <span aria-hidden="true">·</span><code>{deployment.commit_sha.slice(0, 8)}</code>
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
@@ -356,7 +360,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           </div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" variant="outline" disabled={!canStop || Boolean(action)} onClick={() => onAction("stop")}><Square className="h-3.5 w-3.5" />{t("user.stopDeployment")}</Button>
-            <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode(deployment.source === "branch" ? "latest" : "revision"); setRedeployRevision(selectedRevision?.number ?? deployment.revision_number ?? revisions[0]?.number ?? 1); setRedeployOpen(true) }}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
+            <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode(deployment.source === "branch" || deployment.source === "pull_request" ? "latest" : "revision"); setRedeployRevision(selectedRevision?.number ?? deployment.revision_number ?? revisions[0]?.number ?? 1); setRedeployOpen(true) }}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
             <Button type="button" size="sm" variant="outline" disabled={Boolean(action)} onClick={() => onAction("delete")}><Trash2 className="h-3.5 w-3.5" />{t("common.delete")}</Button>
           </div>
         </div>
@@ -410,7 +414,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
               <CardTitle>{t("user.deploymentEvents")}</CardTitle>
               {selectedRevision ? <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span>{t("user.deploymentRevisionNumber", { number: selectedRevision.number })}</span>
-                {selectedRevision.ref ? <><span aria-hidden="true">·</span><span>{t(selectedRevision.ref.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} <code>{displayRevisionRef(selectedRevision.ref)}</code></span></> : null}
+                {selectedRevision.ref ? <><span aria-hidden="true">·</span><span>{t(selectedRevision.ref.startsWith("refs/pull/") ? "user.deploymentPullRequest" : selectedRevision.ref.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} <code>{displayRevisionRef(selectedRevision.ref)}</code></span></> : null}
                 <span aria-hidden="true">·</span><code className="break-all">{selectedRevision.commit_sha}</code>
               </CardDescription> : null}
             </div>
@@ -448,7 +452,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           <DialogDescription>{t("user.redeployChooseDescription")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          {deployment.source === "branch" ? <RedeployOption selected={redeployMode === "latest"} onSelect={() => setRedeployMode("latest")} title={t("user.redeployLatestTitle")} description={t("user.redeployLatestDescription")}>
+          {deployment.source === "branch" || deployment.source === "pull_request" ? <RedeployOption selected={redeployMode === "latest"} onSelect={() => setRedeployMode("latest")} title={t(deployment.source === "pull_request" ? "user.redeployLatestPullRequestTitle" : "user.redeployLatestTitle")} description={t(deployment.source === "pull_request" ? "user.redeployLatestPullRequestDescription" : "user.redeployLatestDescription")}>
             <Badge variant="secondary">{displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</Badge>
           </RedeployOption> : null}
           <RedeployOption selected={redeployMode === "revision"} onSelect={() => setRedeployMode("revision")} title={t("user.redeployRevisionTitle")} description={t("user.redeployRevisionDescription")}>
@@ -558,4 +562,4 @@ function revisionNumberFromURL(): number | undefined {
   return Number.isSafeInteger(number) ? number : undefined
 }
 
-function displayRevisionRef(ref?: string) { return ref?.replace(/^refs\/(heads|tags)\//, "") ?? "" }
+function displayRevisionRef(ref?: string) { return ref?.replace(/^refs\/pull\/(\d+)\/head$/, "#$1").replace(/^refs\/(heads|tags)\//, "") ?? "" }

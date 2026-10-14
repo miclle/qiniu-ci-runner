@@ -125,7 +125,10 @@ type Deployment struct {
 	UpdatedAt                  time.Time `json:"updated_at"`
 	Version                    int64     `json:"version"`
 
-	ContextRevision *DeploymentRevision `json:"-"`
+	ContextRevision          *DeploymentRevision `json:"-"`
+	SourceRepositoryID       int64               `json:"source_repository_id,omitempty"`
+	SourceRepositoryFullName string              `json:"source_repository_full_name,omitempty"`
+	SourceRef                string              `json:"source_ref,omitempty"`
 }
 
 // DeploymentRevision preserves one immutable source/plan and its execution history.

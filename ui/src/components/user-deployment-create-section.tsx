@@ -29,7 +29,7 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
   const [installationID, setInstallationID] = useState(initialInstallation ? String(initialInstallation.id) : "")
   const [repository, setRepository] = useState("")
   const [ref, setRef] = useState("main")
-  const [source, setSource] = useState<"branch" | "tag">("branch")
+  const [source, setSource] = useState<"branch" | "tag" | "pull_request">("branch")
   const [referenceCatalog, setReferenceCatalog] = useState<{ key: string; refs: string[]; page: number; hasMore: boolean } | null>(null)
   const [loadingReferences, setLoadingReferences] = useState(false)
   const [referenceError, setReferenceError] = useState<string | null>(null)
@@ -224,12 +224,13 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-source">{t("user.deploymentVersionSource")}</Label>
-                  <select id="deployment-source" value={source} onChange={(event) => setSource(event.target.value as "branch" | "tag")} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="branch">{t("user.deploymentBranch")}</option><option value="tag">{t("user.deploymentTag")}</option></select>
+                  <select id="deployment-source" value={source} onChange={(event) => setSource(event.target.value as "branch" | "tag" | "pull_request")} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="branch">{t("user.deploymentBranch")}</option><option value="tag">{t("user.deploymentTag")}</option><option value="pull_request">{t("user.deploymentPullRequest")}</option></select>
                 </div>
+                {source === "pull_request" ? <p className="text-sm text-muted-foreground">{t("user.deploymentPullRequestHint")}</p> : null}
                 <div className="space-y-2">
-                  <Label htmlFor="deployment-ref">{source === "branch" ? t("user.deploymentSelectBranch") : t("user.deploymentSelectTag")}</Label>
+                  <Label htmlFor="deployment-ref">{t(source === "pull_request" ? "user.deploymentSelectPullRequest" : source === "branch" ? "user.deploymentSelectBranch" : "user.deploymentSelectTag")}</Label>
                   <select id="deployment-ref" value={selectedRef} onChange={(event) => setRef(event.target.value)} disabled={loadingReferences || references.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                    {references.length === 0 ? <option value="">{loadingReferences ? t("user.deploymentReferencesLoading") : t("user.deploymentReferencesEmpty")}</option> : references.map((name) => <option key={name} value={name}>{name}</option>)}
+                    {references.length === 0 ? <option value="">{loadingReferences ? t("user.deploymentReferencesLoading") : t("user.deploymentReferencesEmpty")}</option> : references.map((name) => <option key={name} value={name}>{source === "pull_request" ? `#${name}` : name}</option>)}
                   </select>
                   {referenceError ? <p role="alert" className="text-sm text-destructive">{referenceError}</p> : null}
                   <div className="flex gap-2"><Button type="button" variant="ghost" size="sm" disabled={loadingReferences} onClick={() => setReferenceReload((value) => value + 1)}><RefreshCw className="h-3.5 w-3.5" />{t("user.deploymentReferencesRefresh")}</Button>{referenceCatalog?.key === referenceKey && referenceCatalog.hasMore ? <Button type="button" variant="ghost" size="sm" disabled={loadingReferences} onClick={() => void loadMoreReferences()}>{t("user.deploymentReferencesMore")}</Button> : null}</div>

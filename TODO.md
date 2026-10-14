@@ -4,7 +4,7 @@ This file tracks active project work. Completed behavior should move into `READM
 
 ## Active Roadmap
 
-- Deliver the remaining [GitHub context stages](docs/deployment.md#github-context-routes): PR head deployment with pinned source identity and fork authorization, then Jobs-to-deployment creation/history navigation. Commit each verified stage independently.
+- Deliver the remaining [GitHub context stages](docs/deployment.md#github-context-routes): Jobs-to-deployment creation/history navigation and real fork PR acceptance. Commit each verified stage independently.
 
 - Before Issue #125 can close, complete the remaining acceptance gates below and record the endpoint contract, per-scope quota, and terminal retention behavior against a deployed runnerd. The first implementation uses public HTTPS endpoints, a transactional per-scope concurrency limit, and configurable terminal retention; an authenticated reverse proxy remains a follow-up if product requirements change.
 

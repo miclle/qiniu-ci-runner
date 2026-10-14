@@ -601,7 +601,11 @@ func TestDeploymentRevisionsSQLBackends(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			d, err := store.CreateDeploymentWithScopeLimit(deploymentFixture("revision-sql", account.ID), 1)
+			fixture := deploymentFixture("revision-sql", account.ID)
+			fixture.SourceRepositoryID = 301
+			fixture.SourceRepositoryFullName = "contributor/fork"
+			fixture.SourceRef = "feature/pr"
+			d, err := store.CreateDeploymentWithScopeLimit(fixture, 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -627,7 +631,7 @@ func TestDeploymentRevisionsSQLBackends(t *testing.T) {
 				t.Fatalf("retry %#v %v", got, err)
 			}
 			revs, more, err := store.ListDeploymentRevisions(d.ID, 0, 10)
-			if err != nil || more || len(revs) != 2 || revs[1].Status != DeploymentStatusCompleted {
+			if err != nil || more || len(revs) != 2 || revs[1].Status != DeploymentStatusCompleted || revs[0].SourceRepositoryID != 301 || revs[1].SourceRepositoryFullName != "contributor/fork" {
 				t.Fatalf("revisions %#v %v %v", revs, more, err)
 			}
 			for number, message := range map[int64]string{1: "first", 2: "second"} {
@@ -685,5 +689,63 @@ func TestDeploymentContextListsMatchHistoricalRevisionsBeforePagination(t *testi
 	items, total, err = store.ListDeploymentsForAccount(1, options)
 	if err != nil || total != 0 || len(items) != 0 {
 		t.Fatalf("mixed branch and tag: %v %d %v", items, total, err)
+	}
+}
+
+func TestDeploymentSourceSnapshotUpgradeAndImmutableRetry(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	fixture := deploymentFixture("source-upgrade", 1)
+	fixture.SourceRepositoryID = 301
+	fixture.SourceRepositoryFullName = "contributor/fork"
+	fixture.SourceRef = "feature/pr"
+	d, err := store.CreateDeployment(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.GetDeploymentRevision(d.ID, 1)
+	if err != nil || first.SourceRepositoryID != 301 || first.SourceRepositoryFullName != fixture.SourceRepositoryFullName {
+		t.Fatalf("source %#v %v", first, err)
+	}
+	d.Status = DeploymentStatusCompleted
+	if err := store.UpdateDeployment(d); err != nil {
+		t.Fatal(err)
+	}
+	d, err = store.GetDeployment(d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.SourceRepositoryID = 302
+	d.SourceRepositoryFullName = "new/fork"
+	d.SourceRef = "new"
+	if err := store.RetryDeployment(d, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	first, err = store.GetDeploymentRevision(d.ID, 1)
+	if err != nil || first.SourceRepositoryID != 301 {
+		t.Fatal("old source snapshot mutated")
+	}
+	second, err := store.GetDeploymentRevision(d.ID, 2)
+	if err != nil || second.SourceRepositoryID != 302 {
+		t.Fatal("new source snapshot missing")
+	}
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"deployments", "deployment_revisions"} {
+		for _, column := range []string{"source_repository_id", "source_repository_full_name", "source_ref"} {
+			if err := db.Exec("ALTER TABLE " + table + " DROP COLUMN " + column).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for range 2 {
+		if err := store.migrate(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.GetDeploymentRevision(d.ID, 1)
+	if err != nil || got.CommitSHA != first.CommitSHA || got.SpecJSONEncrypted != first.SpecJSONEncrypted || got.SourceRepositoryID != 0 || !got.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Fatalf("legacy preservation %#v %v", got, err)
 	}
 }

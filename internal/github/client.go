@@ -1662,6 +1662,7 @@ type PullRequest struct {
 }
 
 type PullRequestRef struct {
+	SHA        string     `json:"sha"`
 	Ref        string     `json:"ref"`
 	Repository Repository `json:"repo"`
 }

@@ -116,6 +116,10 @@ type deploymentRecord struct {
 	FailedAt                   *time.Time `gorm:"column:failed_at"`
 	UpdatedAt                  time.Time  `gorm:"column:updated_at;not null"`
 	Version                    int64      `gorm:"column:version;not null;default:0"`
+
+	SourceRepositoryID       int64  `gorm:"column:source_repository_id"`
+	SourceRepositoryFullName string `gorm:"column:source_repository_full_name"`
+	SourceRef                string `gorm:"column:source_ref"`
 }
 
 func (deploymentRecord) TableName() string { return "deployments" }
@@ -146,6 +150,10 @@ type deploymentRevisionRecord struct {
 	RunningAt         *time.Time `gorm:"column:running_at"`
 	CreatedAt         time.Time  `gorm:"column:created_at;not null"`
 	UpdatedAt         time.Time  `gorm:"column:updated_at;not null"`
+
+	SourceRepositoryID       int64  `gorm:"column:source_repository_id"`
+	SourceRepositoryFullName string `gorm:"column:source_repository_full_name"`
+	SourceRef                string `gorm:"column:source_ref"`
 }
 
 func (deploymentRevisionRecord) TableName() string { return "deployment_revisions" }

@@ -239,4 +239,20 @@ Jobs 和部署共享 `/github/pulls/{owner}/{repo}/{number}` 与
 SHA／ref。URL 中的仓库与来源不授予权限：详情仍按本地账号和部署 ID 授权，再修正展示地址。
 `GET /user/deployments` 的 `repository_full_name`、`ref`、`commit_sha` 和
 `pull_request_number` 筛选在分页前查询已保存版本，`selected_revision` 标识匹配的历史版本。
-这些读取不请求 GitHub 或 Sandbox。PR 上下文路由已就绪；PR 创建与 Jobs 入口是后续交付阶段。
+这些读取不请求 GitHub 或 Sandbox。PR 上下文路由与创建已就绪；Jobs 入口是下一交付阶段。
+
+## PR 部署
+
+创建时传入 `source: "pull_request"`，`ref` 为正整数 PR 编号。表单列出开放的 PR；
+API 可显式指定已有的关闭 PR。执行固定的 PR head 提交，不部署 GitHub 合成的 merge 结果。
+Sandbox 作用域与配额归属于已授权的目标仓库；GitHub 返回的 base 仓库身份必须一致，
+来源仓库已删除或不可用时拒绝创建。服务端解析 `refs/pull/{number}/head`，确认与观察到的
+head SHA 相同，然后通过目标仓库读取配置、检出该不可变 SHA。fork 提供的 URL 不决定
+凭据或检出地址。GitHub App 需要已批准的 `Pull requests: Read-only` 和 `Contents: Read-only`。
+
+可选 `commit_sha` 固定之前选择的提交。PR 提交须属于 GitHub 返回的 PR 提交列表
+（最多 250 个）；分支提交须为当前 head 的祖先；Tag 须仍指向相同提交。强推后不可用或
+不属于该来源的提交会拒绝，不会静默替换成新 head。每个版本保存 `source_repository_id`、
+`source_repository_full_name` 和 `source_ref`；旧记录通过新增字段升级，来源证据保持为空。
+PR 编号保存在完整 ref 中，并通过 `pull_request_number` 返回。最新重部署重新解析 PR head，
+历史版本重部署复制已保存的来源与计划。历史读取仍只访问当前账号的本地数据。

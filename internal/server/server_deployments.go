@@ -32,6 +32,7 @@ const (
 )
 
 type createDeploymentRequest struct {
+	CommitSHA          string `json:"commit_sha"`
 	InstallationID     int64  `json:"installation_id"`
 	RepositoryFullName string `json:"repository_full_name"`
 	Ref                string `json:"ref"`
@@ -91,28 +92,36 @@ type deploymentResponse struct {
 	Revisions                    []deploymentRevisionResponse `json:"revisions,omitempty"`
 	RevisionsHasMore             bool                         `json:"revisions_has_more"`
 	SelectedRevision             *deploymentRevisionResponse  `json:"selected_revision,omitempty"`
+	PullRequestNumber            int64                        `json:"pull_request_number,omitempty"`
+	SourceRepositoryID           int64                        `json:"source_repository_id,omitempty"`
+	SourceRepositoryFullName     string                       `json:"source_repository_full_name,omitempty"`
+	SourceRef                    string                       `json:"source_ref,omitempty"`
 }
 
 type deploymentRevisionResponse struct {
-	ID               string    `json:"id"`
-	Number           int64     `json:"number"`
-	Status           string    `json:"status"`
-	Ref              string    `json:"ref,omitempty"`
-	CommitSHA        string    `json:"commit_sha"`
-	ConfigPath       string    `json:"config_path"`
-	TemplateID       string    `json:"template_id,omitempty"`
-	TemplateName     string    `json:"template_name,omitempty"`
-	TemplateCPU      int32     `json:"template_cpu,omitempty"`
-	TemplateMemoryMB int32     `json:"template_memory_mb,omitempty"`
-	TemplateDiskMB   int32     `json:"template_disk_mb,omitempty"`
-	SandboxID        string    `json:"sandbox_id,omitempty"`
-	SandboxRegion    string    `json:"sandbox_region,omitempty"`
-	Endpoint         string    `json:"endpoint,omitempty"`
-	FailureStage     string    `json:"failure_stage,omitempty"`
-	FailureReason    string    `json:"failure_reason,omitempty"`
-	ExpiresAt        time.Time `json:"expires_at"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                       string    `json:"id"`
+	Number                   int64     `json:"number"`
+	Status                   string    `json:"status"`
+	Ref                      string    `json:"ref,omitempty"`
+	CommitSHA                string    `json:"commit_sha"`
+	ConfigPath               string    `json:"config_path"`
+	TemplateID               string    `json:"template_id,omitempty"`
+	TemplateName             string    `json:"template_name,omitempty"`
+	TemplateCPU              int32     `json:"template_cpu,omitempty"`
+	TemplateMemoryMB         int32     `json:"template_memory_mb,omitempty"`
+	TemplateDiskMB           int32     `json:"template_disk_mb,omitempty"`
+	SandboxID                string    `json:"sandbox_id,omitempty"`
+	SandboxRegion            string    `json:"sandbox_region,omitempty"`
+	Endpoint                 string    `json:"endpoint,omitempty"`
+	FailureStage             string    `json:"failure_stage,omitempty"`
+	FailureReason            string    `json:"failure_reason,omitempty"`
+	ExpiresAt                time.Time `json:"expires_at"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
+	PullRequestNumber        int64     `json:"pull_request_number,omitempty"`
+	SourceRepositoryID       int64     `json:"source_repository_id,omitempty"`
+	SourceRepositoryFullName string    `json:"source_repository_full_name,omitempty"`
+	SourceRef                string    `json:"source_ref,omitempty"`
 }
 
 // deploymentResourcesResponse is intentionally separate from the persisted
@@ -228,11 +237,16 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	commitSHA, err := s.gh.ResolveCommit(r.Context(), repository.FullName, input.Ref)
+	sourceSnapshot, err := s.resolveDeploymentSource(r.Context(), repository, input.Ref, input.CommitSHA)
 	if err != nil {
+		if errors.Is(err, errDeploymentSourceChanged) {
+			writeErrorCode(w, http.StatusConflict, "deployment_source_changed", "The selected commit is no longer available in this source. Refresh the source and choose a commit again.")
+			return
+		}
 		writeErrorCode(w, http.StatusBadGateway, "commit_resolution_failed", "failed to resolve repository ref")
 		return
 	}
+	commitSHA := sourceSnapshot.CommitSHA
 	configData, err := s.gh.ReadRepositoryFile(r.Context(), repository.FullName, input.ConfigPath, commitSHA, deployconfig.MaxBytes)
 	if err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "deployment_config_invalid", "failed to read deployment configuration")
@@ -268,6 +282,7 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 		ttl = time.Duration(input.TTLSeconds) * time.Second
 	}
 	deployment := state.Deployment{
+		SourceRepositoryID: sourceSnapshot.RepositoryID, SourceRepositoryFullName: sourceSnapshot.RepositoryFullName, SourceRef: sourceSnapshot.Ref,
 		ID:                         deploymentID,
 		AccountID:                  account.ID,
 		ScopeType:                  scope.Type,
@@ -754,6 +769,7 @@ func (s *Server) handleUserRetryDeployment(w http.ResponseWriter, r *http.Reques
 			}
 			return
 		}
+		deployment.SourceRepositoryID, deployment.SourceRepositoryFullName, deployment.SourceRef = revision.SourceRepositoryID, revision.SourceRepositoryFullName, revision.SourceRef
 		deployment.Ref = revision.Ref
 		deployment.CommitSHA = revision.CommitSHA
 		deployment.ConfigPath = revision.ConfigPath
@@ -770,8 +786,8 @@ func (s *Server) handleUserRetryDeployment(w http.ResponseWriter, r *http.Reques
 		deployment.ProcessID = ""
 		deployment.ProcessTag = ""
 	} else if input.Mode == "latest" {
-		if !strings.HasPrefix(deployment.Ref, "refs/heads/") {
-			writeErrorCode(w, http.StatusBadRequest, "invalid_deployment_retry", "latest redeploy is available only for branch deployments")
+		if !strings.HasPrefix(deployment.Ref, "refs/heads/") && deploymentPullRequestNumber(deployment.Ref) == 0 {
+			writeErrorCode(w, http.StatusBadRequest, "invalid_deployment_retry", "latest redeploy is available only for branch or pull request deployments")
 			return
 		}
 		if err := s.refreshDeploymentPlanFromGitHub(r.Context(), account.ID, &deployment); err != nil {
@@ -835,10 +851,11 @@ func (s *Server) refreshDeploymentPlanFromGitHub(ctx context.Context, accountID 
 	if _, err := s.githubUserAccessToken(accountID); err != nil {
 		return err
 	}
-	commitSHA, err := s.gh.ResolveCommit(ctx, deployment.RepositoryFullName, deployment.Ref)
+	sourceSnapshot, err := s.resolveDeploymentSource(ctx, github.Repository{ID: deployment.RepositoryID, FullName: deployment.RepositoryFullName}, deployment.Ref, "")
 	if err != nil {
 		return err
 	}
+	commitSHA := sourceSnapshot.CommitSHA
 	configData, err := s.gh.ReadRepositoryFile(ctx, deployment.RepositoryFullName, deployment.ConfigPath, commitSHA, deployconfig.MaxBytes)
 	if err != nil {
 		return err
@@ -859,6 +876,7 @@ func (s *Server) refreshDeploymentPlanFromGitHub(ctx context.Context, accountID 
 	if err != nil {
 		return err
 	}
+	deployment.SourceRepositoryID, deployment.SourceRepositoryFullName, deployment.SourceRef = sourceSnapshot.RepositoryID, sourceSnapshot.RepositoryFullName, sourceSnapshot.Ref
 	deployment.CommitSHA = commitSHA
 	deployment.SnapshotVersion = plan.Snapshot().Version
 	deployment.SpecHash = plan.Snapshot().SpecHash
@@ -883,7 +901,7 @@ func (s *Server) writeDeploymentReplay(w http.ResponseWriter, id string, account
 	if input.TTLSeconds != 0 {
 		ttl = time.Duration(input.TTLSeconds) * time.Second
 	}
-	if saved.AccountID != accountID || saved.GitHubInstallationID != installationID || saved.RepositoryID != repositoryID || saved.Ref != input.Ref || saved.ConfigPath != input.ConfigPath || saved.ExpiresAt.Sub(saved.CreatedAt) != ttl || (input.TemplateID != "" && input.TemplateID != saved.DeploymentTemplateID) {
+	if saved.AccountID != accountID || saved.GitHubInstallationID != installationID || saved.RepositoryID != repositoryID || saved.Ref != input.Ref || (input.CommitSHA != "" && saved.CommitSHA != input.CommitSHA) || saved.ConfigPath != input.ConfigPath || saved.ExpiresAt.Sub(saved.CreatedAt) != ttl || (input.TemplateID != "" && input.TemplateID != saved.DeploymentTemplateID) {
 		writeErrorCode(w, http.StatusConflict, "deployment_request_conflict", "Idempotency-Key was already used for a different deployment request")
 		return true
 	}
@@ -946,8 +964,19 @@ func hasDeploymentAccess(access []state.DeploymentRepositoryAccess, deployment s
 }
 
 func validateCreateDeploymentRequest(input createDeploymentRequest) error {
-	if input.Source != "" && input.Source != "branch" && input.Source != "tag" {
-		return errors.New("source must be branch or tag")
+	if input.Source != "" && input.Source != "branch" && input.Source != "tag" && input.Source != "pull_request" {
+		return errors.New("source must be branch, tag or pull_request")
+	}
+	if input.CommitSHA != "" && !validDeploymentSHA(input.CommitSHA) {
+		return errors.New("commit_sha must be a full lowercase SHA")
+	}
+	if input.Source == "pull_request" {
+		number, err := strconv.ParseInt(input.Ref, 10, 64)
+		if err != nil || number <= 0 || strconv.FormatInt(number, 10) != input.Ref {
+			return errors.New("pull request ref must be a positive number")
+		}
+	} else if input.Source == "" && strings.HasPrefix(input.Ref, "refs/pull/") {
+		return errors.New("pull requests require source pull_request")
 	}
 	if len(input.TemplateID) > 256 || strings.IndexFunc(input.TemplateID, unicode.IsControl) >= 0 {
 		return errors.New("template_id is invalid")
@@ -985,6 +1014,8 @@ func normalizeDeploymentRef(ref, source string) string {
 		return "refs/heads/" + ref
 	case "tag":
 		return "refs/tags/" + ref
+	case "pull_request":
+		return "refs/pull/" + ref + "/head"
 	default:
 		return ref
 	}
@@ -1029,7 +1060,11 @@ func deploymentResponseFromState(item state.Deployment) deploymentResponse {
 	} else if strings.HasPrefix(ref, "refs/tags/") {
 		source, ref = "tag", strings.TrimPrefix(ref, "refs/tags/")
 	}
+	if number := deploymentPullRequestNumber(ref); number > 0 {
+		source, ref = "pull_request", strconv.FormatInt(number, 10)
+	}
 	return deploymentResponse{
+		PullRequestNumber: deploymentPullRequestNumber(item.Ref), SourceRepositoryID: item.SourceRepositoryID, SourceRepositoryFullName: item.SourceRepositoryFullName, SourceRef: item.SourceRef,
 		ID: item.ID, ScopeType: item.ScopeType, ScopeID: item.ScopeID,
 		GitHubInstallationID: item.GitHubInstallationID, RepositoryID: item.RepositoryID,
 		RepositoryFullName: item.RepositoryFullName, Ref: ref, Source: source, CommitSHA: item.CommitSHA,
@@ -1046,7 +1081,7 @@ func deploymentResponseFromState(item state.Deployment) deploymentResponse {
 }
 
 func deploymentRevisionResponseFromState(item state.DeploymentRevision) deploymentRevisionResponse {
-	return deploymentRevisionResponse{ID: item.RevisionID, Number: item.RevisionNumber, Status: item.Status, Ref: item.Ref, CommitSHA: item.CommitSHA, ConfigPath: item.ConfigPath, TemplateID: item.DeploymentTemplateID, TemplateName: item.DeploymentTemplateName, TemplateCPU: item.DeploymentTemplateCPU, TemplateMemoryMB: item.DeploymentTemplateMemoryMB, TemplateDiskMB: item.DeploymentTemplateDiskMB, SandboxID: item.SandboxID, SandboxRegion: item.SandboxRegion, Endpoint: item.Endpoint, FailureStage: item.FailureStage, FailureReason: item.FailureReason, ExpiresAt: item.ExpiresAt, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	return deploymentRevisionResponse{PullRequestNumber: deploymentPullRequestNumber(item.Ref), SourceRepositoryID: item.SourceRepositoryID, SourceRepositoryFullName: item.SourceRepositoryFullName, SourceRef: item.SourceRef, ID: item.RevisionID, Number: item.RevisionNumber, Status: item.Status, Ref: item.Ref, CommitSHA: item.CommitSHA, ConfigPath: item.ConfigPath, TemplateID: item.DeploymentTemplateID, TemplateName: item.DeploymentTemplateName, TemplateCPU: item.DeploymentTemplateCPU, TemplateMemoryMB: item.DeploymentTemplateMemoryMB, TemplateDiskMB: item.DeploymentTemplateDiskMB, SandboxID: item.SandboxID, SandboxRegion: item.SandboxRegion, Endpoint: item.Endpoint, FailureStage: item.FailureStage, FailureReason: item.FailureReason, ExpiresAt: item.ExpiresAt, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
 func deploymentEndpointAccess(endpoint string) string {

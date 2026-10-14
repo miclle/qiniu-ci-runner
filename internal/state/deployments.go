@@ -67,6 +67,7 @@ func (s *DBStore) createDeployment(db *gorm.DB, deployment Deployment) (Deployme
 		deployment.Status = DeploymentStatusQueued
 	}
 	record := deploymentRecord{
+		SourceRepositoryID: deployment.SourceRepositoryID, SourceRepositoryFullName: deployment.SourceRepositoryFullName, SourceRef: deployment.SourceRef,
 		RevisionNumber:             deployment.RevisionNumber,
 		ID:                         deployment.ID,
 		AccountID:                  deployment.AccountID,
@@ -385,7 +386,8 @@ func retryDeployment(db *gorm.DB, deployment Deployment, expiresAt time.Time) er
 	}
 	now := time.Now().UTC()
 	result := db.Model(&deploymentRecord{}).Where("id = ? AND version = ? AND status IN ?", deployment.ID, deployment.Version, []string{DeploymentStatusFailed, DeploymentStatusCompleted, DeploymentStatusExpired}).Updates(map[string]any{
-		"revision_number":               gorm.Expr("revision_number + 1"),
+		"revision_number":      gorm.Expr("revision_number + 1"),
+		"source_repository_id": deployment.SourceRepositoryID, "source_repository_full_name": deployment.SourceRepositoryFullName, "source_ref": deployment.SourceRef,
 		"ref":                           deployment.Ref,
 		"commit_sha":                    deployment.CommitSHA,
 		"config_path":                   deployment.ConfigPath,
@@ -707,7 +709,7 @@ func applyDeploymentTimestamps(record *deploymentRecord, now time.Time) {
 
 func deploymentFromRecord(record deploymentRecord) Deployment {
 	return Deployment{
-		RevisionNumber:             record.RevisionNumber,
+		SourceRepositoryID: record.SourceRepositoryID, SourceRepositoryFullName: record.SourceRepositoryFullName, SourceRef: record.SourceRef, RevisionNumber: record.RevisionNumber,
 		ID:                         record.ID,
 		AccountID:                  record.AccountID,
 		ScopeType:                  record.ScopeType,

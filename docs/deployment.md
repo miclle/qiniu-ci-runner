@@ -330,5 +330,26 @@ by local account and deployment ID, then canonicalize the display URL. History
 filters (`repository_full_name`, `ref`, `commit_sha`, `pull_request_number`) on
 `GET /user/deployments` run before pagination and match persisted revisions;
 `selected_revision` identifies the matching historical revision. These reads do
-not query GitHub or the Sandbox provider. PR context routing is available; PR
-creation and the Jobs entry are the next delivery stages.
+not query GitHub or the Sandbox provider. PR context routing and creation are available; the Jobs entry is the next delivery stage.
+
+## Pull request deployments
+
+Create with `source: "pull_request"` and the positive PR number in `ref`.
+The form lists open PRs; the API can explicitly target an existing closed PR.
+This deploys the PR head, never GitHub's synthetic merge result. The authorized
+base repository owns the Sandbox scope and quota. Base repository identity must
+match GitHub's PR response; a deleted/unavailable head repository is rejected.
+The server resolves `refs/pull/{number}/head`, verifies it matches the observed
+head SHA, and reads configuration/checks out that immutable SHA through the base
+repository. Fork-provided URLs never select credentials or checkout targets.
+The App needs approved `Pull requests: Read-only` and `Contents: Read-only`.
+
+Optional `commit_sha` pins a previously selected commit. A PR commit must be in
+GitHub's bounded PR commit listing (up to 250); a branch commit must be an ancestor
+of the current branch head; a Tag must still point to that exact commit. A
+force-pushed/unavailable selection fails rather than silently deploying a new
+head. PR revisions snapshot `source_repository_id`, `source_repository_full_name`
+and `source_ref`; existing records migrate additively with empty source evidence.
+The PR number is retained in its qualified ref and exposed as `pull_request_number`.
+Latest redeploy resolves the current PR head again; revision redeploy copies the
+saved source/plan evidence. Saved deployment history remains local account data.

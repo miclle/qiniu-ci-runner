@@ -1034,3 +1034,38 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   diagnostics.expectClean()
 })
+
+test("creates a PR deployment and reloads its GitHub context", async ({ page }) => {
+  test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
+  const diagnostics = observeBrowserDiagnostics(page)
+  let submitted: Record<string, unknown> = {}
+  const deployment = { id: "pr-deployment", repository_full_name: "fixture-user/project", source: "pull_request", ref: "7", pull_request_number: 7, source_repository_full_name: "contributor/fork", source_ref: "feature/preview", commit_sha: "a".repeat(40), status: "queued", revision_number: 1, created_at: "2026-10-14T00:00:00Z", expires_at: "2026-10-14T01:00:00Z" }
+  await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
+  await page.route("**/user/**", (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === "/user/github-app") return route.fulfill({ json: { installations: [{ id: 1, account_login: "fixture-user", account_type: "User", manageable: true, repositories: ["fixture-user/project"] }] } })
+    if (url.pathname.endsWith("/repositories")) return route.fulfill({ json: { repositories: ["fixture-user/project"] } })
+    if (url.pathname === "/user/deployment-refs") return route.fulfill({ json: { refs: url.searchParams.get("source") === "pull_request" ? ["7"] : ["main"], has_more: false } })
+    if (url.pathname === "/user/deployment-templates") return route.fulfill({ json: { templates: [{ template_id: "base", names: ["base"] }] } })
+    if (url.pathname === "/user/deployments" && route.request().method() === "POST") {
+      submitted = route.request().postDataJSON()
+      return route.fulfill({ status: 201, json: deployment })
+    }
+    if (url.pathname === "/user/deployments/pr-deployment") return route.fulfill({ json: deployment })
+    if (url.pathname.endsWith("/resources")) return route.fulfill({ json: {} })
+    if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: [], has_more: false } })
+    return route.fulfill({ status: 404, body: "fixture route not found" })
+  })
+  await page.goto("/deployments/new", { waitUntil: "networkidle" })
+  await page.locator("#deployment-repository").selectOption("fixture-user/project")
+  await page.locator("#deployment-source").selectOption("pull_request")
+  await expect(page.getByText("Select PR", { exact: true })).toBeVisible()
+  await page.locator('button[type="submit"]').click()
+  await expect(page).toHaveURL(/\/github\/pulls\/fixture-user\/project\/7\/deployments\?deployment=pr-deployment$/)
+  expect(submitted.source).toBe("pull_request")
+  expect(submitted.ref).toBe("7")
+  await expect(page.getByText("contributor/fork:feature/preview", { exact: true })).toBeVisible()
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
+  diagnostics.expectClean()
+})
