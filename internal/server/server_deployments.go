@@ -2,8 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,10 +211,8 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 	}
 	// Replay the original immutable plan only after current authorization. A
 	// moving branch must not be resolved again for the same request key.
-	deploymentID := newID()
+	deploymentID := newDeploymentID(account.ID, key)
 	if key != "" {
-		digest := sha256.Sum256(fmt.Appendf(nil, "deployment-request/v1:%d:%s", account.ID, key))
-		deploymentID = hex.EncodeToString(digest[:])
 		if s.writeDeploymentReplay(w, deploymentID, account.ID, installation.InstallationID, repository.ID, input) {
 			return
 		}
@@ -886,6 +885,21 @@ func (s *Server) refreshDeploymentPlanFromGitHub(ctx context.Context, accountID 
 	deployment.ProcessID = ""
 	deployment.ProcessTag = ""
 	return nil
+}
+
+// Use 128 bits in a single-case, unpadded alphabet for compact URLs and
+// consistent identity even with case-insensitive database collations.
+func newDeploymentID(accountID int64, key string) string {
+	var identity [16]byte
+	if key == "" {
+		if _, err := rand.Read(identity[:]); err != nil {
+			panic(fmt.Sprintf("crypto/rand failed: %v", err))
+		}
+	} else {
+		digest := sha256.Sum256(fmt.Appendf(nil, "deployment-request/v1:%d:%s", accountID, key))
+		copy(identity[:], digest[:16])
+	}
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(identity[:]))
 }
 
 func (s *Server) writeDeploymentReplay(w http.ResponseWriter, id string, accountID, installationID, repositoryID int64, input createDeploymentRequest) bool {

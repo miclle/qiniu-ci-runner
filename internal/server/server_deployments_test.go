@@ -9,12 +9,41 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/qiniu/ci-runner/internal/state"
 )
+
+func TestDeploymentID(t *testing.T) {
+	id := newDeploymentID(1, "request-1")
+	if replay := newDeploymentID(1, "request-1"); replay != id {
+		t.Fatalf("idempotent request changed ID: %q != %q", replay, id)
+	}
+	seen := make(map[string]bool)
+	for _, candidate := range []string{
+		id,
+		newDeploymentID(2, "request-1"),
+		newDeploymentID(1, "request-2"),
+		newDeploymentID(1, ""),
+		newDeploymentID(1, ""),
+	} {
+		assertCompactDeploymentID(t, candidate)
+		if seen[candidate] {
+			t.Fatalf("different accounts, keys, or unkeyed requests share ID %q", candidate)
+		}
+		seen[candidate] = true
+	}
+}
+
+func assertCompactDeploymentID(t *testing.T, id string) {
+	t.Helper()
+	if !regexp.MustCompile(`^[a-z2-7]{26}$`).MatchString(id) {
+		t.Fatalf("deployment ID must be 26 lowercase Base32 characters: %q", id)
+	}
+}
 
 func TestUserCreateDeploymentPinsCommitAndAuditsPlan(t *testing.T) {
 	for _, source := range []string{"branch", "tag"} {
@@ -107,6 +136,7 @@ func testUserCreateDeploymentPinsCommitAndAuditsPlan(t *testing.T, source string
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
+	assertCompactDeploymentID(t, created.ID)
 	if created.CommitSHA != commit || created.Status != state.DeploymentStatusQueued || created.RepositoryID != 42 || created.SpecHash == "" {
 		t.Fatalf("created deployment=%#v", created)
 	}
@@ -243,6 +273,28 @@ func testUserCreateDeploymentPinsCommitAndAuditsPlan(t *testing.T, source string
 	events, err := store.ListAuditEvents(10)
 	if err != nil || len(events) != 3 || events[0].Action != "deployment.retry" {
 		t.Fatalf("deployment audit events=%#v err=%v", events, err)
+	}
+
+	// API clients may omit the key; each submission creates a compact new ID.
+	srv.cfg.DeploymentMaxConcurrent = 3
+	previousID := created.ID
+	for range 2 {
+		unkeyed := httptest.NewRequest(http.MethodPost, "/user/deployments", strings.NewReader(payload))
+		unkeyed.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+		response := httptest.NewRecorder()
+		srv.ServeHTTP(response, unkeyed)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("unkeyed create: %d %s", response.Code, response.Body.String())
+		}
+		var deployment deploymentResponse
+		if err := json.Unmarshal(response.Body.Bytes(), &deployment); err != nil {
+			t.Fatal(err)
+		}
+		assertCompactDeploymentID(t, deployment.ID)
+		if deployment.ID == created.ID || deployment.ID == previousID {
+			t.Fatalf("unkeyed submission reused ID %q", deployment.ID)
+		}
+		previousID = deployment.ID
 	}
 }
 

@@ -153,6 +153,10 @@ ID is resolved server-side.
   `repository_full_name`, a `ref`, an optional `source` (`branch` or `tag`), an optional `config_path`,
   and an optional `ttl_seconds` (five minutes to 24 hours; the default is one
   hour). The `Idempotency-Key` header can replay the same request safely.
+  Deployment IDs are 26 lowercase Base32 characters encoding 128 bits, safe
+  to use directly in URLs. Keyed requests derive the ID from the account and
+  key; unkeyed requests generate a new random ID. Clients should treat IDs as
+  opaque strings. No legacy ID replay fallback is provided before launch.
   With `source`, the server qualifies the name as `refs/heads/<name>` or
   `refs/tags/<name>` before resolution, so identical branch/tag names stay
   distinct. API clients that omit `source` can still send a branch/tag/commit

@@ -235,9 +235,8 @@ func (w *Worker) Process(ctx context.Context, id string) error {
 		return err
 	}
 
-	// API idempotency IDs are 64 characters, while deployd operation IDs allow
-	// at most 64 including the attempt. Keep the workspace identity bounded and
-	// deterministic without changing provider reconciliation metadata.
+	// Keep the workspace identity deterministic and within deployd's 64-character
+	// limit including the attempt, independently of the persisted ID format.
 	identity := sha256.Sum256([]byte(d.ID))
 	operationID := fmt.Sprintf("deploy-%x-%d", identity[:16], d.Attempt)
 	application := &applicationRuntime{RuntimeHandle: rt, port: plan.Spec().Port}

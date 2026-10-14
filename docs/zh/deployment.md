@@ -114,6 +114,9 @@ Installation ID 由服务端解析：
   `template_cpu`、`template_memory_mb` 和 `template_disk_mb`、已关联的本地 `installation_id`、精确的
   `repository_full_name`、`ref`、可选的 `source`（`branch` 或 `tag`）、可选的 `config_path` 和可选的
   `ttl_seconds`（五分钟到 24 小时，默认一小时）。可以使用 `Idempotency-Key` 请求头安全重放同一请求。
+  部署 ID 使用 26 位小写 Base32 编码，保留 128 位标识空间，可直接用于 URL。
+  有幂等键时根据账号和请求键生成固定 ID；无幂等键时生成新的随机 ID。
+  客户端应将 ID 作为不透明字符串使用；上线前不提供旧 ID 的重放回退逻辑。
   传入 `source` 时，服务端先将名称限定为 `refs/heads/<name>` 或 `refs/tags/<name>`，
   避免同名分支与 Tag 混淆。未传 `source` 的 API 客户端仍可使用 branch/tag/commit ref。
   已知来源的响应返回来源和用于展示的原名称。

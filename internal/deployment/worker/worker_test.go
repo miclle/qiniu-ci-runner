@@ -102,7 +102,7 @@ func deploymentFixture(t *testing.T) state.Deployment {
 func TestWorkerProcessesQueuedDeploymentAndFencesAttempt(t *testing.T) {
 	store := state.New(t.TempDir())
 	fixture := deploymentFixture(t)
-	fixture.ID = strings.Repeat("d", 64) // Same length as HTTP idempotency IDs.
+	fixture.ID = strings.Repeat("d", 26) // Same length as HTTP deployment IDs.
 	spec := deploy.Spec{InstallCommand: "true", StartCommand: "true", Port: 8080}
 	plan, err := deploy.NewPlan(deploy.ResolvedSource{SourceID: githubSourceURL(fixture.RepositoryFullName), CommitSHA: fixture.CommitSHA}, spec)
 	if err != nil {
@@ -401,6 +401,10 @@ func (f *deadlineCrossingFactory) Connect(ctx context.Context, d state.Deploymen
 
 func TestWorkerExpiredObservationCannotStopReplacementAttempt(t *testing.T) {
 	store := state.New(t.TempDir())
+	// Finish lazy schema initialization before starting the short expiry window.
+	if _, err := store.ListActiveDeployments(); err != nil {
+		t.Fatal(err)
+	}
 	fixture := deploymentFixture(t)
 	fixture.Status = state.DeploymentStatusRunning
 	fixture.SandboxID, fixture.RuntimeID, fixture.ProcessID, fixture.ProcessTag = "sandbox-1", "sandbox-1", "41", "attempt-1"
@@ -434,6 +438,10 @@ func TestWorkerExpiredObservationCannotStopReplacementAttempt(t *testing.T) {
 
 func TestWorkerExpiresWhenProviderLookupCrossesDeadline(t *testing.T) {
 	store := state.New(t.TempDir())
+	// Finish lazy schema initialization before starting the short expiry window.
+	if _, err := store.ListActiveDeployments(); err != nil {
+		t.Fatal(err)
+	}
 	fixture := deploymentFixture(t)
 	fixture.Status = state.DeploymentStatusRunning
 	fixture.SandboxID, fixture.RuntimeID, fixture.ProcessID, fixture.ProcessTag = "sandbox-1", "sandbox-1", "41", "attempt-1"
