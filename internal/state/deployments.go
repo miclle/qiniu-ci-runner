@@ -67,6 +67,7 @@ func (s *DBStore) createDeployment(db *gorm.DB, deployment Deployment) (Deployme
 		deployment.Status = DeploymentStatusQueued
 	}
 	record := deploymentRecord{
+		CreateRequestHash:  deployment.CreateRequestHash,
 		ExecutionAccountID: deployment.ExecutionAccountID,
 		SourceRepositoryID: deployment.SourceRepositoryID, SourceRepositoryFullName: deployment.SourceRepositoryFullName, SourceRef: deployment.SourceRef,
 		RevisionNumber:             deployment.RevisionNumber,
@@ -712,7 +713,7 @@ func applyDeploymentTimestamps(record *deploymentRecord, now time.Time) {
 
 func deploymentFromRecord(record deploymentRecord) Deployment {
 	return Deployment{
-		ExecutionAccountID: record.ExecutionAccountID,
+		CreateRequestHash: record.CreateRequestHash, ExecutionAccountID: record.ExecutionAccountID,
 		SourceRepositoryID: record.SourceRepositoryID, SourceRepositoryFullName: record.SourceRepositoryFullName, SourceRef: record.SourceRef, RevisionNumber: record.RevisionNumber,
 		ID:                         record.ID,
 		AccountID:                  record.AccountID,

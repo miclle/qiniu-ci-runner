@@ -45,6 +45,7 @@ func TestDeploymentEventAfterCursorPreservesEveryPage(t *testing.T) {
 func deploymentFixture(id string, accountID int64) Deployment {
 	return Deployment{
 		ID:                     id,
+		CreateRequestHash:      strings.Repeat("c", 64),
 		AccountID:              accountID,
 		ScopeType:              AccountScopeTypeAccount,
 		ScopeID:                accountID,
@@ -471,7 +472,7 @@ func TestDeploymentTargetSnapshotSurvivesSQLiteUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"sandbox_region", "deployment_template_id", "execution_account_id"} {
+	for _, field := range []string{"sandbox_region", "deployment_template_id", "execution_account_id", "create_request_hash"} {
 		if err := db.Migrator().DropColumn(&deploymentRecord{}, field); err != nil {
 			t.Fatal(err)
 		}
@@ -480,7 +481,7 @@ func TestDeploymentTargetSnapshotSurvivesSQLiteUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := store.GetDeployment(fixture.ID)
-	if err != nil || got.ExecutionAccountID != 0 || got.CommitSHA != fixture.CommitSHA || got.SandboxAPIKeyEncrypted != fixture.SandboxAPIKeyEncrypted {
+	if err != nil || got.CreateRequestHash != "" || got.ExecutionAccountID != 0 || got.CommitSHA != fixture.CommitSHA || got.SandboxAPIKeyEncrypted != fixture.SandboxAPIKeyEncrypted {
 		t.Fatalf("legacy deployment changed: %#v %v", got, err)
 	}
 	got.SandboxRegion, got.DeploymentTemplateID = "region-a", "deploy-template-a"
@@ -629,7 +630,7 @@ func TestDeploymentRevisionsSQLBackends(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := store.GetDeployment(d.ID)
-			if err != nil || got.RevisionNumber != 2 || got.ExecutionAccountID != account.ID+1 {
+			if err != nil || got.CreateRequestHash != fixture.CreateRequestHash || got.RevisionNumber != 2 || got.ExecutionAccountID != account.ID+1 {
 				t.Fatalf("retry %#v %v", got, err)
 			}
 			revs, more, err := store.ListDeploymentRevisions(d.ID, 0, 10)

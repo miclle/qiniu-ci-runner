@@ -81,6 +81,7 @@ type RunnerRequest struct {
 // Source identity and the normalized execution Spec are immutable after create;
 // lifecycle and provider fields are updated with optimistic version checks.
 type Deployment struct {
+	CreateRequestHash          string    `json:"-"` // Immutable admission identity, independent of provider expiry and revisions.
 	ExecutionAccountID         int64     `json:"-"` // Current revision actor; zero uses the historical creator.
 	RevisionNumber             int64     `json:"revision_number"`
 	ID                         string    `json:"id"`

@@ -73,6 +73,7 @@ type runnerRequestRecord struct {
 func (runnerRequestRecord) TableName() string { return "runner_requests" }
 
 type deploymentRecord struct {
+	CreateRequestHash          string     `gorm:"column:create_request_hash;size:64;not null;default:''"`
 	ExecutionAccountID         int64      `gorm:"column:execution_account_id;not null;default:0"`
 	RevisionNumber             int64      `gorm:"column:revision_number;not null;default:1"`
 	ID                         string     `gorm:"column:id;primaryKey"`

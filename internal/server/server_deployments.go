@@ -208,8 +208,8 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 		writeErrorCode(w, http.StatusForbidden, "repository_access_forbidden", "repository is not accessible through this GitHub installation and user session")
 		return
 	}
-	// Replay the original immutable plan only after current authorization. A
-	// moving branch must not be resolved again for the same request key.
+	// Return the existing resource only after current authorization. Compare the
+	// original request, even after provider expiry or the current revision changes.
 	deploymentID := newDeploymentID(account.ID, key)
 	if key != "" {
 		if s.writeDeploymentReplay(w, deploymentID, account.ID, installation.InstallationID, repository.ID, input) {
@@ -283,6 +283,7 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 		ttl = time.Duration(input.TTLSeconds) * time.Second
 	}
 	deployment := state.Deployment{
+		CreateRequestHash:  deploymentCreateRequestHash(input, installation.InstallationID, repository.ID),
 		SourceRepositoryID: sourceSnapshot.RepositoryID, SourceRepositoryFullName: sourceSnapshot.RepositoryFullName, SourceRef: sourceSnapshot.Ref,
 		ID:                         deploymentID,
 		AccountID:                  account.ID,
@@ -912,17 +913,36 @@ func (s *Server) writeDeploymentReplay(w http.ResponseWriter, id string, account
 		writeError(w, http.StatusInternalServerError, "load deployment")
 		return true
 	}
-	ttl := defaultDeploymentTTL
-	if input.TTLSeconds != 0 {
-		ttl = time.Duration(input.TTLSeconds) * time.Second
-	}
-	if saved.AccountID != accountID || saved.GitHubInstallationID != installationID || saved.RepositoryID != repositoryID || saved.Ref != input.Ref || (input.CommitSHA != "" && saved.CommitSHA != input.CommitSHA) || saved.ConfigPath != input.ConfigPath || saved.ExpiresAt.Sub(saved.CreatedAt) != ttl || (input.TemplateID != "" && input.TemplateID != saved.DeploymentTemplateID) {
+	if saved.AccountID != accountID || saved.GitHubInstallationID != installationID || saved.RepositoryID != repositoryID || saved.CreateRequestHash != deploymentCreateRequestHash(input, installationID, repositoryID) {
 		writeErrorCode(w, http.StatusConflict, "deployment_request_conflict", "Idempotency-Key was already used for a different deployment request")
 		return true
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, deploymentResponseFromState(saved))
 	return true
+}
+
+// Hash only execution-affecting admission fields. Display snapshots do not
+// change a request; refs are qualified by admission, and zero TTL/omitted
+// config paths use their effective values.
+// Historical rows have no original identity and must not infer one from mutable
+// expiry or revision fields.
+func deploymentCreateRequestHash(input createDeploymentRequest, installationID, repositoryID int64) string {
+	ttl := input.TTLSeconds
+	if ttl == 0 {
+		ttl = int64(defaultDeploymentTTL / time.Second)
+	}
+	identity := struct {
+		InstallationID int64
+		RepositoryID   int64
+		Ref            string
+		CommitSHA      string
+		ConfigPath     string
+		TemplateID     string
+		TTLSeconds     int64
+	}{installationID, repositoryID, strings.TrimSpace(input.Ref), input.CommitSHA, normalizeDeploymentConfigPath(input.ConfigPath), strings.TrimSpace(input.TemplateID), ttl}
+	encoded, _ := json.Marshal(identity)
+	return fmt.Sprintf("%x", sha256.Sum256(encoded))
 }
 
 func validateCreateDeploymentRequest(input createDeploymentRequest) error {

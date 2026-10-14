@@ -475,3 +475,65 @@ func TestDeployAdminFallbackRequiresExplicitOptIn(t *testing.T) {
 		t.Fatalf("explicit Deploy fallback = %T %#v %v", service, snapshot, err)
 	}
 }
+
+func TestDeploymentReplayUsesImmutableRequestIdentity(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "", &fakeSandbox{})
+	srv.Close()
+	input := createDeploymentRequest{Ref: "refs/heads/main", Source: "branch", ConfigPath: ".qiniu/deploy.yaml", TemplateID: "base", TTLSeconds: 600}
+	original := deploymentCreateRequestHash(input, 987, 42)
+	now := time.Now().UTC()
+	d, err := store.CreateDeployment(state.Deployment{ID: "replay-identity", AccountID: 1, CreateRequestHash: original, ScopeType: state.AccountScopeTypeAccount, ScopeID: 1, GitHubInstallationID: 987, RepositoryID: 42, RepositoryFullName: "hubot/project", Ref: input.Ref, CommitSHA: strings.Repeat("a", 40), ConfigPath: input.ConfigPath, SnapshotVersion: 1, SpecHash: "hash", SpecJSONEncrypted: "encrypted", DeploymentTemplateID: "base", Status: state.DeploymentStatusCompleted, CreatedAt: now, ExpiresAt: now.Add(600*time.Second - 593*time.Millisecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(input createDeploymentRequest, want int) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		if !srv.writeDeploymentReplay(rec, d.ID, 1, 987, 42, input) || rec.Code != want {
+			t.Fatalf("replay=%d %s", rec.Code, rec.Body.String())
+		}
+	}
+	check(input, 200)
+	changed := input
+	changed.TTLSeconds++
+	check(changed, 409)
+	changed = input
+	changed.Ref = "refs/tags/main"
+	changed.Source = "tag"
+	check(changed, 409)
+	changed = input
+	changed.TemplateID = "another"
+	check(changed, 409)
+	// A later revision can have a new source, template and expiry. Repeating the
+	// original creation request returns that resource, never launches a revision.
+	d.CommitSHA = strings.Repeat("b", 40)
+	d.Ref = "refs/heads/next"
+	d.DeploymentTemplateID = "another"
+	if err := store.RetryDeployment(d, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	check(input, 200)
+	saved, err := store.GetDeployment(d.ID)
+	if err != nil || saved.CreateRequestHash != original || saved.RevisionNumber != 2 {
+		t.Fatal("replay changed the resource or lost original identity")
+	}
+	old := d
+	old.ID = "historical-replay"
+	old.CreateRequestHash = ""
+	if _, err := store.CreateDeployment(old); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	if !srv.writeDeploymentReplay(rec, old.ID, 1, 987, 42, input) || rec.Code != 409 {
+		t.Fatal("historical request identity was inferred from mutable fields")
+	}
+	defaultInput := createDeploymentRequest{Ref: "refs/heads/main", Source: "branch"}
+	explicit := defaultInput
+	explicit.Ref = "refs/heads/main"
+	explicit.ConfigPath = ".qiniu/deploy.yaml"
+	explicit.TTLSeconds = 3600
+	if deploymentCreateRequestHash(defaultInput, 987, 42) != deploymentCreateRequestHash(explicit, 987, 42) {
+		t.Fatal("equivalent default request fields have different identities")
+	}
+}
