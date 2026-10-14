@@ -794,10 +794,12 @@ bounded locally. Worker regressions cover provider lookups that cross expiry
 and stale expiry observations that must not stop a replacement attempt.
 
 
-Deployment list/detail/persisted-event API tests must prove local account isolation
-and pagination without GitHub/provider reads, including a missing OAuth token and
-anonymous rejection. Repository revocation and organization role changes do not
-remove the creating account's saved history; mutations still revalidate access.
+Deployment list/detail/event tests must prove cross-account repository sharing,
+exact installation-repository isolation before count/pagination, Jobs cache reuse,
+and rejection of missing/rejected OAuth access. Verify non-owner creation and
+public-only template choices, owner-only private catalogs/settings, revision actor
+persistence and worker revalidation, and per-user PTY isolation. Deployment
+content remains local; a cold authorization cache may contact GitHub.
 UI tests must prove that `/deployments` only loads history and links to
 `/deployments/new`, that creation only loads form dependencies, and that both
 routes reload directly. Deployment UI verification also covers Branch/Tag discovery, empty and error retry
@@ -813,7 +815,7 @@ Deployment revision verification must cover initial #1, atomic next-version crea
 
 ### Deployment terminal checks
 
-Run `go test ./internal/server ./internal/sandboxrunner -run 'TestDeploymentTerminal|TestDeploymentHistoryIsAccountOwned|TestUser.*Terminal|TestTerminalHub' -count=1` for PTY input/resize/close, account/repository/organization authorization, revision/attempt identity, stopped/expired rejection, and remaining-lifetime Connect coverage. Run `cd ui && bun run test:production --grep 'separates deployment'` for browser tab navigation, manual connection, typing and disconnect with fixture APIs/output. Fixtures do not prove a real Sandbox PTY. For live acceptance, open a running revision, connect, run `pwd` and inspect an application log file, resize, disconnect, reconnect, then stop the deployment and confirm the terminal becomes unavailable. Historical revisions must never open the current Sandbox.
+Run `go test ./internal/server ./internal/sandboxrunner -run 'TestDeploymentTerminal|TestDeploymentsShareJobs|TestDeploymentReadsAndMutations|TestUser.*Terminal|TestTerminalHub' -count=1` for PTY input/resize/close, repository authorization and per-user session ownership, revision/attempt identity, stopped/expired rejection, and remaining-lifetime Connect coverage. Run `cd ui && bun run test:production --grep 'separates deployment'` for browser tab navigation, manual connection, typing and disconnect with fixture APIs/output. Fixtures do not prove a real Sandbox PTY. For live acceptance, open a running revision, connect, run `pwd` and inspect an application log file, resize, disconnect, reconnect, then stop the deployment and confirm the terminal becomes unavailable. Historical revisions must never open the current Sandbox.
 
 Deployment context checks: run `cd ui && bun test src/github-context-routes.test.js src/app-load-policy.test.js src/components/user-deployments-section.test.js` and the deployment production browser fixture. Cover legacy redirects, direct reload/OAuth return, encoded branch names, immutable revision selection, back navigation, and local-only filtered history before pagination. State coverage includes `TestDeploymentContextListsMatchHistoricalRevisionsBeforePagination`.
 

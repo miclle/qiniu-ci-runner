@@ -43,7 +43,7 @@ func TestDeploymentTerminalLifecycleAndAuthorization(t *testing.T) {
 	if _, err := store.UpsertGitHubInstallation(state.GitHubInstallation{AccountID: account.ID, InstallationID: 987, AccountType: "user", AccountLogin: "hubot"}); err != nil {
 		t.Fatal(err)
 	}
-	d, err := store.CreateDeployment(state.Deployment{ID: "terminal-deploy", AccountID: account.ID, ScopeType: state.AccountScopeTypeAccount, ScopeID: account.ID, GitHubInstallationID: 987, RepositoryID: 42, RepositoryFullName: "hubot/project", Ref: "refs/heads/main", CommitSHA: strings.Repeat("a", 40), ConfigPath: ".qiniu/deploy.yaml", SnapshotVersion: 1, SpecHash: "hash", SpecJSONEncrypted: "encrypted", Status: state.DeploymentStatusRunning, SandboxID: "sandbox-deploy", ExpiresAt: time.Now().Add(time.Hour)})
+	d, err := store.CreateDeployment(state.Deployment{ID: "terminal-deploy", AccountID: account.ID + 10, ScopeType: state.AccountScopeTypeAccount, ScopeID: account.ID, GitHubInstallationID: 987, RepositoryID: 42, RepositoryFullName: "hubot/project", Ref: "refs/heads/main", CommitSHA: strings.Repeat("a", 40), ConfigPath: ".qiniu/deploy.yaml", SnapshotVersion: 1, SpecHash: "hash", SpecJSONEncrypted: "encrypted", Status: state.DeploymentStatusRunning, SandboxID: "sandbox-deploy", ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestDeploymentTerminalLifecycleAndAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, ok := srv.terminals.Get(result.SessionID)
-	if !ok || session.requestID != deploymentTerminalKey(d) || !strings.Contains(string(session.buffer), "terminal ready") {
+	if !ok || session.requestID != deploymentAccountTerminalKey(d, account.ID) || !strings.Contains(string(session.buffer), "terminal ready") {
 		t.Fatal("missing bound session/output")
 	}
 	path := base + "/" + result.SessionID
@@ -106,13 +106,21 @@ func TestDeploymentTerminalLifecycleAndAuthorization(t *testing.T) {
 	if rec := call("POST", base+"/"+foreign.id+"/input", `{"data":"pwd"}`, true); rec.Code != 404 {
 		t.Fatalf("foreign session %d", rec.Code)
 	}
+	otherActor := srv.terminals.Add(deploymentAccountTerminalKey(d, account.ID+1), d.SandboxID, &fakeTerminalSession{})
+	for _, action := range []struct{ method, suffix string }{{"GET", "/events"}, {"POST", "/input"}, {"POST", "/resize"}, {"DELETE", ""}} {
+		if rec := call(action.method, base+"/"+otherActor.id+action.suffix, `{}`, true); rec.Code != 404 {
+			t.Fatalf("other actor session %s: %d", action.suffix, rec.Code)
+		}
+	}
 	revoked.Store(true)
+	srv.invalidateUserRepositoryAccess(account.ID)
 	for _, suffix := range []string{"", "/" + result.SessionID + "/input", "/" + result.SessionID + "/resize"} {
 		if rec := call("POST", base+suffix, `{}`, true); rec.Code != 404 {
 			t.Fatalf("revoked access %s: %d", suffix, rec.Code)
 		}
 	}
 	revoked.Store(false)
+	srv.invalidateUserRepositoryAccess(account.ID)
 	// A separate explicit disconnect must not close the original shell.
 	second := call("POST", base, `{}`, true)
 	var secondResult struct {

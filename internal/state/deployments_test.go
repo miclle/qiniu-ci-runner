@@ -471,7 +471,7 @@ func TestDeploymentTargetSnapshotSurvivesSQLiteUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"sandbox_region", "deployment_template_id"} {
+	for _, field := range []string{"sandbox_region", "deployment_template_id", "execution_account_id"} {
 		if err := db.Migrator().DropColumn(&deploymentRecord{}, field); err != nil {
 			t.Fatal(err)
 		}
@@ -480,7 +480,7 @@ func TestDeploymentTargetSnapshotSurvivesSQLiteUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := store.GetDeployment(fixture.ID)
-	if err != nil || got.CommitSHA != fixture.CommitSHA || got.SandboxAPIKeyEncrypted != fixture.SandboxAPIKeyEncrypted {
+	if err != nil || got.ExecutionAccountID != 0 || got.CommitSHA != fixture.CommitSHA || got.SandboxAPIKeyEncrypted != fixture.SandboxAPIKeyEncrypted {
 		t.Fatalf("legacy deployment changed: %#v %v", got, err)
 	}
 	got.SandboxRegion, got.DeploymentTemplateID = "region-a", "deploy-template-a"
@@ -602,6 +602,7 @@ func TestDeploymentRevisionsSQLBackends(t *testing.T) {
 				t.Fatal(err)
 			}
 			fixture := deploymentFixture("revision-sql", account.ID)
+			fixture.ExecutionAccountID = account.ID
 			fixture.SourceRepositoryID = 301
 			fixture.SourceRepositoryFullName = "contributor/fork"
 			fixture.SourceRef = "feature/pr"
@@ -617,6 +618,7 @@ func TestDeploymentRevisionsSQLBackends(t *testing.T) {
 				t.Fatal(err)
 			}
 			d.Version++
+			d.ExecutionAccountID = account.ID + 1
 			_, err = store.ApplyMutationWithAudit(AuditEvent{Actor: "test", Action: "deployment.retry", ResourceType: "deployment", ResourceID: d.ID}, func(tx Store) error {
 				if err := tx.RetryDeploymentWithScopeLimit(d, time.Now().Add(time.Hour), 1); err != nil {
 					return err
@@ -627,11 +629,11 @@ func TestDeploymentRevisionsSQLBackends(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := store.GetDeployment(d.ID)
-			if err != nil || got.RevisionNumber != 2 {
+			if err != nil || got.RevisionNumber != 2 || got.ExecutionAccountID != account.ID+1 {
 				t.Fatalf("retry %#v %v", got, err)
 			}
 			revs, more, err := store.ListDeploymentRevisions(d.ID, 0, 10)
-			if err != nil || more || len(revs) != 2 || revs[1].Status != DeploymentStatusCompleted || revs[0].SourceRepositoryID != 301 || revs[1].SourceRepositoryFullName != "contributor/fork" {
+			if err != nil || more || len(revs) != 2 || revs[1].ExecutionAccountID != account.ID || revs[0].ExecutionAccountID != account.ID+1 || revs[1].Status != DeploymentStatusCompleted || revs[0].SourceRepositoryID != 301 || revs[1].SourceRepositoryFullName != "contributor/fork" {
 				t.Fatalf("revisions %#v %v %v", revs, more, err)
 			}
 			for number, message := range map[int64]string{1: "first", 2: "second"} {
@@ -747,5 +749,76 @@ func TestDeploymentSourceSnapshotUpgradeAndImmutableRetry(t *testing.T) {
 	got, err := store.GetDeploymentRevision(d.ID, 1)
 	if err != nil || got.CommitSHA != first.CommitSHA || got.SpecJSONEncrypted != first.SpecJSONEncrypted || got.SourceRepositoryID != 0 || !got.UpdatedAt.Equal(first.UpdatedAt) {
 		t.Fatalf("legacy preservation %#v %v", got, err)
+	}
+}
+
+func TestDeploymentRevisionExecutionActorSurvivesUpgradeAndRetry(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	d, err := store.CreateDeployment(deploymentFixture("actor-history", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []any{&deploymentRecord{}, &deploymentRevisionRecord{}} {
+		if err := db.Migrator().DropColumn(model, "execution_account_id"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := store.migrate(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, err = store.GetDeployment(d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ExecutionAccountID != 0 || d.AccountID != 1 || d.SpecJSONEncrypted != "encrypted-spec" {
+		t.Fatal("legacy actor or plan changed")
+	}
+	d.Status = DeploymentStatusCompleted
+	if err := store.UpdateDeployment(d); err != nil {
+		t.Fatal(err)
+	}
+	d.Version++
+	d.ExecutionAccountID = 2
+	if err := store.RetryDeployment(d, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetDeployment(d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccountID != 1 || got.ExecutionAccountID != 2 || got.RevisionNumber != 2 {
+		t.Fatal("retry lost creator/actor")
+	}
+	for number, actor := range map[int64]int64{1: 0, 2: 2} {
+		rev, err := store.GetDeploymentRevision(d.ID, number)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rev.ExecutionAccountID != actor {
+			t.Fatalf("revision %d actor = %d", number, rev.ExecutionAccountID)
+		}
+	}
+	// Authorization precedes count/pagination, independent of creator identity.
+	for _, identity := range []struct {
+		id           string
+		installation int64
+		repo         string
+	}{{"shared", 101, "OWNER/PROJECT"}, {"other-install", 102, "owner/project"}, {"other-repo", 101, "owner/hidden"}} {
+		fixture := deploymentFixture(identity.id, 2)
+		fixture.GitHubInstallationID = identity.installation
+		fixture.RepositoryFullName = identity.repo
+		if _, err := store.CreateDeployment(fixture); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, total, err := store.ListAuthorizedDeployments([]GitHubInstallationRepositoryAccess{{InstallationID: 101, Repositories: []string{"owner/project"}}}, DeploymentListOptions{Limit: 1, Offset: 1})
+	if err != nil || total != 2 || len(items) != 1 || items[0].ID != d.ID {
+		t.Fatalf("shared pagination total=%d items=%v err=%v", total, len(items), err)
 	}
 }

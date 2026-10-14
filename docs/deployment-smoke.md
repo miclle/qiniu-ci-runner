@@ -356,10 +356,11 @@ Record any deployment-specific notes outside the repository if they include priv
 ## 9. Sandbox Deploy acceptance
 
 Run this section with a real private repository, a GitHub App installation, a
-usable dedicated Deploy template, and an account or owner-managed organization
+usable dedicated Deploy template, and an account or organization
 Sandbox configuration. Before starting, confirm the App has repository
-Contents read access; organization runs also require Members read access and an
-active owner membership. Keep the generated IDs and timestamps in the external
+Contents read access. Repository members may deploy; managing organization
+settings and private template catalogs requires Members read access and active
+owner membership. Keep the generated IDs and timestamps in the external
 acceptance record, never in repository files.
 
 1. Create a repository `.qiniu/deploy.yaml` at a known Commit. Start a manual
@@ -389,11 +390,12 @@ acceptance record, never in repository files.
 6. Exercise stop, DELETE, TTL expiry, and a failed start. Each path must finish
    with provider evidence that the Sandbox is released; a cleanup failure stays
    visible and is retried.
-7. Verify anonymous and different-account sessions cannot read deployment history
-   or saved events. The creating account can read its history without GitHub/provider
-   calls after OAuth expiry or repository/organization permission changes.
-   Repository-only organization members and installation/repository mismatches
-   still fail closed for create, stop, delete, and retry. Create enough active deployments to
+7. Verify anonymous users and users without the exact installation-repository
+   pair cannot read or mutate deployments. A different authorized repository
+   member must be able to read history/logs and create/redeploy/stop/delete.
+   Missing/rejected OAuth fails closed; warmed reads reuse the Jobs cache.
+   Check public-only template choices for members, owner-only private catalogs
+   and Sandbox settings, revision execution credentials, and per-user terminals. Create enough active deployments to
    receive `429 deployment_quota_exceeded`, then release one and verify admission
    resumes. After the configured retention window, confirm terminal deployment
    rows/events are pruned while audit evidence remains.

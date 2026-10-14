@@ -67,6 +67,7 @@ func (s *DBStore) createDeployment(db *gorm.DB, deployment Deployment) (Deployme
 		deployment.Status = DeploymentStatusQueued
 	}
 	record := deploymentRecord{
+		ExecutionAccountID: deployment.ExecutionAccountID,
 		SourceRepositoryID: deployment.SourceRepositoryID, SourceRepositoryFullName: deployment.SourceRepositoryFullName, SourceRef: deployment.SourceRef,
 		RevisionNumber:             deployment.RevisionNumber,
 		ID:                         deployment.ID,
@@ -179,23 +180,26 @@ func (s *DBStore) ListDeploymentsForAccount(accountID int64, options DeploymentL
 	return s.listDeploymentsForAccount(accountID, nil, false, options)
 }
 
-func (s *DBStore) ListAuthorizedDeploymentsForAccount(accountID int64, access []DeploymentRepositoryAccess, options DeploymentListOptions) ([]Deployment, int64, error) {
-	return s.listDeploymentsForAccount(accountID, access, true, options)
+func (s *DBStore) ListAuthorizedDeployments(access []GitHubInstallationRepositoryAccess, options DeploymentListOptions) ([]Deployment, int64, error) {
+	return s.listDeploymentsForAccount(0, access, true, options)
 }
 
-func (s *DBStore) listDeploymentsForAccount(accountID int64, access []DeploymentRepositoryAccess, authorized bool, options DeploymentListOptions) ([]Deployment, int64, error) {
+func (s *DBStore) listDeploymentsForAccount(accountID int64, access []GitHubInstallationRepositoryAccess, authorized bool, options DeploymentListOptions) ([]Deployment, int64, error) {
 	db, err := s.dbOrEnsure()
 	if err != nil {
 		return nil, 0, err
 	}
-	if accountID <= 0 {
+	if !authorized && accountID <= 0 {
 		return nil, 0, fmt.Errorf("account id must be positive")
 	}
 	limit, offset, err := normalizeDeploymentPagination(options)
 	if err != nil {
 		return nil, 0, err
 	}
-	query := db.Model(&deploymentRecord{}).Where("account_id = ?", accountID)
+	query := db.Model(&deploymentRecord{})
+	if !authorized {
+		query = query.Where("account_id = ?", accountID)
+	}
 	if options.RepositoryFullName != "" {
 		query = query.Where("repository_full_name = ?", options.RepositoryFullName)
 	}
@@ -219,10 +223,8 @@ func (s *DBStore) listDeploymentsForAccount(accountID int64, access []Deployment
 			return []Deployment{}, 0, nil
 		}
 		allowed := db.Where("1 = 0")
-		for _, item := range access {
-			if item.InstallationID > 0 && item.RepositoryID > 0 && strings.TrimSpace(item.RepositoryFullName) != "" {
-				allowed = allowed.Or("github_installation_id = ? AND repository_id = ? AND repository_full_name = ?", item.InstallationID, item.RepositoryID, strings.TrimSpace(item.RepositoryFullName))
-			}
+		for _, item := range normalizeGitHubInstallationRepositoryAccess(access) {
+			allowed = allowed.Or("github_installation_id = ? AND LOWER(repository_full_name) IN ?", item.InstallationID, item.Repositories)
 		}
 		query = query.Where(allowed)
 	}
@@ -386,6 +388,7 @@ func retryDeployment(db *gorm.DB, deployment Deployment, expiresAt time.Time) er
 	}
 	now := time.Now().UTC()
 	result := db.Model(&deploymentRecord{}).Where("id = ? AND version = ? AND status IN ?", deployment.ID, deployment.Version, []string{DeploymentStatusFailed, DeploymentStatusCompleted, DeploymentStatusExpired}).Updates(map[string]any{
+		"execution_account_id": deployment.ExecutionAccountID,
 		"revision_number":      gorm.Expr("revision_number + 1"),
 		"source_repository_id": deployment.SourceRepositoryID, "source_repository_full_name": deployment.SourceRepositoryFullName, "source_ref": deployment.SourceRef,
 		"ref":                           deployment.Ref,
@@ -709,6 +712,7 @@ func applyDeploymentTimestamps(record *deploymentRecord, now time.Time) {
 
 func deploymentFromRecord(record deploymentRecord) Deployment {
 	return Deployment{
+		ExecutionAccountID: record.ExecutionAccountID,
 		SourceRepositoryID: record.SourceRepositoryID, SourceRepositoryFullName: record.SourceRepositoryFullName, SourceRef: record.SourceRef, RevisionNumber: record.RevisionNumber,
 		ID:                         record.ID,
 		AccountID:                  record.AccountID,

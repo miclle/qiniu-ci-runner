@@ -133,9 +133,7 @@ func (s *Server) newDeploymentWorker() *deploymentworker.Worker {
 			return decryptSecret(value, s.cfg.AuthEncryptionKey.Value())
 		})
 	}
-	worker := deploymentworker.New(s.store, factory, deploymentworker.GitSourceFactory(func(ctx context.Context, accountID int64) (string, error) {
-		return s.githubUserAccessToken(accountID)
-	}), decode, s.cfg.DeploymentWorkRoot)
+	worker := deploymentworker.New(s.store, factory, s.deploymentSource, decode, s.cfg.DeploymentWorkRoot)
 	worker.Retention = s.cfg.DeploymentRetention
 	worker.TemplateID = s.cfg.DeploymentTemplateID
 	worker.CreateTimeout = s.cfg.SandboxCreateTimeout
@@ -145,4 +143,23 @@ func (s *Server) newDeploymentWorker() *deploymentworker.Worker {
 		}
 	}
 	return worker
+}
+
+// A queued revision executes with its submitter's current repository access.
+// Creator identity remains stable for auditing and request-key replay.
+func (s *Server) deploymentSource(ctx context.Context, d state.Deployment) (deploy.Source, error) {
+	accountID := d.ExecutionAccountID
+	if accountID == 0 {
+		accountID = d.AccountID
+	}
+	access, err := s.refreshUserRepositoryAccess(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !hasRepositoryAccess(access, d.GitHubInstallationID, d.RepositoryFullName) {
+		return nil, errors.New("deployment repository access is unavailable")
+	}
+	return deploymentworker.GitSourceFactory(func(_ context.Context, actorID int64) (string, error) {
+		return s.githubUserAccessToken(actorID)
+	})(ctx, d)
 }

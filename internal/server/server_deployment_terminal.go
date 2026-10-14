@@ -24,25 +24,25 @@ func deploymentTerminalAvailable(d state.Deployment) bool {
 	return d.Status == state.DeploymentStatusRunning && d.SandboxID != "" && time.Now().Before(d.ExpiresAt)
 }
 
-func (s *Server) loadDeploymentTerminal(w http.ResponseWriter, r *http.Request) (state.Deployment, bool) {
-	_, _, d, ok := s.loadAuthorizedDeployment(w, r)
+func (s *Server) loadDeploymentTerminal(w http.ResponseWriter, r *http.Request) (state.Deployment, int64, bool) {
+	_, account, d, ok := s.loadAuthorizedDeployment(w, r)
 	if !ok {
-		return state.Deployment{}, false
+		return state.Deployment{}, 0, false
 	}
 	number, err := strconv.ParseInt(r.PathValue("number"), 10, 64)
 	if err != nil || number <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid revision number")
-		return state.Deployment{}, false
+		return state.Deployment{}, 0, false
 	}
 	if number != d.RevisionNumber || !deploymentTerminalAvailable(d) {
 		writeError(w, http.StatusConflict, "terminal is only available for the current running deployment revision")
-		return state.Deployment{}, false
+		return state.Deployment{}, 0, false
 	}
-	return d, true
+	return d, account.ID, true
 }
 
 func (s *Server) handleUserCreateDeploymentTerminal(w http.ResponseWriter, r *http.Request) {
-	d, ok := s.loadDeploymentTerminal(w, r)
+	d, accountID, ok := s.loadDeploymentTerminal(w, r)
 	if !ok {
 		return
 	}
@@ -110,12 +110,12 @@ func (s *Server) handleUserCreateDeploymentTerminal(w http.ResponseWriter, r *ht
 		return
 	}
 	mu.Lock()
-	session = s.terminals.Add(deploymentTerminalKey(d), d.SandboxID, wrapped)
+	session = s.terminals.Add(deploymentAccountTerminalKey(d, accountID), d.SandboxID, wrapped)
 	session.append(pending)
 	pending = nil
 	mu.Unlock()
 	s.terminals.CloseSessionWhenIdle(session.id, terminalIdleCloseDelay)
-	go s.watchDeploymentTerminal(ctx, d, session.id)
+	go s.watchDeploymentTerminal(ctx, d, accountID, session.id)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, map[string]any{"session_id": session.id, "pid": term.PID(), "sandbox_id": d.SandboxID})
 }
@@ -134,7 +134,7 @@ func sameDeploymentTerminal(expected, current state.Deployment) bool {
 	return deploymentTerminalAvailable(current) && current.AccountID == expected.AccountID && current.SandboxID == expected.SandboxID && deploymentTerminalKey(current) == deploymentTerminalKey(expected)
 }
 
-func (s *Server) watchDeploymentTerminal(ctx context.Context, d state.Deployment, sessionID string) {
+func (s *Server) watchDeploymentTerminal(ctx context.Context, d state.Deployment, accountID int64, sessionID string) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	defer func() {
@@ -159,9 +159,9 @@ func (s *Server) watchDeploymentTerminal(ctx context.Context, d state.Deployment
 				continue
 			}
 			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			access, err := s.deploymentAccessForAccount(checkCtx, d.AccountID)
+			access, err := s.userAuthorizedRepositoryAccess(checkCtx, accountID)
 			cancel()
-			if err != nil || !hasDeploymentAccess(access, current) {
+			if err != nil || !hasRepositoryAccess(access, current.GitHubInstallationID, current.RepositoryFullName) {
 				return
 			}
 			nextAccessCheck = time.Now().Add(30 * time.Second)
@@ -170,12 +170,12 @@ func (s *Server) watchDeploymentTerminal(ctx context.Context, d state.Deployment
 }
 
 func (s *Server) authorizedDeploymentTerminal(w http.ResponseWriter, r *http.Request) (*terminalSession, bool) {
-	d, ok := s.loadDeploymentTerminal(w, r)
+	d, accountID, ok := s.loadDeploymentTerminal(w, r)
 	if !ok {
 		return nil, false
 	}
 	session, ok := s.terminals.Get(r.PathValue("sessionID"))
-	if !ok || session.requestID != deploymentTerminalKey(d) || session.sandboxID != d.SandboxID {
+	if !ok || session.requestID != deploymentAccountTerminalKey(d, accountID) || session.sandboxID != d.SandboxID {
 		writeError(w, http.StatusNotFound, "terminal session not found")
 		return nil, false
 	}
@@ -201,9 +201,8 @@ func (s *Server) handleUserDeploymentTerminalResize(w http.ResponseWriter, r *ht
 }
 
 func (s *Server) handleUserCloseDeploymentTerminal(w http.ResponseWriter, r *http.Request) {
-	// Closing is permitted after stop/redeploy, but only for the owning account
-	// and the revision in the URL; it cannot grant new Sandbox access.
-	_, _, d, ok := s.loadAccountDeployment(w, r)
+	// The session creator may close their own PTY even after access is revoked.
+	_, account, ok := s.requireUserSession(w, r)
 	if !ok {
 		return
 	}
@@ -213,7 +212,7 @@ func (s *Server) handleUserCloseDeploymentTerminal(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusNotFound, "terminal session not found")
 		return
 	}
-	prefix := fmt.Sprintf("deployment:%s:revision:%d:attempt:", d.ID, number)
+	prefix := fmt.Sprintf("account:%d:deployment:%s:revision:%d:attempt:", account.ID, strings.TrimSpace(r.PathValue("id")), number)
 	// The attempt suffix is server-generated and is never supplied by the client.
 	if !strings.HasPrefix(session.requestID, prefix) {
 		writeError(w, http.StatusNotFound, "terminal session not found")
@@ -226,4 +225,8 @@ func (s *Server) handleUserCloseDeploymentTerminal(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func deploymentAccountTerminalKey(d state.Deployment, accountID int64) string {
+	return fmt.Sprintf("account:%d:%s", accountID, deploymentTerminalKey(d))
 }

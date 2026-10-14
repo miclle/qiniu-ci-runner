@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -53,6 +54,7 @@ func TestPullRequestDeploymentPinsSourceAndRejectsInvalidContext(t *testing.T) {
 	store := state.New(t.TempDir())
 	srv := newTestServer(t, store, api.URL, &fakeSandbox{})
 	srv.Close()
+	srv.loopCtx = context.Background()
 	srv.sandboxHTTP = deploymentTemplateTestClient()
 	account, _, err := store.GetAccountByOAuthIdentity("github", "hubot-id")
 	if err != nil {

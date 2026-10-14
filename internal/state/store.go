@@ -81,6 +81,7 @@ type RunnerRequest struct {
 // Source identity and the normalized execution Spec are immutable after create;
 // lifecycle and provider fields are updated with optimistic version checks.
 type Deployment struct {
+	ExecutionAccountID         int64     `json:"-"` // Current revision actor; zero uses the historical creator.
 	RevisionNumber             int64     `json:"revision_number"`
 	ID                         string    `json:"id"`
 	AccountID                  int64     `json:"account_id"`
@@ -158,13 +159,6 @@ type DeploymentEvent struct {
 	Stream         string    `json:"stream,omitempty"`
 	Message        string    `json:"message,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
-}
-
-// DeploymentRepositoryAccess binds current repository identity to its installation.
-type DeploymentRepositoryAccess struct {
-	InstallationID     int64
-	RepositoryID       int64
-	RepositoryFullName string
 }
 
 type RunnerState struct {
@@ -637,7 +631,7 @@ type DeploymentStore interface {
 	CreateDeploymentWithScopeLimit(deployment Deployment, maxConcurrent int) (Deployment, error)
 	GetDeployment(id string) (Deployment, error)
 	ListDeploymentsForAccount(accountID int64, options DeploymentListOptions) ([]Deployment, int64, error)
-	ListAuthorizedDeploymentsForAccount(accountID int64, access []DeploymentRepositoryAccess, options DeploymentListOptions) ([]Deployment, int64, error)
+	ListAuthorizedDeployments(access []GitHubInstallationRepositoryAccess, options DeploymentListOptions) ([]Deployment, int64, error)
 	ListActiveDeployments() ([]Deployment, error)
 	UpdateDeployment(deployment Deployment) error
 	RetryDeployment(deployment Deployment, expiresAt time.Time) error

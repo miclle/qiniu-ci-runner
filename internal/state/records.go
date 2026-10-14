@@ -73,6 +73,7 @@ type runnerRequestRecord struct {
 func (runnerRequestRecord) TableName() string { return "runner_requests" }
 
 type deploymentRecord struct {
+	ExecutionAccountID         int64      `gorm:"column:execution_account_id;not null;default:0"`
 	RevisionNumber             int64      `gorm:"column:revision_number;not null;default:1"`
 	ID                         string     `gorm:"column:id;primaryKey"`
 	AccountID                  int64      `gorm:"column:account_id;not null;index:idx_deployments_account_created"`
@@ -126,30 +127,31 @@ func (deploymentRecord) TableName() string { return "deployments" }
 
 // Revision snapshots exclude service credentials and retain the encrypted plan.
 type deploymentRevisionRecord struct {
-	ID                string     `gorm:"column:id;primaryKey"`
-	DeploymentID      string     `gorm:"column:deployment_id;size:128;not null;uniqueIndex:idx_deployment_revisions_number,priority:1"`
-	Number            int64      `gorm:"column:number;not null;uniqueIndex:idx_deployment_revisions_number,priority:2"`
-	Ref               string     `gorm:"column:ref;not null"`
-	CommitSHA         string     `gorm:"column:commit_sha;not null"`
-	ConfigPath        string     `gorm:"column:config_path;not null"`
-	SnapshotVersion   int        `gorm:"column:snapshot_version;not null"`
-	SpecHash          string     `gorm:"column:spec_hash;not null"`
-	SpecJSONEncrypted string     `gorm:"column:spec_json_encrypted;type:text;not null"`
-	TemplateID        string     `gorm:"column:template_id"`
-	TemplateName      string     `gorm:"column:template_name"`
-	TemplateCPU       int32      `gorm:"column:template_cpu"`
-	TemplateMemoryMB  int32      `gorm:"column:template_memory_mb"`
-	TemplateDiskMB    int32      `gorm:"column:template_disk_mb"`
-	Status            string     `gorm:"column:status;not null"`
-	SandboxID         string     `gorm:"column:sandbox_id"`
-	SandboxRegion     string     `gorm:"column:sandbox_region"`
-	Endpoint          string     `gorm:"column:endpoint"`
-	FailureStage      string     `gorm:"column:failure_stage"`
-	FailureReason     string     `gorm:"column:failure_reason"`
-	ExpiresAt         time.Time  `gorm:"column:expires_at;not null"`
-	RunningAt         *time.Time `gorm:"column:running_at"`
-	CreatedAt         time.Time  `gorm:"column:created_at;not null"`
-	UpdatedAt         time.Time  `gorm:"column:updated_at;not null"`
+	ExecutionAccountID int64      `gorm:"column:execution_account_id;not null;default:0"`
+	ID                 string     `gorm:"column:id;primaryKey"`
+	DeploymentID       string     `gorm:"column:deployment_id;size:128;not null;uniqueIndex:idx_deployment_revisions_number,priority:1"`
+	Number             int64      `gorm:"column:number;not null;uniqueIndex:idx_deployment_revisions_number,priority:2"`
+	Ref                string     `gorm:"column:ref;not null"`
+	CommitSHA          string     `gorm:"column:commit_sha;not null"`
+	ConfigPath         string     `gorm:"column:config_path;not null"`
+	SnapshotVersion    int        `gorm:"column:snapshot_version;not null"`
+	SpecHash           string     `gorm:"column:spec_hash;not null"`
+	SpecJSONEncrypted  string     `gorm:"column:spec_json_encrypted;type:text;not null"`
+	TemplateID         string     `gorm:"column:template_id"`
+	TemplateName       string     `gorm:"column:template_name"`
+	TemplateCPU        int32      `gorm:"column:template_cpu"`
+	TemplateMemoryMB   int32      `gorm:"column:template_memory_mb"`
+	TemplateDiskMB     int32      `gorm:"column:template_disk_mb"`
+	Status             string     `gorm:"column:status;not null"`
+	SandboxID          string     `gorm:"column:sandbox_id"`
+	SandboxRegion      string     `gorm:"column:sandbox_region"`
+	Endpoint           string     `gorm:"column:endpoint"`
+	FailureStage       string     `gorm:"column:failure_stage"`
+	FailureReason      string     `gorm:"column:failure_reason"`
+	ExpiresAt          time.Time  `gorm:"column:expires_at;not null"`
+	RunningAt          *time.Time `gorm:"column:running_at"`
+	CreatedAt          time.Time  `gorm:"column:created_at;not null"`
+	UpdatedAt          time.Time  `gorm:"column:updated_at;not null"`
 
 	SourceRepositoryID       int64  `gorm:"column:source_repository_id"`
 	SourceRepositoryFullName string `gorm:"column:source_repository_full_name"`

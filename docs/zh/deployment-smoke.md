@@ -334,9 +334,9 @@ Workflow 完成后确认：
 
 ## 9. Sandbox Deploy 验收
 
-使用真实私有仓库、GitHub App Installation、可用的独立 Deploy 模板，以及账号或 owner
-管理的组织 Sandbox 配置执行本节。开始前确认 App 具有仓库 Contents 读取权限；组织验收还
-需要 Members 读取权限和 active owner membership。生成的 ID 和时间戳只记录在仓库外部的验收
+使用真实私有仓库、GitHub App Installation、可用的独立 Deploy 模板，以及账号或
+组织 Sandbox 配置执行本节。开始前确认 App 具有仓库 Contents 读取权限。仓库成员可以部署；
+管理组织设置与私有模板目录需要 Members 读取权限和 active owner membership。生成的 ID 和时间戳只记录在仓库外部的验收
 记录中。
 
 1. 在已知 Commit 写入 `.qiniu/deploy.yaml`，从 branch 发起手动部署，确认 API 保存完整
@@ -355,9 +355,10 @@ Workflow 完成后确认：
    到期时间；旧 attempt 回调不能修改当前部署。
 6. 分别执行 stop、DELETE、TTL 到期和启动失败，确认 provider 证据最终表明 Sandbox 已释放；
    清理失败保持可见并继续重试。
-7. 验证匿名及其他账号不能读取部署历史或已保存事件。创建账号在 OAuth 过期、仓库或组织
-   权限变更后仍可读取自己的历史，读取过程不调用 GitHub／Provider。仅有仓库权限的组织
-   成员及 installation/repository 不匹配请求，对创建、stop、delete 和 retry 仍失败关闭。
+7. 验证匿名用户与没有精确 Installation＋仓库权限的用户不能读取或修改部署。有相同仓库
+   权限的其他成员应能查看历史／日志，以及创建、重新部署、停止和删除。OAuth 缺失或被拒绝
+   时失败关闭；热缓存读取复用 Jobs 授权。确认成员只能选择公共模板，私有目录和 Sandbox
+   设置仍由 owner 管理；检查 revision 执行凭据与每个用户的终端隔离。
    创建足够的活动部署后应收到
    `429 deployment_quota_exceeded`；释放一个后准入恢复。超过保留期后终态部署行／事件应清理，
    审计证据仍保留。

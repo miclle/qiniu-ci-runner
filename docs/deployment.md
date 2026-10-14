@@ -126,11 +126,12 @@ composition, or automatic CI/PR triggers.
 Private repository Deploy requires the App's repository **Contents: Read-only**
 permission so runnerd can read `.qiniu/deploy.yaml` and the pinned Commit. The
 existing user OAuth flow must also be able to enumerate the repository and its
-installation access. Organization Deploy is owner-managed; the App needs
-**Members: Read-only** and the signed-in user must have an active GitHub
-organization owner membership (`role: admin`). After changing App permissions,
-every existing installation must approve the new permission before the
-organization appears as manageable. Deploy never inherits CI Secrets, Cache S3
+installation access. Like Jobs, Deploy authorizes the exact OAuth/App
+installation-repository pair, independently of creator identity or organization
+role. Repository members may read, create, redeploy, stop and delete deployments.
+Sandbox Preferences and private template catalogs remain owner-managed; managing
+organization settings still requires **Members: Read-only** and active owner
+membership (`role: admin`). Deploy never inherits CI Secrets, Cache S3
 credentials, or fork sponsorship permissions.
 
 ## First control-plane slice
@@ -140,13 +141,15 @@ The authenticated API currently exposes the persisted plan boundary. The
 existing Repositories and Preferences APIs; the external GitHub Installation
 ID is resolved server-side.
 
-- `GET /user/deployment-templates?installation_id=<local-id>` returns runnable
-  owned and public templates from the effective Deploy credential/region, with
-  the same owner-only scope check as creation. It does not use the CI fallback
-  unless Deploy fallback is explicitly enabled.
+- `GET /user/deployment-templates?installation_id=<local-id>&repository_full_name=<owner/repo>`
+  returns runnable owned/public templates for a scope owner. Other users must
+  authorize the exact repository and receive only runnable public template IDs
+  and names, without private catalogs or scope metadata. Non-owner creation
+  accepts only a verified public template; existing saved revisions can be
+  redeployed by repository members. Deploy fallback remains opt-in.
 - `GET /user/deployment-refs?installation_id=<local-id>&repository_full_name=<owner/repo>&source=branch|tag&page=1`
   lists at most 100 reference names per page, with `has_more`. It requires the
-  same owner scope and exact OAuth/App repository intersection as creation;
+  same exact OAuth/App repository intersection as creation;
   missing or rejected OAuth access fails closed.
 - `POST /user/deployments` accepts a selected physical `template_id`, optional `template_name`, `template_cpu`,
   `template_memory_mb`, and `template_disk_mb` snapshots from the template catalog, a linked local `installation_id`, an exact
@@ -161,15 +164,17 @@ ID is resolved server-side.
   `refs/tags/<name>` before resolution, so identical branch/tag names stay
   distinct. API clients that omit `source` can still send a branch/tag/commit
   ref. Responses expose the source and unqualified display name when available.
-- `GET /user/deployments` reads the signed-in account's deployment history directly
-  from the local database, with account isolation and pagination. It does not call
-  GitHub or Sandbox, so history remains listable after repository access changes
-  or the stored GitHub access token expires.
-- `GET /user/deployments/{id}` and its persisted events check the local account
-  ownership, with no GitHub or Sandbox reads. History remains accessible to its
-  creating account after OAuth expiry or repository/organization access changes.
-  Creation and lifecycle mutations still require the current owner-manageable
-  scope and exact GitHub OAuth/App repository intersection.
+- `GET /user/deployments` reads local history after filtering authorized exact
+  installation-repository pairs, before count and pagination. Creator identity
+  does not restrict visibility.
+- `GET /user/deployments/{id}`, saved events, revisions and lifecycle actions
+  share Jobs' repository authorization cache: refresh after 20 seconds, hard
+  expiry at 30 seconds, with coalesced refreshes. A cache miss may contact GitHub;
+  deployment content never requires Sandbox I/O. Missing/rejected OAuth access
+  fails closed, including for the original creator.
+  Create/retry records the execution account for each revision; the worker
+  revalidates that actor before source checkout. Historical zero actor fields
+  use the original creator, whose identity and idempotency key remain stable.
 - `GET /user/deployments/{id}/events` returns bounded lifecycle/output events with
   exclusive `before_id` and `after_id` cursors (mutually exclusive). Initial pages
   contain the newest events in chronological order; `after_id` returns the next
@@ -231,8 +236,7 @@ The local detail response includes `revision_number`, the newest 100 `revisions`
 `GET /user/deployments/{id}/revisions?before_number=N` for earlier revisions.
 `GET /user/deployments/{id}/revisions/{number}/events` uses the same exclusive
 `before_id`/`after_id` contract as the existing event endpoint; the existing
-`/events` endpoint reads the current revision. These reads authorize local
-account ownership, set `Cache-Control: no-store`, and perform no provider I/O.
+`/events` endpoint reads the current revision. These reads authorize the exact repository through Jobs' cache, set `Cache-Control: no-store`, and perform no provider I/O.
 Encrypted plans and service credentials are never included in these responses.
 
 The detail layout puts saved target configuration above a revision history and
@@ -266,8 +270,8 @@ showed installation/start/readiness output, and preserved the detail and logs
 after reload. Public HTML returned HTTP 200 with no browser console/page errors.
 The stop API returned 200; the record reached `completed` and cleared its Sandbox
 reference. The Chinese form's Branch/Tag labels and empty-Tag submission guard
-were also checked. Private repository access and authenticated retry/delete flows
-remain separate gates.
+were also checked. At that point, private repository access and authenticated
+retry/delete flows remained separate gates; later evidence is recorded below.
 
 On 2026-10-14, the user confirmed that real Sandbox acceptance passed following
 the Web terminal implementation. This records user-performed acceptance; no
@@ -292,6 +296,16 @@ provider 404 after cleanup. Only one create request reached the transport.
 The transport faults are synthetic; creation, metadata reconciliation and
 resource release use the real provider. This is worker evidence, not proof of
 duplicate authenticated API submissions or an actual provider outage.
+
+Ordinary Chrome acceptance on 2026-10-14 at `09c3a81` also redeployed revision
+#1 as #2 with an unchanged saved plan, then selected latest branch code for #3.
+Both public endpoints returned HTTP 200. Reload preserved revision #1 and its
+logs, and the historical terminal remained unavailable. Both new revisions were
+stopped; the final record was completed with an empty Sandbox reference and all
+three revisions retained. The branch had not advanced, so this does not prove
+moving-branch behavior. Provider 404 was not separately checked for these stops.
+This predates repository-shared authorization and does not prove cross-account
+live acceptance; private repository/fork PR runs remain deferred.
 
 1. **Preflight and plan (done):** strict repository configuration, immutable
    Commit resolution, exact OAuth/App repository intersection, encrypted Spec
@@ -326,10 +340,10 @@ service process's stdout. Shell changes are local to that Sandbox.
 Terminal routes use `/user/deployments/{id}/revisions/{number}/terminal`:
 `POST` creates a PTY; `GET /{sessionID}/events` streams output;
 `POST /{sessionID}/input` sends input; `POST /{sessionID}/resize` resizes it;
-`DELETE /{sessionID}` closes it. Every access checks account ownership and current
-repository/organization permissions. Closing an existing shell only requires
-account ownership, so cleanup still works after permissions or lifecycle change.
-Sessions bind deployment, revision, attempt and Sandbox identity; historical
+`DELETE /{sessionID}` closes it. Every access checks the current user's repository permission and shell ownership.
+Closing an existing shell requires its creating account, so cleanup still works
+after permissions or lifecycle change. Sessions bind the opening account,
+deployment, revision, attempt and Sandbox identity; historical
 revisions cannot connect to the current Sandbox. Persisted details/logs remain
 local reads; opening a terminal uses the saved provider endpoint and encrypted
 credential, without exposing them to the browser. Connect uses remaining
@@ -366,7 +380,7 @@ window (up to 500 loaded Runner requests); an empty filter never falls back to
 another repository. This route change does not add an unbounded Jobs archive.
 Repository deployment lists filter saved revisions before database pagination.
 Without a deployment selection the page lists saved deployments in that context.
-`/deployments` remains global account history; `/deployments/new` is the form.
+`/deployments` lists all authorized repository history; `/deployments/new` is the form.
 A repository-only creation link prefills the repository and lets the user choose
 a source. Old `/github/pulls/...`, `/github/branches/...`, `/jobs/...`, and the
 previous `/pr/`, `/branch/{encoded-name}/`, `/tag/{encoded-name}/`, `/run/` paths
@@ -377,18 +391,17 @@ Legacy `/deployments/{id}` links load the local record and replace the URL with
 its saved source context. Historical revisions use their own saved ref; their
 Commit SHA is read from the stored revision, not the URL.
 Repository/source text in a URL never grants access: detail reads still authorize
-by local account and deployment ID, then canonicalize the display URL. History
+the exact repository pair and deployment ID, then canonicalize the display URL. History
 filters (`repository_full_name`, `ref`, `commit_sha`, `pull_request_number`) on
 `GET /user/deployments` run before pagination and match persisted revisions;
-`selected_revision` identifies the matching historical revision. These reads do
-not query GitHub or the Sandbox provider.
+`selected_revision` identifies the matching historical revision. Content reads do not query the Sandbox provider; authorization may refresh GitHub access.
 
 Both grouped and standalone ordinary-user Jobs provide deployment history and
 "Deploy this commit" links using the selected Job's repository and PR/branch.
 History spans commits; creation pins the selected Job's SHA, including historical
 Jobs. Creation uses `/deployments/new?repository=...&source=...&ref=...&commit_sha=...`;
-these values only prefill the form. The form waits for authorized manageable
-account catalogs, preserves an explicitly selected PR even if it is closed,
+these values only prefill the form. The form waits for authorized repository
+catalogs, preserves an explicitly selected PR even if it is closed,
 and displays the fixed SHA. Changing repository/source/ref clears that pin;
 "Use latest source commit" explicitly removes it. GitHub validates the final
 source on submission. Jobs without a full SHA or source context omit the links.
@@ -414,4 +427,4 @@ head. PR revisions snapshot `source_repository_id`, `source_repository_full_name
 and `source_ref`; existing records migrate additively with empty source evidence.
 The PR number is retained in its qualified ref and exposed as `pull_request_number`.
 Latest redeploy resolves the current PR head again; revision redeploy copies the
-saved source/plan evidence. Saved deployment history remains local account data.
+saved source/plan evidence. Saved deployment history remains local and shared by authorized repository members.

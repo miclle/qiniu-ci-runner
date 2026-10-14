@@ -93,9 +93,10 @@ attempt。准入在状态事务中串行化，超过限制的并发请求返回
 
 私有仓库 Deploy 要求 App 具备仓库 **Contents: Read-only** 权限，以读取
 `.qiniu/deploy.yaml` 和固定 Commit。现有用户 OAuth 流程还必须能够列出该仓库及其
-Installation 访问范围。组织 Deploy 由 owner 管理；App 需要 **Members: Read-only**，
-登录用户必须拥有 active GitHub organization owner membership（`role: admin`）。App
-权限变更后，所有已有 Installation 都必须重新批准新增权限，组织才会显示为可管理。
+Installation 访问范围。Deploy 与 Jobs 一样按 OAuth/App 的 Installation＋仓库精确交集
+授权，不按创建者或组织角色隔离。仓库成员可以查看、创建、重新部署、停止和删除部署。
+Sandbox Preferences 与私有模板目录仍由 owner 管理；管理组织设置仍需
+**Members: Read-only** 和 active owner membership（`role: admin`）。
 Deploy 不会继承 CI Secrets、Cache S3 凭证或 Fork sponsorship 权限。
 
 ## 首个控制面切片
@@ -104,11 +105,12 @@ Deploy 不会继承 CI Secrets、Cache S3 凭证或 Fork sponsorship 权限。
 和 Preferences API 使用的本地关联 installation 记录 ID；外部 GitHub
 Installation ID 由服务端解析：
 
-- `GET /user/deployment-templates?installation_id=<local-id>` 使用与创建相同的 owner
-  作用域检查，返回有效 Deploy 凭据／区域中的可运行自有与公共模板。只有明确启用
-  Deploy fallback 时才允许平台兜底。
+- `GET /user/deployment-templates?installation_id=<local-id>&repository_full_name=<owner/repo>`
+  向作用域 owner 返回可运行的自有／公共模板。其他用户必须通过精确仓库授权，
+  只获得公共模板 ID 与名称，不返回私有目录或作用域元数据。非 owner 创建时只能
+  选择已验证的公共模板；仓库成员可以重新部署已有的保存版本。Deploy fallback 仍需明确启用。
 - `GET /user/deployment-refs?installation_id=<local-id>&repository_full_name=<owner/repo>&source=branch|tag&page=1`
-  每页最多返回 100 个引用名称及 `has_more`。读取前检查与创建相同的 owner 作用域和
+  每页最多返回 100 个引用名称及 `has_more`。读取前检查与创建相同的
   OAuth/App 精确仓库交集；OAuth 缺失或被拒绝时失败关闭。
 - `POST /user/deployments` 接收所选物理 `template_id`、可选的模板目录快照 `template_name`、
   `template_cpu`、`template_memory_mb` 和 `template_disk_mb`、已关联的本地 `installation_id`、精确的
@@ -120,11 +122,13 @@ Installation ID 由服务端解析：
   传入 `source` 时，服务端先将名称限定为 `refs/heads/<name>` 或 `refs/tags/<name>`，
   避免同名分支与 Tag 混淆。未传 `source` 的 API 客户端仍可使用 branch/tag/commit ref。
   已知来源的响应返回来源和用于展示的原名称。
-- `GET /user/deployments` 按当前登录账号直接从本地数据库分页读取部署历史，保留账号隔离，
-  不调用 GitHub 或 Sandbox。仓库权限改变或保存的 GitHub Token 过期后，历史仍可列出。
-- `GET /user/deployments/{id}` 及其已保存事件按本地账号归属读取，不访问 GitHub 或
-  Sandbox。OAuth 过期、仓库或组织权限变更后，创建账号仍可查看自己的历史。创建与
-  生命周期操作仍检查当前可管理 owner 作用域及 GitHub OAuth/App 精确仓库交集。
+- `GET /user/deployments` 在本地数据库中按已授权的 Installation＋仓库过滤，再计算
+  总数和分页；创建者身份不限制可见性。
+- `GET /user/deployments/{id}`、已保存事件、版本与生命周期操作复用 Jobs 的仓库授权缓存：
+  20 秒后刷新，30 秒硬过期，并合并并发刷新。缓存未命中时可能访问 GitHub；部署内容
+  本身不需要 Sandbox I/O。OAuth 缺失或被拒绝时失败关闭，原创建者也遵守该规则。
+  创建／重试为每个 revision 保存执行账号；worker 在检出来源前重新校验该操作者。
+  历史执行账号为零时使用原创建者；创建者身份和幂等键归属保持不变。
 - `GET /user/deployments/{id}/events` 返回有界的生命周期／输出事件，并支持
   互斥的 exclusive `before_id`／`after_id` 游标。初次返回最新事件并按时间正序展示；
   `after_id` 返回后续正序页，使活动轮询能够连续补齐日志。
@@ -169,7 +173,7 @@ Deployment 保持稳定的资源 ID。首次创建以事务保存版本 #1；
 `GET /user/deployments/{id}/revisions?before_number=N` 获取；版本日志通过
 `GET /user/deployments/{id}/revisions/{number}/events` 获取，支持相同的排他
 `before_id`／`after_id` 游标。原 `/events` 接口读取当前版本。
-这些读取均校验本地账号归属，使用 `Cache-Control: no-store`，不请求 Provider，
+这些读取通过 Jobs 缓存校验精确仓库权限，使用 `Cache-Control: no-store`，不请求 Provider，
 也不返回加密计划或服务凭据。
 
 详情上方展示已保存的目标配置，下方左侧为版本历史、右侧为所选版本的部署日志。
@@ -194,7 +198,7 @@ Deployment 保持稳定的资源 ID。首次创建以事务保存版本 #1；
 创建返回 201，跳转到详情，展示安装／启动／就绪日志，刷新后保持同一详情和日志。
 公网 HTML 返回 HTTP 200，浏览器无 console/page 错误。停止 API 返回 200，记录进入
 `completed` 并清空 Sandbox 引用。中文表单的分支／Tag 字段和空 Tag 禁止提交也已验证。
-私有仓库权限和已登录的 retry/delete 流程仍需单独验收。
+当时私有仓库权限和已登录的 retry/delete 流程尚未验收；后续结果记录在下文。
 
 2026-10-14，用户在 Web 终端实现后确认真实 Sandbox 验收已通过。此处记录用户完成的
 验收，未附加命令记录或逐项场景结果；上述 Issue #125 的独立验收项仍保持待完成。
@@ -211,6 +215,13 @@ attempt #1，未记录尚未确认的 Sandbox ID。新的 worker 按精确操作
 保留 `failed`／`recovery`，清理后通过 Provider 404 确认释放；传输层仅接到一次创建请求。
 传输故障由测试注入，创建、元数据查询与释放使用真实 Provider。这是 worker 层证据，
 不代表重复的已登录 API 提交或真实 Provider 服务中断已验收。
+
+2026-10-14 在 `09c3a81` 上通过普通 Chrome 继续验收：使用版本 #1 的原计划创建 #2，
+再选择最新分支代码创建 #3，两次公网访问均返回 HTTP 200。刷新后保留 #1 与旧日志，
+历史版本终端不可连接。两个新版本均已停止，最终记录为 completed、Sandbox 引用为空，
+三个版本均保留。分支期间没有前进，因此不能证明移动分支行为；这两次停止未单独验证
+Provider 404。本次记录早于仓库共享授权调整，不代表跨账号真实验收；私有仓库和 fork PR
+真实执行按当前安排暂缓。
 
 1. **预检与计划（已完成）**：严格解析仓库配置，固定完整 Commit，校验 OAuth/App
    精确仓库交集，加密保存 Spec 快照，并以审计事务持久化部署状态。
@@ -236,9 +247,9 @@ shell 中的修改仅作用于当前 Sandbox。
 终端路由前缀为 `/user/deployments/{id}/revisions/{number}/terminal`：
 `POST` 创建 PTY，`GET /{sessionID}/events` 订阅输出，
 `POST /{sessionID}/input` 发送输入，`POST /{sessionID}/resize` 调整大小，
-`DELETE /{sessionID}` 关闭终端。访问会检查账号归属及当前仓库／组织权限；关闭已有终端
-只需账号归属，以便在权限或生命周期变化后仍能清理。
-会话绑定部署、revision、attempt 和 Sandbox 标识，历史版本不能连接当前 Sandbox。
+`DELETE /{sessionID}` 关闭终端。访问会检查当前用户的仓库权限及 shell 归属；关闭已有终端
+只需该终端的创建账号，以便在权限或生命周期变化后仍能清理。
+会话绑定打开终端的账号、部署、revision、attempt 和 Sandbox 标识，历史版本不能连接当前 Sandbox。
 详情与已保存日志继续从本地读取；终端使用部署保存的 Provider endpoint 和加密凭据，
 不向浏览器暴露凭据。连接使用部署剩余有效期，不使用固定 Sandbox 超时。
 本地生命周期每 5 秒检查一次，已打开的会话每 30 秒重新检查远程权限；
@@ -274,7 +285,7 @@ Branch 和 Tag 名称放在查询参数中。浏览器链接保留可读的 `/`�
 既有 API 路径不变。
 
 旧 `/deployments/{id}` 链接读取本地记录后替换为保存的来源地址，历史版本使用自己的
-ref，Commit SHA 从保存的版本读取。URL 中的仓库与来源不授予权限：详情仍按本地账号和部署 ID 授权，再修正展示地址。
+ref，Commit SHA 从保存的版本读取。URL 中的仓库与来源不授予权限：详情仍按授权仓库和部署 ID 校验，再修正展示地址。
 `GET /user/deployments` 的 `repository_full_name`、`ref`、`commit_sha` 和
 `pull_request_number` 筛选在分页前查询已保存版本，`selected_revision` 标识匹配的历史版本。
 这些读取不请求 GitHub 或 Sandbox。
@@ -301,4 +312,4 @@ head SHA 相同，然后通过目标仓库读取配置、检出该不可变 SHA�
 不属于该来源的提交会拒绝，不会静默替换成新 head。每个版本保存 `source_repository_id`、
 `source_repository_full_name` 和 `source_ref`；旧记录通过新增字段升级，来源证据保持为空。
 PR 编号保存在完整 ref 中，并通过 `pull_request_number` 返回。最新重部署重新解析 PR head，
-历史版本重部署复制已保存的来源与计划。历史读取仍只访问当前账号的本地数据。
+历史版本重部署复制已保存的来源与计划。历史内容仍从本地读取，并向有仓库权限的成员共享。

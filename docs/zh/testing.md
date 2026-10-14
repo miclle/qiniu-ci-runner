@@ -763,9 +763,10 @@ SDK 协议 fixture 验证应用启动不发送远端 `Connect-Timeout-Ms` 截止
 不能停止替代 attempt 的边界。
 
 
-部署列表、详情及已保存事件 API 测试应证明只读取本地数据、账号隔离与分页，覆盖 OAuth
-Token 缺失和匿名拒绝，不允许访问 GitHub／Provider。仓库权限撤销或组织角色变更不影响
-创建账号读取自己的历史；修改部署仍需重新检查当前权限。UI 测试应验证 `/deployments` 只加载历史，并通过链接进入
+部署列表、详情及事件测试应证明跨账号仓库共享、计数／分页前的 Installation＋仓库
+精确隔离、Jobs 授权缓存复用，以及 OAuth 缺失或被拒绝时失败关闭。覆盖非 owner 创建、
+仅公共模板选择、owner 私有目录／设置边界、revision 执行账号持久化与 worker 重新授权，
+以及每个用户的 PTY 隔离。部署内容仍从本地读取；授权缓存未命中时可能访问 GitHub。UI 测试应验证 `/deployments` 只加载历史，并通过链接进入
 `/deployments/new`；创建页只加载表单依赖，两条路由均支持直接刷新。
 部署 UI 验证还覆盖分支／Tag 发现、空列表与失败重试、版本分页、延迟来源／scope 响应、
 模板选择、创建后进入详情、直接刷新
@@ -779,7 +780,7 @@ API 回归还覆盖完整分支／Tag 引用解析、同名来源的幂等冲突
 
 ### 部署终端验证
 
-运行 `go test ./internal/server ./internal/sandboxrunner -run 'TestDeploymentTerminal|TestDeploymentHistoryIsAccountOwned|TestUser.*Terminal|TestTerminalHub' -count=1`，验证 PTY 输入、缩放、关闭，账号／仓库／组织授权，revision／attempt 绑定，停止／到期拒绝，以及 Connect 使用剩余有效期。运行 `cd ui && bun run test:production --grep 'separates deployment'`，通过浏览器夹具验证标签切换、手动连接、键盘输入和断开；夹具不证明真实 Sandbox PTY 可用。真实验收时打开运行中的版本，连接后执行 `pwd`、查看应用日志文件、缩放、断开并重连，再停止部署并确认终端不可用。历史版本不得打开当前 Sandbox。
+运行 `go test ./internal/server ./internal/sandboxrunner -run 'TestDeploymentTerminal|TestDeploymentsShareJobs|TestDeploymentReadsAndMutations|TestUser.*Terminal|TestTerminalHub' -count=1`，验证 PTY 输入、缩放、关闭，仓库授权与用户终端归属，revision／attempt 绑定，停止／到期拒绝，以及 Connect 使用剩余有效期。运行 `cd ui && bun run test:production --grep 'separates deployment'`，通过浏览器夹具验证标签切换、手动连接、键盘输入和断开；夹具不证明真实 Sandbox PTY 可用。真实验收时打开运行中的版本，连接后执行 `pwd`、查看应用日志文件、缩放、断开并重连，再停止部署并确认终端不可用。历史版本不得打开当前 Sandbox。
 
 部署上下文验证：执行 `cd ui && bun test src/github-context-routes.test.js src/app-load-policy.test.js src/components/user-deployments-section.test.js` 及部署 production 浏览器夹具，覆盖旧链接跳转、直接刷新／OAuth 返回、分支名编码、不可变版本选择、返回列表与分页前的本地历史筛选。状态测试包括 `TestDeploymentContextListsMatchHistoricalRevisionsBeforePagination`。
 

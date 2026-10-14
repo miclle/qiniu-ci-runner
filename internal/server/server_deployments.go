@@ -187,9 +187,8 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// A deployment is a Sandbox mutation. Organization installations remain
-	// owner-managed even when the repository is visible through OAuth access.
-	scope, ok := s.authorizedDeploymentScope(w, r, account.ID, installation)
+	// Repository access authorizes deployment execution independently of Settings ownership.
+	scope, ok := s.deploymentScope(w, account.ID, installation)
 	if !ok {
 		return
 	}
@@ -229,6 +228,9 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 	service, sandboxSnapshot, snapshotErr := s.sandboxServiceForDeployment(r.Context(), scope)
 	if snapshotErr != nil {
 		writeErrorCode(w, http.StatusConflict, "deployment_sandbox_not_configured", "Configure Sandbox credentials in this account or organization's Preferences before deploying")
+		return
+	}
+	if !s.authorizeDeploymentTemplate(w, r, account.ID, scope, service, templateID) {
 		return
 	}
 	if err := service.ValidateTemplate(r.Context(), templateID); err != nil {
@@ -284,6 +286,7 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 		SourceRepositoryID: sourceSnapshot.RepositoryID, SourceRepositoryFullName: sourceSnapshot.RepositoryFullName, SourceRef: sourceSnapshot.Ref,
 		ID:                         deploymentID,
 		AccountID:                  account.ID,
+		ExecutionAccountID:         account.ID,
 		ScopeType:                  scope.Type,
 		ScopeID:                    scope.ID,
 		GitHubInstallationID:       installation.InstallationID,
@@ -376,7 +379,12 @@ func (s *Server) handleUserListDeployments(w http.ResponseWriter, r *http.Reques
 		}
 		options.Ref = fmt.Sprintf("refs/pull/%d/head", number)
 	}
-	items, total, err := s.store.ListDeploymentsForAccount(account.ID, options)
+	access, err := s.userAuthorizedRepositoryAccess(r.Context(), account.ID)
+	if err != nil {
+		s.writeUserRepositoryAuthorizationError(w, err)
+		return
+	}
+	items, total, err := s.store.ListAuthorizedDeployments(access, options)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list deployments")
 		return
@@ -395,7 +403,7 @@ func (s *Server) handleUserListDeployments(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleUserGetDeployment(w http.ResponseWriter, r *http.Request) {
-	_, _, deployment, ok := s.loadAccountDeployment(w, r)
+	_, _, deployment, ok := s.loadAuthorizedDeployment(w, r)
 	if !ok {
 		return
 	}
@@ -439,7 +447,7 @@ func (s *Server) handleUserGetDeployment(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleUserGetDeploymentResources(w http.ResponseWriter, r *http.Request) {
-	_, _, deployment, ok := s.loadAccountDeployment(w, r)
+	_, _, deployment, ok := s.loadAuthorizedDeployment(w, r)
 	if !ok {
 		return
 	}
@@ -551,7 +559,7 @@ func sandboxTemplateDisplayName(names []string) string {
 }
 
 func (s *Server) handleUserListDeploymentRevisions(w http.ResponseWriter, r *http.Request) {
-	_, _, deployment, ok := s.loadAccountDeployment(w, r)
+	_, _, deployment, ok := s.loadAuthorizedDeployment(w, r)
 	if !ok {
 		return
 	}
@@ -577,15 +585,15 @@ func (s *Server) handleUserListDeploymentRevisions(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]any{"revisions": result, "has_more": more})
 }
 
-// Persisted history belongs to the creating account; live GitHub permissions
-// are revalidated only when changing a deployment or accessing remote resources.
-func (s *Server) loadAccountDeployment(w http.ResponseWriter, r *http.Request) (adminSession, state.Account, state.Deployment, bool) {
+// Deployment content stays local; all reads and actions share Jobs' cached
+// exact installation/repository authorization, regardless of the creator.
+func (s *Server) loadAuthorizedDeployment(w http.ResponseWriter, r *http.Request) (adminSession, state.Account, state.Deployment, bool) {
 	session, account, ok := s.requireUserSession(w, r)
 	if !ok {
 		return adminSession{}, state.Account{}, state.Deployment{}, false
 	}
 	deployment, err := s.store.GetDeployment(strings.TrimSpace(r.PathValue("id")))
-	if errors.Is(err, state.ErrNotFound) || (err == nil && deployment.AccountID != account.ID) {
+	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "deployment not found")
 		return adminSession{}, state.Account{}, state.Deployment{}, false
 	}
@@ -593,20 +601,12 @@ func (s *Server) loadAccountDeployment(w http.ResponseWriter, r *http.Request) (
 		writeError(w, http.StatusInternalServerError, "load deployment")
 		return adminSession{}, state.Account{}, state.Deployment{}, false
 	}
-	return session, account, deployment, true
-}
-
-func (s *Server) loadAuthorizedDeployment(w http.ResponseWriter, r *http.Request) (adminSession, state.Account, state.Deployment, bool) {
-	session, account, deployment, ok := s.loadAccountDeployment(w, r)
-	if !ok {
-		return adminSession{}, state.Account{}, state.Deployment{}, false
-	}
-	access, err := s.deploymentAccessForAccount(r.Context(), account.ID)
+	access, err := s.userAuthorizedRepositoryAccess(r.Context(), account.ID)
 	if err != nil {
 		s.writeUserRepositoryAuthorizationError(w, err)
 		return adminSession{}, state.Account{}, state.Deployment{}, false
 	}
-	if !hasDeploymentAccess(access, deployment) {
+	if !hasRepositoryAccess(access, deployment.GitHubInstallationID, deployment.RepositoryFullName) {
 		writeError(w, http.StatusNotFound, "deployment not found")
 		return adminSession{}, state.Account{}, state.Deployment{}, false
 	}
@@ -614,7 +614,7 @@ func (s *Server) loadAuthorizedDeployment(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleUserListDeploymentEvents(w http.ResponseWriter, r *http.Request) {
-	_, _, deployment, ok := s.loadAccountDeployment(w, r)
+	_, _, deployment, ok := s.loadAuthorizedDeployment(w, r)
 	if !ok {
 		return
 	}
@@ -807,6 +807,7 @@ func (s *Server) handleUserRetryDeployment(w http.ResponseWriter, r *http.Reques
 		writeErrorCode(w, http.StatusConflict, "deployment_template_unavailable", "The selected Sandbox template is unavailable or has no runnable default build")
 		return
 	}
+	deployment.ExecutionAccountID = account.ID
 	deployment.SandboxAPIURL, deployment.SandboxAPIKeyEncrypted, deployment.SandboxConfigSource = snapshot.APIURL, snapshot.EncryptedAPIKey, snapshot.Source
 	deployment.SandboxRegion = s.sandboxRegionForAPIURL(snapshot.APIURL)
 	expiresAt := time.Now().UTC().Add(defaultDeploymentTTL)
@@ -922,59 +923,6 @@ func (s *Server) writeDeploymentReplay(w http.ResponseWriter, id string, account
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, deploymentResponseFromState(saved))
 	return true
-}
-
-func (s *Server) deploymentAccessForAccount(ctx context.Context, accountID int64) ([]state.DeploymentRepositoryAccess, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	token, err := s.githubUserAccessToken(accountID)
-	if err != nil {
-		return nil, err
-	}
-	if s.gh == nil {
-		return nil, errors.New("GitHub client is not configured")
-	}
-	installations, err := s.store.ListGitHubInstallations(accountID)
-	if err != nil {
-		return nil, err
-	}
-	owners := make([]state.GitHubInstallationAccount, len(installations))
-	for i, installation := range installations {
-		owners[i] = state.GitHubInstallationAccount{GitHubAccountID: installation.GitHubAccountID, AccountType: installation.AccountType, AccountLogin: installation.AccountLogin}
-	}
-	manageable, err := s.githubInstallationAccountsManageable(ctx, accountID, owners)
-	if err != nil {
-		return nil, err
-	}
-	access := make([]state.DeploymentRepositoryAccess, 0)
-	for i, installation := range installations {
-		if !manageable[i] {
-			continue
-		}
-		repositories, err := s.gh.ListUserInstallationRepositoryDetails(ctx, token, installation.InstallationID)
-		if err != nil {
-			status, known := github.ErrorStatus(err)
-			if known && (status == http.StatusNotFound || (status == http.StatusForbidden && !github.IsRateLimitError(err))) {
-				continue
-			}
-			return nil, err
-		}
-		for _, repository := range repositories {
-			if _, ok := deploymentRepositoryAccess([]github.Repository{repository}, repository.FullName, installation); ok {
-				access = append(access, state.DeploymentRepositoryAccess{InstallationID: installation.InstallationID, RepositoryID: repository.ID, RepositoryFullName: repository.FullName})
-			}
-		}
-	}
-	return access, nil
-}
-
-func hasDeploymentAccess(access []state.DeploymentRepositoryAccess, deployment state.Deployment) bool {
-	for _, item := range access {
-		if item.InstallationID == deployment.GitHubInstallationID && item.RepositoryID == deployment.RepositoryID && item.RepositoryFullName == deployment.RepositoryFullName {
-			return true
-		}
-	}
-	return false
 }
 
 func validateCreateDeploymentRequest(input createDeploymentRequest) error {

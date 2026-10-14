@@ -564,7 +564,11 @@ func GitSourceFactory(token func(context.Context, int64) (string, error)) Source
 		if token == nil {
 			return nil, errors.New("github token source is not configured")
 		}
-		value, err := token(ctx, d.AccountID)
+		accountID := d.ExecutionAccountID
+		if accountID == 0 {
+			accountID = d.AccountID
+		}
+		value, err := token(ctx, accountID)
 		if err != nil {
 			return nil, err
 		}

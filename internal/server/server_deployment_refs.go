@@ -30,7 +30,6 @@ func (s *Server) handleUserDeploymentRefs(w http.ResponseWriter, r *http.Request
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	r = r.WithContext(ctx)
 	installation, found, err := s.githubInstallationForAccount(account.ID, input.InstallationID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "load GitHub installation")
@@ -38,9 +37,6 @@ func (s *Server) handleUserDeploymentRefs(w http.ResponseWriter, r *http.Request
 	}
 	if !found {
 		writeError(w, http.StatusNotFound, "GitHub installation is not linked to this account")
-		return
-	}
-	if _, ok := s.authorizedDeploymentScope(w, r, account.ID, installation); !ok {
 		return
 	}
 	if s.gh == nil {

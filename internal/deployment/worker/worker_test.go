@@ -493,3 +493,14 @@ func TestWorkerExpiresWhenProviderLookupCrossesDeadline(t *testing.T) {
 		t.Fatalf("expiry was misclassified after provider lookup: status=%s sandbox=%s reason=%s", got.Status, got.SandboxID, got.FailureReason)
 	}
 }
+
+func TestGitSourceUsesRevisionActor(t *testing.T) {
+	for _, tc := range []struct{ actor, want int64 }{{0, 1}, {2, 2}} {
+		var got int64
+		factory := GitSourceFactory(func(_ context.Context, id int64) (string, error) { got = id; return "actor-token", nil })
+		_, err := factory(context.Background(), state.Deployment{AccountID: 1, ExecutionAccountID: tc.actor, RepositoryFullName: "owner/repo", CommitSHA: strings.Repeat("a", 40)})
+		if err != nil || got != tc.want {
+			t.Fatalf("actor=%d want=%d err=%v", got, tc.want, err)
+		}
+	}
+}
