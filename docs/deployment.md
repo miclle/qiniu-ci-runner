@@ -332,9 +332,13 @@ while still encoding `&`, `#`, `+`, `%` and other reserved characters. Encoding 
 applied before restoring only `%2F`; a literal `%2F` in a ref remains `%252F`.
 `branch` and `tag` are mutually exclusive. Empty or repeated source filters are
 invalid. Tags are deployment-only because Jobs do not retain reliable Tag evidence.
-`commit={sha}` optionally fixes the source selection to an immutable commit;
+`commit={sha}` optionally filters a collection to an immutable commit;
 branch Job group links always include it. `job={id}` and `deployment={id}` select
 the resource, and `revision=N` selects an immutable deployment revision.
+Deployment detail URLs omit `commit`: the saved deployment/revision owns the
+SHA. Detail headers show a short SHA linked to the source repository's GitHub
+commit, with a full-SHA copy button. Returning to history lists the whole source
+without adding a commit filter; explicitly filtered collection URLs still work.
 
 Repository Jobs show only matching groups from the existing authorized history
 window (up to 500 loaded Runner requests); an empty filter never falls back to
@@ -349,7 +353,8 @@ remain compatible and canonicalize to the new browser URLs without losing the
 Job/deployment/revision selection. Existing API paths remain unchanged.
 
 Legacy `/deployments/{id}` links load the local record and replace the URL with
-its saved source context. Historical revisions use their own saved SHA/ref.
+its saved source context. Historical revisions use their own saved ref; their
+Commit SHA is read from the stored revision, not the URL.
 Repository/source text in a URL never grants access: detail reads still authorize
 by local account and deployment ID, then canonicalize the display URL. History
 filters (`repository_full_name`, `ref`, `commit_sha`, `pull_request_number`) on
@@ -358,8 +363,9 @@ filters (`repository_full_name`, `ref`, `commit_sha`, `pull_request_number`) on
 not query GitHub or the Sandbox provider.
 
 Both grouped and standalone ordinary-user Jobs provide deployment history and
-"Deploy this commit" links using the selected Job's repository, PR/branch, and
-SHA, including historical Jobs. Creation uses `/deployments/new?repository=...&source=...&ref=...&commit_sha=...`;
+"Deploy this commit" links using the selected Job's repository and PR/branch.
+History spans commits; creation pins the selected Job's SHA, including historical
+Jobs. Creation uses `/deployments/new?repository=...&source=...&ref=...&commit_sha=...`;
 these values only prefill the form. The form waits for authorized manageable
 account catalogs, preserves an explicitly selected PR even if it is closed,
 and displays the fixed SHA. Changing repository/source/ref clears that pin;

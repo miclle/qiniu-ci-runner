@@ -1,5 +1,5 @@
 import { deploymentCreatePath, deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "@/github-context-routes"
-import { ArrowLeft, CalendarDays, GitBranch, GitCommitHorizontal, ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
+import { ArrowLeft, CalendarDays, Copy, GitBranch, GitCommitHorizontal, ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
@@ -52,6 +52,7 @@ export type DeploymentRevision = {
   status: string
   ref?: string
   commit_sha: string
+  source_repository_full_name?: string
   config_path: string
   template_id?: string
   template_name?: string
@@ -355,7 +356,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
               <DeploymentStatus status={deployment.status} />
               <span>{deployment.pull_request_number ? `#${deployment.pull_request_number}` : displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</span>
               {deployment.source_repository_full_name ? <span>{deployment.source_repository_full_name}:{deployment.source_ref}</span> : null}
-              <span aria-hidden="true">·</span><code>{deployment.commit_sha.slice(0, 8)}</code>
+              <span aria-hidden="true">·</span><DeploymentCommit repository={deployment.source_repository_full_name || deployment.repository_full_name} sha={deployment.commit_sha} />
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
               <span>{t("user.deploymentCreatedAt")} {formatTime(deployment.created_at)}</span>
@@ -421,7 +422,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
               {selectedRevision ? <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span>{t("user.deploymentRevisionNumber", { number: selectedRevision.number })}</span>
                 {selectedRevision.ref ? <><span aria-hidden="true">·</span><span>{t(selectedRevision.ref.startsWith("refs/pull/") ? "user.deploymentPullRequest" : selectedRevision.ref.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} <code>{displayRevisionRef(selectedRevision.ref)}</code></span></> : null}
-                <span aria-hidden="true">·</span><code className="break-all">{selectedRevision.commit_sha}</code>
+                <span aria-hidden="true">·</span><DeploymentCommit repository={selectedRevision.source_repository_full_name || deployment.repository_full_name} sha={selectedRevision.commit_sha} />
               </CardDescription> : null}
             </div>
             <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
@@ -472,6 +473,22 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
       </DialogContent>
     </Dialog>
   </div>
+}
+
+function DeploymentCommit({ repository, sha }: { repository: string; sha: string }) {
+  const { t } = useTranslation()
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(sha)
+      toast.success(t("user.deploymentCommitCopied"))
+    } catch {
+      toast.error(t("user.deploymentCommitCopyFailed"))
+    }
+  }
+  return <span className="inline-flex items-center gap-1">
+    <a href={`https://github.com/${repository.split("/").map(encodeURIComponent).join("/")}/commit/${encodeURIComponent(sha)}`} target="_blank" rel="noopener noreferrer" title={sha} className="hover:text-primary hover:underline"><code>{sha.slice(0, 8)}</code></a>
+    <Button type="button" variant="ghost" size="icon" className="size-6" aria-label={t("user.deploymentCopyCommit")} onClick={() => void copy()}><Copy className="size-3" /></Button>
+  </span>
 }
 
 function RedeployOption({ selected, onSelect, title, description, children }: { selected: boolean; onSelect: () => void; title: string; description: string; children: React.ReactNode }) {

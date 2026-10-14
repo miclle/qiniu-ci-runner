@@ -781,3 +781,5 @@ PR 来源验证：执行 `go test ./internal/server ./internal/github -run 'Test
 生产浏览器 fixture 覆盖仓库在前的 PR Jobs → 历史 Job → 固定提交创建 → 部署详情／刷新。聚焦 UI 测试另覆盖 Branch／Tag 名称编码、旧链接、延迟目录与切换来源时清除 SHA。运行 `task ui-production-smoke`；fixture 不代表真实 fork PR Sandbox 执行已通过。
 
 路由迁移另覆盖可读斜杠查询、字面百分号转义与保留字符、仓库／分支 Jobs 筛选（包括空结果）、仓库级部署／创建入口、旧来源路径、OAuth 返回、刷新、前进后退与历史资源选择。在 `ui/` 运行 `bun test src/url-query.test.js src/github-context-routes.test.js src/components/auth-pages.test.js`，并运行 `task ui-production-smoke`。
+
+部署 URL 检查还覆盖不携带 SHA 的 Branch／Tag／PR 详情、未隐式限定 Commit 的来源历史、显式 Commit 列表筛选、Job 固定提交创建，以及所选不可变版本的 GitHub 链接和完整 SHA 复制。

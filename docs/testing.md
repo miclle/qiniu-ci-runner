@@ -811,3 +811,5 @@ PR source verification: `go test ./internal/server ./internal/github -run 'TestP
 The production browser fixtures cover repository-first PR Jobs → historical Job → pinned creation → deployment detail/reload. Focused UI tests additionally cover Branch/Tag encoded names, old links, delayed catalogs, and pin reset on source changes. Run `task ui-production-smoke`; fixtures do not prove a real fork PR Sandbox execution.
 
 Route migration coverage additionally verifies readable slash queries, literal percent escapes and reserved characters, repository/branch Jobs filtering (including empty results), repository-only deployment/creation links, old named-source URLs, OAuth return, refresh, back/forward and historical resource selection. Run `bun test src/url-query.test.js src/github-context-routes.test.js src/components/auth-pages.test.js` in `ui/` and `task ui-production-smoke`.
+
+Deployment URL checks also cover SHA-free Branch/Tag/PR detail URLs, source history without an implicit commit filter, explicit list commit filters, pinned Job creation, and GitHub links/full-SHA copying for the selected immutable revision.

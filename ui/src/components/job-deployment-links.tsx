@@ -7,8 +7,9 @@ export function JobDeploymentLinks({ job }: { job: RunnerState }) {
   const { t } = useTranslation()
   const context = jobDeploymentContext(job)
   if (!context) return null
+  const historyContext = context.kind === "branches" ? { ...context, reference: "" } : context
   return <div className="flex flex-wrap items-center gap-2">
-    <Button asChild variant="outline" size="sm"><a href={githubContextPath(context, "deployments")}>{t("user.deploymentHistory")}</a></Button>
+    <Button asChild variant="outline" size="sm"><a href={githubContextPath(historyContext, "deployments")}>{t("user.deploymentHistory")}</a></Button>
     <Button asChild size="sm"><a href={deploymentCreatePath(context, job.head_sha)}>{t("user.deployThisCommit")}</a></Button>
   </div>
 }

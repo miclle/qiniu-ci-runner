@@ -106,6 +106,28 @@ async function selectOption(container, id, value) {
 }
 
 describe("deployment interaction", () => {
+  test("uses saved revision commits for links and copying without putting them in the URL", async () => {
+    const sha = "b".repeat(40)
+    const revision = { ...deployment("d1-r1", "completed"), number: 1, ref: "refs/heads/example/vite", commit_sha: sha, source_repository_full_name: "contributor/fork" }
+    const saved = { ...deployment("d1", "completed"), source: "branch", ref: "example/vite", revision_number: 2, revisions: [revision], selected_revision: revision }
+    window.history.replaceState(null, "", `/github/miclle/demo/deployments?branch=example/vite&commit=${"c".repeat(40)}&deployment=d1&revision=1`)
+    const request = async (url) => url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : saved
+    let copied
+    const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { copied = text } } })
+    try {
+      const { container } = await mountPage({ request, deploymentID: "d1" }, { page: "deployments" })
+      expect(window.location.search).toBe("?branch=example/vite&deployment=d1&revision=1")
+      const link = container.querySelector(`a[href="https://github.com/contributor/fork/commit/${sha}"]`)
+      expect(link.textContent).toBe("bbbbbbbb")
+      expect(link.title).toBe(sha)
+      await act(async () => container.querySelectorAll('button[aria-label="Copy full commit SHA"]').item(1).click())
+      expect(copied).toBe(sha)
+    } finally {
+      if (previous) Object.defineProperty(navigator, "clipboard", previous)
+      else Reflect.deleteProperty(navigator, "clipboard")
+    }
+  })
 	 test("switches immutable revisions, rejects delayed logs, and restores the URL selection", async () => {
 		let finishLatest
 		const latestOutput = new Promise((resolve) => { finishLatest = resolve })

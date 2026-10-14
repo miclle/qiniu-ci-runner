@@ -243,8 +243,11 @@ Jobs 和部署使用仓库资源集合路由：
 Branch 和 Tag 名称放在查询参数中。浏览器链接保留可读的 `/`，同时继续编码
 `&`、`#`、`+`、`%` 等字符。先编码再仅恢复 `%2F`，ref 中字面的 `%2F` 仍保留为 `%252F`。
 `branch` 与 `tag` 互斥，空值和重复的来源条件无效。Jobs 尚无可靠的 Tag 证据，Tag 筛选仅用于部署。
-`commit={sha}` 可固定不可变提交，分支 Job 分组链接始终携带它。
+`commit={sha}` 可按不可变提交筛选列表，分支 Job 分组链接始终携带它。
 `job={id}`、`deployment={id}` 选择资源，`revision=N` 选择部署的不可变版本。
+部署详情 URL 不携带 `commit`，实际 SHA 由已保存的部署和版本确定。
+详情展示短 SHA，链接到来源仓库的 GitHub Commit，并提供完整 SHA 的复制按钮。
+返回历史列表时展示整个版本来源，不自动添加 Commit 筛选；显式筛选 Commit 的列表 URL 仍然有效。
 
 仓库 Jobs 仅显示已有授权历史窗口（最多加载 500 条 Runner 请求）中的匹配分组，
 空结果不会退回其他仓库；本次路由调整不新增无限历史归档。仓库部署列表在数据库分页前
@@ -256,13 +259,13 @@ Branch 和 Tag 名称放在查询参数中。浏览器链接保留可读的 `/`�
 既有 API 路径不变。
 
 旧 `/deployments/{id}` 链接读取本地记录后替换为保存的来源地址，历史版本使用自己的
-SHA／ref。URL 中的仓库与来源不授予权限：详情仍按本地账号和部署 ID 授权，再修正展示地址。
+ref，Commit SHA 从保存的版本读取。URL 中的仓库与来源不授予权限：详情仍按本地账号和部署 ID 授权，再修正展示地址。
 `GET /user/deployments` 的 `repository_full_name`、`ref`、`commit_sha` 和
 `pull_request_number` 筛选在分页前查询已保存版本，`selected_revision` 标识匹配的历史版本。
 这些读取不请求 GitHub 或 Sandbox。
 
-Jobs 分组及独立详情提供“部署历史”和“部署此提交”，使用当前选中 Job 自己的仓库、
-PR／分支与 SHA，包括历史 Job。创建链接使用
+Jobs 分组及独立详情提供“部署历史”和“部署此提交”，使用当前选中 Job 自己的仓库和
+PR／分支。历史列表包含该来源的所有提交；创建时固定所选 Job 的 SHA，包括历史 Job。创建链接使用
 `/deployments/new?repository=...&source=...&ref=...&commit_sha=...`，参数仅用于预填。
 表单等待已授权、可管理账号的目录加载，保留显式指定但已关闭的 PR，并显示固定 SHA。
 修改仓库、版本来源或 ref 会清除旧 SHA；“改用版本来源的最新提交”可主动解除固定。

@@ -88,7 +88,7 @@ The Sandbox Deploy control-plane and execution slice is documented in [docs/depl
 Running deployment details also offer a Web terminal for the current revision. Connect manually to inspect processes and application log files; leaving the terminal closes the shell. Terminal access revalidates repository and organization permissions and uses the saved Sandbox credentials.
 Application startup supplies the exact Sandbox hostname for Vite's Host allowlist, so Vite preview needs no repository-specific ingress domain.
 
-Jobs provide deployment history and a creation link pinned to the selected Job commit. Repository collections use readable Branch/Tag query filters (for example, `/github/qiniu/deployment/deployments?branch=example/vite`) and stable `pull_requests/{number}` paths. Existing source paths remain compatible. See [GitHub context routes](docs/deployment.md#github-context-routes).
+Jobs provide deployment history and a creation link pinned to the selected Job commit. Repository collections use readable Branch/Tag query filters (for example, `/github/qiniu/deployment/deployments?branch=example/vite`) and stable `pull_requests/{number}` paths. Deployment details use the deployment ID and revision without a Commit SHA in the URL. Existing source paths remain compatible. See [GitHub context routes](docs/deployment.md#github-context-routes).
 
 ## Configuration
 

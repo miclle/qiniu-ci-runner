@@ -9,7 +9,7 @@ describe("GitHub source context routes", () => {
       for (const view of kind === "tags" ? ["deployments"] : ["jobs", "deployments"]) {
         const path = githubContextPath(source, view, view === "jobs" ? { job: "j1" } : { deployment: "d1", revision: 2 })
         const url = new URL(path, "https://example.com")
-        expect(githubContextFromPath(url.pathname, url.search)).toEqual(source)
+        expect(githubContextFromPath(url.pathname, url.search)).toEqual(view === "deployments" && kind !== "pulls" ? { ...source, reference: "" } : source)
         if (view === "deployments") {
           expect(appRouteAccess(url.pathname)).toBe("user")
           expect(deploymentIDFromPath(url.pathname, url.search)).toBe("d1")
@@ -22,7 +22,7 @@ describe("GitHub source context routes", () => {
   test("canonicalizes by saved revision evidence and retains legacy untyped refs", () => {
     const deployment = { id: "d1", repository_full_name: "qiniu/deployment", source: "branch", ref: "main", commit_sha: "b".repeat(40) }
     const revision = { number: 1, ref: "refs/heads/example/vite", commit_sha: "a".repeat(40) }
-    expect(deploymentPath(deployment, revision)).toBe(`/github/qiniu/deployment/deployments?branch=example/vite&commit=${"a".repeat(40)}&deployment=d1&revision=1`)
+    expect(deploymentPath(deployment, revision)).toBe("/github/qiniu/deployment/deployments?branch=example/vite&deployment=d1&revision=1")
     expect(deploymentPath({ ...deployment, source: undefined, ref: "legacy" })).toBe("/deployments/d1")
     expect(deploymentListAPIPath(deploymentContext(deployment, revision))).toContain("ref=refs%2Fheads%2Fexample%2Fvite")
     expect(deploymentPath({ ...deployment, pull_request_number: 125 }, revision)).toBe("/github/qiniu/deployment/pull_requests/125/deployments?deployment=d1&revision=1")
@@ -55,6 +55,17 @@ test("Job creation links pin the selected Job, including older PR commits", () =
   const branch = jobDeploymentContext({ ...job, pull_request_number: 0 })
   const branchURL = new URL(deploymentCreatePath(branch), "https://example.com")
   expect(deploymentPrefillFromSearch(branchURL.search).ref).toBe("feature/中文")
+  expect(deploymentPrefillFromSearch(branchURL.search).commitSHA).toBe(job.head_sha)
+})
+
+test("deployment details omit commit while explicit list filters retain it", () => {
+  const source = { kind: "branches", repository: "qiniu/deployment", name: "example/vite", reference: "a".repeat(40) }
+  const list = new URL(githubContextPath(source, "deployments"), "https://example.com")
+  expect(list.searchParams.get("commit")).toBe(source.reference)
+  expect(deploymentListAPIPath(githubContextFromPath(list.pathname, list.search))).toContain(`commit_sha=${source.reference}`)
+  const detail = new URL(githubContextPath(source, "deployments", { deployment: "d1", revision: 2 }), "https://example.com")
+  expect(detail.searchParams.has("commit")).toBe(false)
+  expect(detail.searchParams.get("revision")).toBe("2")
 })
 
 

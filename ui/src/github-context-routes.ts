@@ -69,7 +69,7 @@ export function githubContextPath(context: GitHubContext, view: "jobs" | "deploy
     prefix += `/${context.kind === "pulls" ? "pull_requests" : "runs"}/${encodeURIComponent(context.reference)}`
   } else {
     if (context.name) query.set(context.kind === "tags" ? "tag" : "branch", context.name)
-    if (context.reference) query.set("commit", context.reference)
+    if (context.reference && !(view === "deployments" && selection.deployment !== undefined)) query.set("commit", context.reference)
   }
   for (const [key, value] of Object.entries(selection)) if (value !== undefined) query.set(key, String(value))
   return `${prefix}/${view}${query.size ? `?${readableQuery(query)}` : ""}`
@@ -91,7 +91,7 @@ export function deploymentContext(deployment: DeploymentSource, revision?: Revis
   const ref = revision?.ref ?? deployment.ref ?? ""
   const kind = ref.startsWith("refs/tags/") || deployment.source === "tag" ? "tags" : ref.startsWith("refs/heads/") || deployment.source === "branch" ? "branches" : null
   if (!kind || !deployment.commit_sha) return null
-  return { kind, repository: deployment.repository_full_name, reference: revision?.commit_sha ?? deployment.commit_sha, name: ref.replace(/^refs\/(heads|tags)\//, "") }
+  return { kind, repository: deployment.repository_full_name, reference: "", name: ref.replace(/^refs\/(heads|tags)\//, "") }
 }
 
 export function deploymentPath(deployment: DeploymentSource, revision?: RevisionSource | null, explicitRevision?: number): string {
