@@ -94,11 +94,11 @@ func TestDeploymentLivePublicWorker(t *testing.T) {
 		t.Fatal("spec encrypt failed")
 	}
 	evidence := []map[string]any{}
-	for _, mode := range []string{"stop", "expiry", "create-timeout"} {
+	for _, mode := range []string{"stop", "expiry", "create-timeout", "start-failure"} {
 		t.Run(mode, func(t *testing.T) {
 			originalHTTP := srv.sandboxHTTP
 			fault := &deploymentLostCreateResponse{base: originalHTTP.Transport, enabled: mode == "create-timeout"}
-			if mode == "create-timeout" {
+			if mode == "create-timeout" || mode == "start-failure" {
 				client := *originalHTTP
 				client.Transport = fault
 				srv.sandboxHTTP = &client
@@ -119,7 +119,25 @@ func TestDeploymentLivePublicWorker(t *testing.T) {
 			if mode == "expiry" {
 				lifetime = 3 * time.Minute
 			}
-			record := state.Deployment{ID: "live125-" + mode + "-" + newID(), AccountID: accountID, ScopeType: state.AccountScopeTypeAccount, ScopeID: accountID, GitHubInstallationID: 1, RepositoryID: 1, RepositoryFullName: "qiniu/deployment", Ref: "example/vite", CommitSHA: commit, ConfigPath: ".qiniu/deploy.yaml", SnapshotVersion: plan.Snapshot().Version, SpecHash: plan.Snapshot().SpecHash, SpecJSONEncrypted: encrypted, Status: state.DeploymentStatusQueued, DeploymentTemplateID: cfg.DeploymentTemplateID, SandboxAPIURL: snapshot.APIURL, SandboxAPIKeyEncrypted: snapshot.EncryptedAPIKey, SandboxConfigSource: snapshot.Source, SandboxRegion: srv.sandboxRegionForAPIURL(snapshot.APIURL), ExpiresAt: time.Now().UTC().Add(lifetime)}
+			modePlan, modeEncrypted := plan, encrypted
+			if mode == "start-failure" {
+				failedSpec := plan.Spec()
+				failedSpec.InstallCommand = "true"
+				failedSpec.StartCommand = "exit 23"
+				modePlan, err = deploy.NewPlan(deploy.ResolvedSource{SourceID: githubDeploymentSourceURL("qiniu/deployment"), CommitSHA: commit}, failedSpec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := json.Marshal(modePlan.Spec())
+				if err != nil {
+					t.Fatal("failure fixture encoding failed")
+				}
+				modeEncrypted, err = encryptSecret(string(data), cfg.AuthEncryptionKey.Value())
+				if err != nil {
+					t.Fatal("failure fixture encryption failed")
+				}
+			}
+			record := state.Deployment{ID: "live125-" + mode + "-" + newID(), AccountID: accountID, ScopeType: state.AccountScopeTypeAccount, ScopeID: accountID, GitHubInstallationID: 1, RepositoryID: 1, RepositoryFullName: "qiniu/deployment", Ref: "example/vite", CommitSHA: commit, ConfigPath: ".qiniu/deploy.yaml", SnapshotVersion: modePlan.Snapshot().Version, SpecHash: modePlan.Snapshot().SpecHash, SpecJSONEncrypted: modeEncrypted, Status: state.DeploymentStatusQueued, DeploymentTemplateID: cfg.DeploymentTemplateID, SandboxAPIURL: snapshot.APIURL, SandboxAPIKeyEncrypted: snapshot.EncryptedAPIKey, SandboxConfigSource: snapshot.Source, SandboxRegion: srv.sandboxRegionForAPIURL(snapshot.APIURL), ExpiresAt: time.Now().UTC().Add(lifetime)}
 			if _, err := store.CreateDeployment(record); err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +148,7 @@ func TestDeploymentLivePublicWorker(t *testing.T) {
 				if err := worker.Stop(cleanup, record.ID, false); err != nil {
 					t.Error("deferred Sandbox cleanup failed")
 				}
-				if t.Failed() && mode == "create-timeout" {
+				if t.Failed() && (mode == "create-timeout" || mode == "start-failure") {
 					// A regression may lose the local checkpoint. Retain an independent
 					// cleanup path for the real resource observed by this test.
 					if sandboxID, _, _ := fault.evidence(); sandboxID != "" {
@@ -183,6 +201,29 @@ func TestDeploymentLivePublicWorker(t *testing.T) {
 			}
 			if err := worker.Process(ctx, record.ID); err != nil {
 				t.Fatal(err)
+			}
+			if mode == "start-failure" {
+				failed, err := store.GetDeployment(record.ID)
+				if err != nil || failed.Status != state.DeploymentStatusFailed || (failed.FailureStage != string(deploy.Starting) && failed.FailureStage != string(deploy.Probing)) || failed.FailureReason == "" || failed.SandboxID != "" {
+					t.Fatal("failed application did not retain failure and release its Sandbox")
+				}
+				revision, err := store.GetDeploymentRevision(record.ID, 1)
+				if err != nil || revision.Status != state.DeploymentStatusFailed || revision.FailureStage != failed.FailureStage || revision.FailureReason != failed.FailureReason {
+					t.Fatal("revision lost application failure evidence")
+				}
+				sandboxID, creates, _ := fault.evidence()
+				if sandboxID == "" || creates != 1 {
+					t.Fatal("startup failure never exercised a real Sandbox")
+				}
+				factory := &serverDeploymentRuntimeFactory{server: srv}
+				probe := record
+				probe.SandboxID = sandboxID
+				if handle, err := factory.Connect(ctx, probe); err != nil || handle != nil {
+					t.Fatalf("failed Sandbox release unconfirmed: exists=%v error_category=%T", handle != nil, err)
+				}
+				evidence = append(evidence, map[string]any{"mode": mode, "started_at": started, "finished_at": time.Now().UTC(), "deployment_id": record.ID, "sandbox_id": sandboxID, "terminal_status": failed.Status, "failure_stage": failed.FailureStage, "attempt": failed.Attempt, "create_requests": creates, "provider_missing_after_cleanup": true, "revision_failure_preserved": true})
+				t.Logf("application startup failure cleaned: deployment=%s sandbox=%s stage=%s provider_missing=true", record.ID, sandboxID, failed.FailureStage)
+				return
 			}
 			running, err := store.GetDeployment(record.ID)
 			if err != nil {
@@ -300,15 +341,23 @@ func (f *deploymentLostCreateResponse) RoundTrip(r *http.Request) (*http.Respons
 		return nil, context.DeadlineExceeded
 	}
 	response, err := f.base.RoundTrip(r)
-	if err != nil || !f.enabled || !create || response.StatusCode < 200 || response.StatusCode >= 300 {
+	if err != nil || !create || response.StatusCode < 200 || response.StatusCode >= 300 {
 		return response, err
 	}
 	var accepted struct {
 		SandboxID string `json:"sandboxID"`
 	}
-	_ = json.NewDecoder(io.LimitReader(response.Body, 65536)).Decode(&accepted)
+	data, readErr := io.ReadAll(io.LimitReader(response.Body, 65537))
 	response.Body.Close()
+	if readErr != nil || len(data) > 65536 {
+		return nil, errors.New("unexpected provider create response")
+	}
+	_ = json.Unmarshal(data, &accepted)
 	f.sandboxID = accepted.SandboxID
+	if !f.enabled {
+		response.Body = io.NopCloser(bytes.NewReader(data))
+		return response, nil
+	}
 	return nil, context.DeadlineExceeded
 }
 

@@ -758,6 +758,29 @@ go test ./internal/server -run '^TestDeploymentLivePublicWorker$' -count=1 -v -t
 故障在本地传输层注入，Provider 操作仍为真实调用；不覆盖重复的已登录 API 请求。
 worker 回归测试还验证失败清理过程中断后，部署及其版本仍保留失败状态和原因。
 
+`start-failure` worker 子测试使用同一固定公开来源，在本地注入 `exit 23` 启动计划。
+它必须在 starting／probing 阶段失败，将失败证据保留在版本中，只创建一个真实 Sandbox，
+并在清理后确认 Provider 404。这是执行／清理证据，不代表 GitHub 配置准入已经验收。
+
+对已启动的**本地** runnerd 验证真实登录态 API 准入：
+
+```bash
+RUNNERD_DEPLOY_LIVE_API=1 \
+RUNNERD_DEPLOY_LIVE_BASE_URL=http://127.0.0.1:25500 \
+RUNNERD_DEPLOY_LIVE_CONFIG="$PWD/runnerd.local.yaml" \
+RUNNERD_DEPLOY_LIVE_ACCOUNT_ID="<configured-account-id>" \
+RUNNERD_DEPLOY_LIVE_EVIDENCE=/tmp/deployment-api-evidence.json \
+go test ./internal/server -run '^TestDeploymentLivePublicAPI$' -count=1 -v -timeout 12m
+```
+
+测试需要运行中服务的配置、已关联的 `qiniu` Installation、该组织没有其他活动部署、
+可运行的公共 `base` 模板，以及 1–3 的作用域并发上限。测试为指定的已有账号在内存中签发
+短期 session，仅发送到 loopback 地址，不验证 OAuth 登录。真实 GitHub 授权、API 准入、
+worker 与 Sandbox 调用均在已有服务进程中执行。同键并发请求只能生成一个资源／attempt；
+配额拒绝不留记录，DELETE 释放 Sandbox 并保留历史，终态重放保持幂等，容量释放后准入恢复。
+最多创建“作用域上限＋1”个新部署，只停止本次提交，保留终态记录供检查。不证明第二个账号的
+权限、私有仓库 Contents 权限或 fork PR 执行。不要发布 cookie 或配置。
+
 SDK 协议 fixture 验证应用启动不发送远端 `Connect-Timeout-Ms` 截止时间，响应头等待与 PID
 确认仍受本地超时限制。worker 回归测试覆盖 Provider 查询跨过到期时间，以及旧到期观察
 不能停止替代 attempt 的边界。

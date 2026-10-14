@@ -788,6 +788,36 @@ This does not cover duplicate authenticated API requests. Worker regressions
 also verify that interruption during failed cleanup preserves failure status and
 cause in both the deployment and its revision.
 
+The `start-failure` worker subtest uses the same pinned public source with a
+locally injected `exit 23` startup plan. It must fail at starting/probing, retain
+failure evidence on the revision, create exactly one real Sandbox, and confirm
+provider 404 after cleanup. This is execution/cleanup evidence, not GitHub
+configuration-admission evidence.
+
+For authenticated admission against an already running **local** runnerd, use:
+
+```bash
+RUNNERD_DEPLOY_LIVE_API=1 \
+RUNNERD_DEPLOY_LIVE_BASE_URL=http://127.0.0.1:25500 \
+RUNNERD_DEPLOY_LIVE_CONFIG="$PWD/runnerd.local.yaml" \
+RUNNERD_DEPLOY_LIVE_ACCOUNT_ID="<configured-account-id>" \
+RUNNERD_DEPLOY_LIVE_EVIDENCE=/tmp/deployment-api-evidence.json \
+go test ./internal/server -run '^TestDeploymentLivePublicAPI$' -count=1 -v -timeout 12m
+```
+
+This check requires the running server's config, a linked `qiniu` installation,
+no existing active deployment in that organization, a runnable public `base`
+template, and a per-scope limit of 1–3. It signs an in-memory short session for
+the configured existing account and sends it only to a loopback origin; it does
+not test OAuth login. Real GitHub authorization, API admission, workers and
+Sandbox calls run in the existing process. Concurrent keyed requests must yield
+one resource/attempt; quota rejection must leave no row, DELETE must release the
+Sandbox while retaining history, terminal replay must remain idempotent, and
+admission must recover after capacity is released. It creates at most the scope
+limit plus one new deployment, stops only its own submissions, and preserves
+those terminal records for inspection. It does not prove a second user's access,
+private Contents permissions or fork PR execution. Never publish cookies/configs.
+
 SDK protocol fixtures verify that application startup sends no remote
 `Connect-Timeout-Ms` deadline while response-header and PID confirmation remain
 bounded locally. Worker regressions cover provider lookups that cross expiry

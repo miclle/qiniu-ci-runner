@@ -156,6 +156,11 @@ ID is resolved server-side.
   `repository_full_name`, a `ref`, an optional `source` (`branch` or `tag`), an optional `config_path`,
   and an optional `ttl_seconds` (five minutes to 24 hours; the default is one
   hour). The `Idempotency-Key` header can replay the same request safely.
+  The original normalized admission fields are hashed once and retained on the
+  deployment. Replay returns the existing resource without starting another
+  attempt, even after provider expiry updates, stop, or redeploy. Different
+  execution fields return 409. Historical rows without this hash cannot safely
+  reconstruct the request and reject keyed replay; use a new key for new work.
   Deployment IDs are 26 lowercase Base32 characters encoding 128 bits, safe
   to use directly in URLs. Keyed requests derive the ID from the account and
   key; unkeyed requests generate a new random ID. Clients should treat IDs as
@@ -306,6 +311,32 @@ three revisions retained. The branch had not advanced, so this does not prove
 moving-branch behavior. Provider 404 was not separately checked for these stops.
 This predates repository-shared authorization and does not prove cross-account
 live acceptance; private repository/fork PR runs remain deferred.
+
+Authenticated API acceptance on 2026-10-14 used the running local runnerd,
+`qiniu/deployment` / `example/vite` at the same Commit above, and public `base`.
+Two concurrent submissions of the same key created one deployment and attempt.
+The configured scope limit of three rejected an extra admission with 429 and
+no row; admission resumed after release. Public HTML returned 200. DELETE
+completed, cleared the Sandbox reference and confirmed provider absence; replay
+after cleanup returned the same terminal resource with its 20 events retained.
+All four admitted test resources were stopped. The test signs a short-lived
+in-memory session for an existing local account; it exercises real authorization
+and provider execution, but does not test OAuth login or a second user.
+This exposed a replay defect caused by provider expiry precision; creation now
+compares its immutable request hash instead of mutable expiry/revision fields.
+
+A separate real worker `start-failure` run injected `install: true` and
+`start: exit 23` into the pinned public plan. Exactly one Sandbox was created;
+the deployment and revision retained `failed` / `probing`, and provider absence
+confirmed cleanup. This is synthetic-plan execution evidence, not repository
+configuration admission evidence.
+
+The running local worker also passed an accelerated retention check with the
+configured 168-hour window. Only the completed API-test record's `updated_at`
+was moved back 169 hours after confirming its Sandbox was absent. The regular
+sweep removed its deployment, one revision and 20 events while retaining both
+audit events. This proves deployed cleanup with timestamp injection, not seven
+days of naturally elapsed retention.
 
 1. **Preflight and plan (done):** strict repository configuration, immutable
    Commit resolution, exact OAuth/App repository intersection, encrypted Spec

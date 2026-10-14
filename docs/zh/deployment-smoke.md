@@ -349,12 +349,14 @@ Workflow 完成后确认：
 4. 使用同一个 `Idempotency-Key` 重复提交，并人为制造 provider 创建超时。确认系统按精确的
    `qiniu-deployd` metadata 补偿查询，重试不会创建第二个 Sandbox。
    [Testing](testing.md#sandbox-deploy-验证) 中主动启用的 `create-timeout` worker 子测试
-   可重复验证真实资源创建响应丢失及首次查询不可用的恢复；已登录的重复提交仍需单独验证。
+   可重复验证真实资源创建响应丢失及首次查询不可用的恢复。`TestDeploymentLivePublicAPI`
+   则针对已运行的本地 runnerd 验证并发认证提交、终态重放、DELETE 与配额释放，命令见同一 Testing 小节。
    补偿清理成功后，部署及版本必须保留原始失败阶段与原因。
 5. 服务运行期间重启 runnerd，确认恢复相同 Sandbox ID、runtime process tag、endpoint 和
    到期时间；旧 attempt 回调不能修改当前部署。
 6. 分别执行 stop、DELETE、TTL 到期和启动失败，确认 provider 证据最终表明 Sandbox 已释放；
-   清理失败保持可见并继续重试。
+   清理失败保持可见并继续重试。主动启用的 `start-failure` worker 模式以退出码 23 的
+   合成启动计划验证真实资源清理。
 7. 验证匿名用户与没有精确 Installation＋仓库权限的用户不能读取或修改部署。有相同仓库
    权限的其他成员应能查看历史／日志，以及创建、重新部署、停止和删除。OAuth 缺失或被拒绝
    时失败关闭；热缓存读取复用 Jobs 授权。确认成员只能选择公共模板，私有目录和 Sandbox
@@ -362,6 +364,10 @@ Workflow 完成后确认：
    创建足够的活动部署后应收到
    `429 deployment_quota_exceeded`；释放一个后准入恢复。超过保留期后终态部署行／事件应清理，
    审计证据仍保留。
+
+2026-10-14 的公开 API、启动失败与保留期加速验收结果见
+[部署配置](deployment.md#实现迭代方案)。保留期仅修改一个已结束测试记录的时间戳，
+并非自然等待七天。
 
 分别记录本地单元／集成检查、浏览器/UI 检查和真实 Sandbox provider 运行三类证据。Local fake
 和 preview fixture 不能替代本节验收。

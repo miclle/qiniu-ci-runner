@@ -116,6 +116,9 @@ Installation ID 由服务端解析：
   `template_cpu`、`template_memory_mb` 和 `template_disk_mb`、已关联的本地 `installation_id`、精确的
   `repository_full_name`、`ref`、可选的 `source`（`branch` 或 `tag`）、可选的 `config_path` 和可选的
   `ttl_seconds`（五分钟到 24 小时，默认一小时）。可以使用 `Idempotency-Key` 请求头安全重放同一请求。
+  创建时保存原始规范化准入字段的摘要。Provider 更新到期时间、停止或重新部署后，重放仍
+  返回已有资源，不启动新 attempt；执行字段不同则返回 409。没有摘要的历史记录无法安全
+  重建原请求，因此拒绝幂等键重放；新工作使用新键。
   部署 ID 使用 26 位小写 Base32 编码，保留 128 位标识空间，可直接用于 URL。
   有幂等键时根据账号和请求键生成固定 ID；无幂等键时生成新的随机 ID。
   客户端应将 ID 作为不透明字符串使用；上线前不提供旧 ID 的重放回退逻辑。
@@ -222,6 +225,24 @@ attempt #1，未记录尚未确认的 Sandbox ID。新的 worker 按精确操作
 三个版本均保留。分支期间没有前进，因此不能证明移动分支行为；这两次停止未单独验证
 Provider 404。本次记录早于仓库共享授权调整，不代表跨账号真实验收；私有仓库和 fork PR
 真实执行按当前安排暂缓。
+
+2026-10-14 的已认证 API 验收使用运行中的本地 runnerd、相同 Commit 的
+`qiniu/deployment`／`example/vite` 与公共 `base`。同一幂等键并发提交两次只创建一个
+部署和 attempt；作用域上限为 3，超额请求返回 429 且不落库，释放后准入恢复。
+公网 HTML 返回 200；DELETE 后进入 completed、清空 Sandbox 引用，并通过 Provider
+查询确认资源不存在。清理后重放返回同一终态记录，20 条事件仍保留；本轮准入的四个
+测试资源均已停止。测试为已有本地账号签发仅保存在内存中的短期 session，覆盖真实授权
+与 Provider 执行，不代表 OAuth 登录或第二个用户已验收。本轮发现 Provider 到期时间
+精度导致幂等重放冲突，现已改为比较不可变的创建请求摘要，不依赖可变的到期时间或版本字段。
+
+独立的真实 worker `start-failure` 验收在固定公开计划中注入 `install: true` 与
+`start: exit 23`：仅创建一个 Sandbox，部署和版本均保留 `failed`／`probing`，
+清理后由 Provider 查询确认资源不存在。这属于合成计划的真实执行证据，不代表仓库配置准入验收。
+
+运行中的本地 worker 也通过了保留期加速验收：配置为 168 小时，仅将上述已确认
+Sandbox 释放的 API 测试记录的 `updated_at` 回拨 169 小时。正常清理循环删除了该部署、
+一个版本及 20 条事件，两个审计事件保持不变。这证明实际进程在时间戳注入下的清理行为，
+不代表已自然等待七天。
 
 1. **预检与计划（已完成）**：严格解析仓库配置，固定完整 Commit，校验 OAuth/App
    精确仓库交集，加密保存 Spec 快照，并以审计事务持久化部署状态。

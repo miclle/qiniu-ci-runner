@@ -381,15 +381,17 @@ acceptance record, never in repository files.
    not create a second Sandbox.
    The opt-in `create-timeout` worker subtest in [Testing](testing.md#sandbox-deploy-verification)
    provides repeatable real-resource fault injection for a lost create response
-   and unavailable initial lookup; authenticated duplicate submissions remain a
-   separate check. Successful compensation must retain the original failure
-   stage/reason in the deployment and revision.
+   and unavailable initial lookup. `TestDeploymentLivePublicAPI` separately
+   verifies concurrent authenticated submissions, terminal replay, DELETE and
+   quota release against an existing local runnerd; see the same Testing section.
+   Successful compensation must retain the original failure stage/reason in the deployment and revision.
 5. Restart runnerd while the service is running. The same Sandbox ID, runtime
    process tag, endpoint, and expiry must be recovered; an old attempt callback
    must not change the current deployment.
 6. Exercise stop, DELETE, TTL expiry, and a failed start. Each path must finish
    with provider evidence that the Sandbox is released; a cleanup failure stays
-   visible and is retried.
+   visible and is retried. The opt-in `start-failure` worker mode verifies real
+   cleanup using a synthetic plan whose start command exits with code 23.
 7. Verify anonymous users and users without the exact installation-repository
    pair cannot read or mutate deployments. A different authorized repository
    member must be able to read history/logs and create/redeploy/stop/delete.
@@ -399,6 +401,10 @@ acceptance record, never in repository files.
    receive `429 deployment_quota_exceeded`, then release one and verify admission
    resumes. After the configured retention window, confirm terminal deployment
    rows/events are pruned while audit evidence remains.
+
+The 2026-10-14 public API, startup-failure and accelerated retention results are
+recorded in [Deploy configuration](deployment.md#iteration-plan). Retention used
+a timestamp change on one completed test record; it was not a natural seven-day wait.
 
 Record three evidence classes separately: local unit/integration checks,
 browser/UI checks, and the real Sandbox provider run. Local fakes and preview

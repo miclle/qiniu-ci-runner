@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	deploy "github.com/miclle/deployd"
@@ -431,67 +432,73 @@ func (f *deadlineCrossingFactory) Connect(ctx context.Context, d state.Deploymen
 }
 
 func TestWorkerExpiredObservationCannotStopReplacementAttempt(t *testing.T) {
+	// Open the SQL connection outside the bubble; its background opener outlives
+	// the check. Virtual time keeps database speed from consuming the short TTL.
 	store := state.New(t.TempDir())
-	// Finish lazy schema initialization before starting the short expiry window.
 	if _, err := store.ListActiveDeployments(); err != nil {
 		t.Fatal(err)
 	}
-	fixture := deploymentFixture(t)
-	fixture.Status = state.DeploymentStatusRunning
-	fixture.SandboxID, fixture.RuntimeID, fixture.ProcessID, fixture.ProcessTag = "sandbox-1", "sandbox-1", "41", "attempt-1"
-	fixture.ExpiresAt = time.Now().UTC().Add(200 * time.Millisecond)
-	if _, err := store.CreateDeployment(fixture); err != nil {
-		t.Fatal(err)
-	}
-	factory := &deadlineCrossingFactory{fakeFactory: &fakeFactory{}, deadline: fixture.ExpiresAt.Add(20 * time.Millisecond)}
-	factory.onReturn = func() error {
-		replacement, err := store.GetDeployment(fixture.ID)
-		if err != nil {
-			return err
+	synctest.Test(t, func(t *testing.T) {
+		fixture := deploymentFixture(t)
+		fixture.Status = state.DeploymentStatusRunning
+		fixture.SandboxID, fixture.RuntimeID, fixture.ProcessID, fixture.ProcessTag = "sandbox-1", "sandbox-1", "41", "attempt-1"
+		fixture.ExpiresAt = time.Now().UTC().Add(200 * time.Millisecond)
+		if _, err := store.CreateDeployment(fixture); err != nil {
+			t.Fatal(err)
 		}
-		replacement.Attempt++
-		replacement.SandboxID, replacement.RuntimeID, replacement.ProcessID, replacement.ProcessTag = "sandbox-2", "sandbox-2", "42", "attempt-2"
-		replacement.ExpiresAt = time.Now().UTC().Add(time.Hour)
-		return store.UpdateDeployment(replacement)
-	}
-	w := New(store, factory, nil, nil, t.TempDir())
-	if err := w.RunOnce(context.Background()); !errors.Is(err, state.ErrConflict) {
-		t.Fatalf("stale expiry observation was accepted: %v", err)
-	}
-	got, err := store.GetDeployment(fixture.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != state.DeploymentStatusRunning || got.SandboxID != "sandbox-2" || got.ProcessTag != "attempt-2" {
-		t.Fatalf("stale observation stopped replacement: %#v", got)
-	}
+		factory := &deadlineCrossingFactory{fakeFactory: &fakeFactory{}, deadline: fixture.ExpiresAt.Add(20 * time.Millisecond)}
+		factory.onReturn = func() error {
+			replacement, err := store.GetDeployment(fixture.ID)
+			if err != nil {
+				return err
+			}
+			replacement.Attempt++
+			replacement.SandboxID, replacement.RuntimeID, replacement.ProcessID, replacement.ProcessTag = "sandbox-2", "sandbox-2", "42", "attempt-2"
+			replacement.ExpiresAt = time.Now().UTC().Add(time.Hour)
+			return store.UpdateDeployment(replacement)
+		}
+		w := New(store, factory, nil, nil, t.TempDir())
+		if err := w.RunOnce(context.Background()); !errors.Is(err, state.ErrConflict) {
+			t.Fatalf("stale expiry observation was accepted: %v", err)
+		}
+		got, err := store.GetDeployment(fixture.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != state.DeploymentStatusRunning || got.SandboxID != "sandbox-2" || got.ProcessTag != "attempt-2" {
+			t.Fatalf("stale observation stopped replacement: %#v", got)
+		}
+	})
 }
 
 func TestWorkerExpiresWhenProviderLookupCrossesDeadline(t *testing.T) {
+	// Open the SQL connection outside the bubble; its background opener outlives
+	// the check. Virtual time keeps database speed from consuming the short TTL.
 	store := state.New(t.TempDir())
-	// Finish lazy schema initialization before starting the short expiry window.
 	if _, err := store.ListActiveDeployments(); err != nil {
 		t.Fatal(err)
 	}
-	fixture := deploymentFixture(t)
-	fixture.Status = state.DeploymentStatusRunning
-	fixture.SandboxID, fixture.RuntimeID, fixture.ProcessID, fixture.ProcessTag = "sandbox-1", "sandbox-1", "41", "attempt-1"
-	fixture.ExpiresAt = time.Now().UTC().Add(200 * time.Millisecond)
-	if _, err := store.CreateDeployment(fixture); err != nil {
-		t.Fatal(err)
-	}
-	factory := &deadlineCrossingFactory{fakeFactory: &fakeFactory{}, deadline: fixture.ExpiresAt.Add(20 * time.Millisecond)}
-	w := New(store, factory, nil, nil, t.TempDir())
-	if err := w.RunOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	got, err := store.GetDeployment(fixture.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != state.DeploymentStatusExpired || got.SandboxID != "" || got.FailureReason != "" {
-		t.Fatalf("expiry was misclassified after provider lookup: status=%s sandbox=%s reason=%s", got.Status, got.SandboxID, got.FailureReason)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		fixture := deploymentFixture(t)
+		fixture.Status = state.DeploymentStatusRunning
+		fixture.SandboxID, fixture.RuntimeID, fixture.ProcessID, fixture.ProcessTag = "sandbox-1", "sandbox-1", "41", "attempt-1"
+		fixture.ExpiresAt = time.Now().UTC().Add(200 * time.Millisecond)
+		if _, err := store.CreateDeployment(fixture); err != nil {
+			t.Fatal(err)
+		}
+		factory := &deadlineCrossingFactory{fakeFactory: &fakeFactory{}, deadline: fixture.ExpiresAt.Add(20 * time.Millisecond)}
+		w := New(store, factory, nil, nil, t.TempDir())
+		if err := w.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got, err := store.GetDeployment(fixture.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != state.DeploymentStatusExpired || got.SandboxID != "" || got.FailureReason != "" {
+			t.Fatalf("expiry was misclassified after provider lookup: status=%s sandbox=%s reason=%s", got.Status, got.SandboxID, got.FailureReason)
+		}
+	})
 }
 
 func TestGitSourceUsesRevisionActor(t *testing.T) {
