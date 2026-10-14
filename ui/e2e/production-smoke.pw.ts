@@ -944,6 +944,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
     }
     if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: created ? [deployment] : [] } })
     if (url.pathname === "/user/deployments/deployment-fixture") return route.fulfill({ json: deployment })
+    if (url.pathname === "/user/deployments/deployment-fixture/resources") return route.fulfill({ json: { template_id: deployment.template_id, expires_at: deployment.expires_at } })
     if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: url.searchParams.has("after_id") ? [] : [{ id: 1, event_type: "output", stage: "installing", stream: "stdout", message: "Vite build completed", created_at: "2026-10-13T00:00:00Z" }], has_more: false } })
     return route.fulfill({ status: 404, body: "fixture route not found" })
   })
