@@ -20,7 +20,7 @@ export default function DeploymentTerminal({ endpoint, request }: Props) {
     connectErrorMessage: t("user.terminalConnectFailed"),
   })
 
-  return <section className="overflow-hidden border-y border-emerald-500/15 bg-[#111318] text-slate-100 shadow-[inset_3px_0_0_theme(colors.emerald.500/0.35)]">
+  return <section className="overflow-hidden bg-[#111318] text-slate-100">
     <div className="border-b border-white/10 bg-slate-900/95 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">{t("common.terminal")}</h3>

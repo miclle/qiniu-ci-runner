@@ -392,12 +392,13 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         </dl>
       </CardContent>
     </Card>
-    <div className="grid items-start lg:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="grid lg:grid-cols-[280px_minmax(0,1fr)]" data-testid="deployment-workspace">
       <Card className="min-w-0 gap-0 rounded-none border-0 border-b bg-muted/20 py-0 shadow-none lg:border-b-0 lg:border-r" data-testid="deployment-history">
-        <CardHeader className="border-b px-4 py-3">
-          <div className="flex items-start justify-between gap-2"><div className="space-y-2"><CardTitle>{t("user.deploymentHistory")}</CardTitle><CardDescription>{t("user.deploymentHistoryDescription")}</CardDescription></div><Badge variant="secondary">{revisions.length}</Badge></div>
-        </CardHeader>
+        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-4" data-testid="deployment-history-header">
+          <CardTitle className="text-sm">{t("user.deploymentHistory")}</CardTitle><Badge variant="secondary">{revisions.length}</Badge>
+        </div>
         <CardContent className="p-0">
+          <p className="px-4 py-3 text-xs text-muted-foreground">{t("user.deploymentHistoryDescription")}</p>
           {revisions.map((revision) => <button key={revision.id} type="button" aria-pressed={revision.number === selectedRevision?.number} onClick={() => onSelectRevision(revision.number)} className={cn("flex w-full items-start gap-3 border-l-2 px-4 py-2.5 text-left transition-colors", revision.number === selectedRevision?.number ? "border-primary bg-primary/5" : "border-transparent hover:bg-accent")}>
             <span aria-hidden="true" className={cn("mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full", revision.status === "failed" ? "bg-destructive" : revision.status === "running" ? "bg-primary" : "bg-muted-foreground/50")} />
             <span className="min-w-0 flex-1 space-y-2">
@@ -409,14 +410,14 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           {deployment.revisions_has_more ? <Button type="button" variant="ghost" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
         </CardContent>
       </Card>
-      <Tabs defaultValue="logs" className="min-w-0 gap-0 pt-3 lg:pl-6 lg:pt-0">
-        <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent p-0 text-muted-foreground">
+      <Tabs defaultValue="logs" className="min-w-0 gap-0 pt-3 lg:pt-0" data-testid="deployment-output">
+        <TabsList className="h-10 w-full shrink-0 justify-start gap-6 rounded-none border-b bg-transparent px-4 py-0 text-muted-foreground">
           <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="logs">{t("user.deploymentEvents")}</TabsTrigger>
           <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="terminal">{t("common.terminal")}</TabsTrigger>
         </TabsList>
-        <TabsContent value="logs" className="m-0 pt-2">
+        <TabsContent value="logs" className="m-0">
       <Card className="min-w-0 gap-0 rounded-none border-0 bg-transparent py-0 shadow-none">
-        <CardHeader className="border-b px-0 py-3">
+        <CardHeader className="px-4 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 space-y-2">
               <CardTitle>{t("user.deploymentEvents")}</CardTitle>
@@ -432,7 +433,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
             </div>
           </div>
         </CardHeader>
-        <CardContent className="space-y-3 px-0 pt-3">
+        <CardContent className="space-y-3 px-0">
           {selectedRevision?.failure_reason ? <p className="mx-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{selectedRevision.failure_stage || t("user.deploymentFailure")}: {selectedRevision.failure_reason}</p> : null}
           {error ? <p role="alert" className="px-4 text-sm text-destructive">{t("user.deploymentEventsFailed")}: {error}</p> : null}
           {hasOlder ? <Button type="button" variant="outline" size="sm" className="ml-4" disabled={loading} onClick={() => void loadOlder()}>{t("user.deploymentEventsOlder")}</Button> : null}
@@ -446,10 +447,10 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         </CardContent>
       </Card>
         </TabsContent>
-        <TabsContent value="terminal" className="m-0 pt-2">
+        <TabsContent value="terminal" className="m-0">
           {terminalAvailable ? <Suspense fallback={<p className="p-5 text-sm text-muted-foreground">{t("common.loading")}</p>}>
             <DeploymentTerminal key={`${deployment.id}:${deployment.revision_number}:${deployment.sandbox_id}`} endpoint={`/user/deployments/${encodeURIComponent(deployment.id)}/revisions/${deployment.revision_number}`} request={request} />
-          </Suspense> : <div className="border-y bg-muted/20 px-4 py-12 text-center text-sm text-muted-foreground">{t("user.deploymentTerminalUnavailable")}</div>}
+          </Suspense> : <div className="bg-muted/20 px-4 py-12 text-center text-sm text-muted-foreground">{t("user.deploymentTerminalUnavailable")}</div>}
         </TabsContent>
       </Tabs>
     </div>

@@ -964,7 +964,7 @@ function fixtureRunnerEvents() {
   }
 }
 
-test("separates deployment list, creation, and refreshable detail pages", async ({ page }) => {
+test("separates deployment list, creation, and refreshable detail pages", async ({ page }, testInfo) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
   const diagnostics = observeBrowserDiagnostics(page)
   const pageLoads = observePageLoads(page)
@@ -1058,10 +1058,18 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await expect(page).toHaveURL(/\/github\/fixture-user\/project\/deployments\/deployment-fixture\?tag=v1.0$/)
   await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
   await expect(page.locator("#deployment-template")).toHaveCount(0)
+  const historyHeader = await page.getByTestId("deployment-history-header").boundingBox()
+  const outputHeader = await page.getByTestId("deployment-output").getByRole("tablist").boundingBox()
+  expect(historyHeader!.y + historyHeader!.height).toBe(outputHeader!.y + outputHeader!.height)
   await page.getByRole("tab", { name: "Terminal", exact: true }).click()
   await page.getByRole("button", { name: "Connect", exact: true }).click()
   await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible()
   await expect(page.locator(".xterm-screen")).toBeVisible()
+  const historyPanel = await page.getByTestId("deployment-history").boundingBox()
+  const outputPanel = await page.getByTestId("deployment-output").boundingBox()
+  expect(historyPanel!.height).toBe(outputPanel!.height)
+  expect(historyPanel!.x + historyPanel!.width).toBe(outputPanel!.x)
+  await page.getByTestId("deployment-workspace").screenshot({ path: testInfo.outputPath("deployment-terminal-divider.png") })
   await page.locator(".xterm-helper-textarea").focus()
   await page.keyboard.type("pwd")
   await page.keyboard.press("Enter")
@@ -1092,6 +1100,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole("tab", { name: "Deployment logs", exact: true }).click()
   await expect(page.locator('[data-testid="deployment-logs"]')).toBeVisible()
+  await page.getByTestId("deployment-workspace").screenshot({ path: testInfo.outputPath("deployment-narrow-divider.png") })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.getByRole("button", { name: "Back to deployments" }).click()
   await expect(page.locator('[data-testid="deployment-list"]')).toBeVisible()
