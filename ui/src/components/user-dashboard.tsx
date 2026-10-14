@@ -1,4 +1,4 @@
-import { githubContextFromPath } from "@/github-context-routes"
+import { githubContextFromPath, githubContextMatchesJobGroup } from "@/github-context-routes"
 import { JobDeploymentLinks } from "@/components/job-deployment-links"
 import {
   AlertCircle,
@@ -180,10 +180,9 @@ export function UserDashboard({
   onSignOut: () => void
 }) {
   const { t } = useTranslation()
-  const groups = useMemo(() => groupRunnersByBuildContext(runners, t), [runners, t])
-  const sourceContext = githubContextFromPath(locationPath, locationSearch)
-  const sourceGroup = sourceContext?.kind === "branches" && !sourceContext.reference ? groups.find((group) => group.repository === sourceContext.repository && group.headBranch === sourceContext.name && !group.pullRequestNumber) : undefined
-  const selected = groups.find((group) => group.key === selectedKey) || (selectedKey ? undefined : sourceContext?.kind === "branches" && !sourceContext.reference ? sourceGroup : groups[0])
+  const sourceContext = useMemo(() => githubContextFromPath(locationPath, locationSearch), [locationPath, locationSearch])
+  const groups = useMemo(() => groupRunnersByBuildContext(runners, t).filter((group) => githubContextMatchesJobGroup(sourceContext, group)), [runners, t, sourceContext])
+  const selected = groups.find((group) => group.key === selectedKey) || (selectedKey ? undefined : groups[0])
   const [loadedJobGroup, setLoadedJobGroup] = useState<{ key: string; group: RunnerJobGroup } | null>(null)
   const selectedJobGroup = loadedJobGroup && selected && loadedJobGroup.key === selected.key ? loadedJobGroup.group : null
   const installations = useMemo(

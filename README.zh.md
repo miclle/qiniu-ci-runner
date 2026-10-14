@@ -88,7 +88,7 @@ Sandbox Deploy 控制面与执行切片见 [docs/zh/deployment.md](docs/zh/deplo
 运行中的部署详情还提供当前版本的 Web 终端。手动连接后可检查进程和应用日志文件，离开终端时关闭 shell。终端访问重新校验仓库和组织权限，并使用部署保存的 Sandbox 凭据。
 启动应用时会为 Vite 的 Host 白名单传入当前 Sandbox 的精确域名，Vite preview 无需在仓库中预先配置公网入口域名。
 
-Jobs 提供部署历史入口，并可按选中 Job 的固定提交创建部署。仓库在前的路由共享 branch／Tag／PR 上下文，旧的来源在前的链接保持兼容，详见 [GitHub 上下文路由](docs/zh/deployment.md#github-上下文路由)。
+Jobs 提供部署历史入口，并可按选中 Job 的固定提交创建部署。仓库集合路由使用可读的 Branch／Tag 查询条件（例如 `/github/qiniu/deployment/deployments?branch=example/vite`），PR 使用稳定的 `pull_requests/{number}` 路径。旧来源路径保持兼容，详见 [GitHub 上下文路由](docs/zh/deployment.md#github-上下文路由)。
 
 ## 配置
 
@@ -302,7 +302,7 @@ Admin 创建时分别维护平台执行配置和公共可见性。只应服务�
 | `/admin/audit`           | 审计事件历史 |
 | `/admin/diagnostics`     | runnerd 运行时诊断，用于查看脱敏摘要、pprof discovery 和按需加载的 expvar |
 
-`/` 始终是公开的 Qiniu CI Runner 产品首页。`/docs` 及其固定指南路由公开、同域，并提供英文和简体中文。普通用户 Jobs 首页位于 `/jobs`；其他受保护路由包括 `/repositories`、PR job 分组（`/github/{owner}/{repo}/pr/{number}/jobs`）、账户设置（`/account/preferences`、`/account/sandbox-templates`、`/account/sandbox-instances`），以及对应的 `/organizations/{login}/...` 路由。未登录访问受保护路由时会显示独立的 GitHub 登录页，并在 OAuth 完成后返回原 URL。
+`/` 始终是公开的 Qiniu CI Runner 产品首页。`/docs` 及其固定指南路由公开、同域，并提供英文和简体中文。普通用户 Jobs 首页位于 `/jobs`；其他受保护路由包括 `/repositories`、PR job 分组（`/github/{owner}/{repo}/pull_requests/{number}/jobs`）、账户设置（`/account/preferences`、`/account/sandbox-templates`、`/account/sandbox-instances`），以及对应的 `/organizations/{login}/...` 路由。未登录访问受保护路由时会显示独立的 GitHub 登录页，并在 OAuth 完成后返回原 URL。
 
 Job 详情默认展示 **Runner 日志**，并保留 Web Console 和详细信息。Jobs 与后台请求详情共用事件时间线，混排 control、stdout、stderr，显示时间戳和阶段，支持日志流筛选、加载更早记录及活动期间每五秒增量刷新。`GET /user/runner_requests/{id}/events` 使用与 Job 详情相同的精确安装/仓库权限校验，返回与后台接口相同的事件分页。在 Jobs 面板中，任务名称链接到 GitHub Job，工作流名称链接到对应的 Run。独立 Job 详情页提供 **在 GitHub 查看 Job**；缺少 Job URL 时，若已知仓库和 Run ID，则提供 Workflow Run 跳转。runnerd 不再下载或重复展示 GitHub Actions 日志。已退役的 `/user/runner_requests/{id}/github-log` 接口返回 `404`。
 

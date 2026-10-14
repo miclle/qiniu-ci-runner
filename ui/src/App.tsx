@@ -354,7 +354,7 @@ function App() {
   )
 
   const hasAccess = authSession.authenticated && authSession.role === "admin"
-  const routeAccess = appRouteAccess(locationPath)
+  const routeAccess = appRouteAccess(locationPath, locationSearch)
   const isAdminRoute = routeAccess === "admin"
   const userJobID = userJobIDFromPath(locationPath)
   const userSelectedJobID = userJobIDFromSearch(locationSearch)
@@ -971,10 +971,11 @@ function App() {
     if (!isUserJobsRoute(locationPath, locationSearch)) return
     const key = userJobsGroupKeyFromLocation(locationPath, locationSearch)
     setUserSelectedKey(key)
-    const canonicalPath = userJobsPath(key)
+    const context = githubContextFromPath(locationPath, locationSearch)
+    const canonicalPath = context ? githubContextPath(context, "jobs") : userJobsPath(key)
     const currentLocation = `${locationPath}${locationSearch}`
     const nextPath = withPreservedJobSearch(canonicalPath, locationSearch)
-    if (key && currentLocation !== nextPath) {
+    if ((key || context) && currentLocation !== nextPath) {
       window.history.replaceState(null, "", nextPath)
       setLocationPath(window.location.pathname)
       setLocationSearch(window.location.search)
@@ -1599,7 +1600,7 @@ function isRunnerJobGroupResponse(value: unknown): value is { key: string } {
 }
 
 function isUserJobsRoute(path: string, search = "") {
-  return path === "/jobs" || Boolean(userJobsGroupKeyFromPath(path, search))
+  return path === "/jobs" || (path.endsWith("/jobs") && Boolean(githubContextFromPath(path, search))) || Boolean(userJobsGroupKeyFromPath(path, search))
 }
 
 function userJobsGroupKeyFromLocation(path: string, search: string) {
@@ -1623,15 +1624,6 @@ function userJobsGroupKeyFromPath(path: string, search = "") {
   const legacyRunMatch = path.match(/^\/jobs\/runs\/([^/]+)\/([^/]+)\/(\d+)$/)
   if (legacyRunMatch) {
     return `run:${decodeRepositoryPath(legacyRunMatch[1], legacyRunMatch[2])}:${legacyRunMatch[3]}`
-  }
-
-  const branchMatch = path.match(/^\/github\/branches\/([^/]+)\/([^/]+)\/(.+)\/([^/]+)\/jobs$/)
-  if (branchMatch) {
-    const repository = decodeRepositoryPath(branchMatch[1], branchMatch[2])
-    const branch = safeDecodePathSegment(branchMatch[3])
-    const sha = safeDecodePathSegment(branchMatch[4])
-    if (!branch || !sha) return ""
-    return `branch:${repository}:${branch}:${sha}`
   }
 
   const legacyBranchMatch = path.match(/^\/jobs\/branches\/([^/]+)\/([^/]+)\/(.+)\/([^/]+)$/)

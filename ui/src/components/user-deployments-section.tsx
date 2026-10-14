@@ -105,6 +105,12 @@ export function UserDeploymentsSection({
   const selectedID = deploymentID ?? null
   const context = githubContextFromPath(locationPath, locationSearch)
   const listPath = deploymentListAPIPath(context)
+  const listCanonicalPath = context && !deploymentID ? githubContextPath(context, "deployments") : null
+  useEffect(() => {
+    if (!listCanonicalPath || window.location.pathname + window.location.search === listCanonicalPath) return
+    window.history.replaceState(null, "", listCanonicalPath)
+    window.dispatchEvent(new window.PopStateEvent("popstate"))
+  }, [listCanonicalPath])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [action, setAction] = useState<string | null>(null)

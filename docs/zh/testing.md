@@ -779,3 +779,5 @@ API 回归还覆盖完整分支／Tag 引用解析、同名来源的幂等冲突
 PR 来源验证：执行 `go test ./internal/server ./internal/github -run 'TestPullRequestDeployment|TestDeploymentSource' -count=1`，覆盖固定 head／历史提交、fork 身份、base 不匹配、来源删除、head 竞争、幂等重放、权限撤销及最新／历史版本重部署。新增来源快照字段还需执行状态升级与专用 PostgreSQL/MySQL 版本门禁。PR production 夹具验证表单和路由，真实 fork PR 执行仍需单独验收。
 
 生产浏览器 fixture 覆盖仓库在前的 PR Jobs → 历史 Job → 固定提交创建 → 部署详情／刷新。聚焦 UI 测试另覆盖 Branch／Tag 名称编码、旧链接、延迟目录与切换来源时清除 SHA。运行 `task ui-production-smoke`；fixture 不代表真实 fork PR Sandbox 执行已通过。
+
+路由迁移另覆盖可读斜杠查询、字面百分号转义与保留字符、仓库／分支 Jobs 筛选（包括空结果）、仓库级部署／创建入口、旧来源路径、OAuth 返回、刷新、前进后退与历史资源选择。在 `ui/` 运行 `bun test src/url-query.test.js src/github-context-routes.test.js src/components/auth-pages.test.js`，并运行 `task ui-production-smoke`。

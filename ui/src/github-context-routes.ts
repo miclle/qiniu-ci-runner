@@ -2,7 +2,7 @@ import { readableQuery } from "@/url-query"
 
 // Jobs and deployments share repository/source identity; selection stays in the query.
 export type GitHubContext = {
-  kind: "pulls" | "branches" | "tags" | "runs"
+  kind: "repository" | "pulls" | "branches" | "tags" | "runs"
   repository: string
   reference: string
   name?: string
@@ -15,12 +15,35 @@ function decode(value: string): string | null {
   } catch { return null }
 }
 
-const routeKinds = { pr: "pulls", branch: "branches", tag: "tags", run: "runs" } as const
-const routeSegments = { pulls: "pr", branches: "branch", tags: "tag", runs: "run" } as const
+const routeKinds = { pull_requests: "pulls", runs: "runs", pr: "pulls", branch: "branches", tag: "tags", run: "runs" } as const
+
+function validRepository(owner: string | null, repository: string | null): boolean {
+  return Boolean(owner && repository && !/[/\\]/.test(owner + repository) && ![owner, repository].some((part) => part === "." || part === ".."))
+}
 
 export function githubContextFromPath(path: string, search = ""): GitHubContext | null {
-  const current = path.match(/^\/github\/([^/]+)\/([^/]+)\/(pr|branch|tag|run)\/([^/]+)\/(jobs|deployments)$/)
+  const query = new URLSearchParams(search)
+  if (["branch", "tag", "commit"].some((key) => query.getAll(key).length > 1)) return null
+  if (query.has("branch") && query.has("tag")) return null
+  for (const key of ["branch", "tag", "commit"]) {
+    const value = query.get(key)
+    if (value !== null && (!value || [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127))) return null
+  }
+  const collection = path.match(/^\/github\/([^/]+)\/([^/]+)\/(jobs|deployments)$/)
+  if (collection) {
+    const owner = decode(collection[1]), repository = decode(collection[2])
+    if (!validRepository(owner, repository) || (collection[3] === "jobs" && query.has("tag"))) return null
+    const name = query.get("branch") ?? query.get("tag")
+    return { kind: query.has("branch") ? "branches" : query.has("tag") ? "tags" : "repository", repository: `${owner}/${repository}`, reference: query.get("commit") || "", ...(name ? { name } : {}) }
+  }
+  const current = path.match(/^\/github\/([^/]+)\/([^/]+)\/(pull_requests|runs|pr|branch|tag|run)\/([^/]+)\/(jobs|deployments)$/)
   const legacy = current ? null : path.match(/^\/github\/(pulls|branches|tags|runs)\/([^/]+)\/([^/]+)\/([^/]+)\/(jobs|deployments)$/)
+  // Older Jobs paths placed the full branch before the SHA, sometimes unescaped.
+  const oldBranch = current || legacy ? null : path.match(/^\/github\/branches\/([^/]+)\/([^/]+)\/(.+)\/([^/]+)\/jobs$/)
+  if (oldBranch) {
+    const owner = decode(oldBranch[1]), repository = decode(oldBranch[2]), name = decode(oldBranch[3]), reference = decode(oldBranch[4])
+    return validRepository(owner, repository) && name && reference ? { kind: "branches", repository: `${owner}/${repository}`, name, reference } : null
+  }
   if (!current && !legacy) return null
   const kind = current ? routeKinds[current[3] as keyof typeof routeKinds] : legacy![1] as GitHubContext["kind"]
   const view = (current ?? legacy)![5]
@@ -28,9 +51,8 @@ export function githubContextFromPath(path: string, search = ""): GitHubContext 
   const owner = decode(current ? current[1] : legacy![2])
   const repository = decode(current ? current[2] : legacy![3])
   const value = decode((current ?? legacy)![4])
-  if (!owner || !repository || !value || /[/\\]/.test(owner + repository) || [owner, repository].some((part) => part === "." || part === "..")) return null
-  if ((kind === "pulls" || kind === "runs") && !/^[1-9]\d*$/.test(value)) return null
-  const query = new URLSearchParams(search)
+  if (!validRepository(owner, repository) || !value) return null
+  if ((kind === "pulls" || kind === "runs") && (!/^[1-9]\d*$/.test(value) || query.has("branch") || query.has("tag"))) return null
   if (kind === "branches" || kind === "tags") {
     const name = current ? value : query.get(kind === "tags" ? "tag" : "branch") || undefined
     const reference = current ? query.get("commit") || "" : value
@@ -42,15 +64,15 @@ export function githubContextFromPath(path: string, search = ""): GitHubContext 
 export function githubContextPath(context: GitHubContext, view: "jobs" | "deployments", selection: Record<string, string | number | undefined> = {}): string {
   const repository = context.repository.split("/").map(encodeURIComponent).join("/")
   const query = new URLSearchParams()
-  const named = context.kind === "branches" || context.kind === "tags"
-  if (named && context.reference) query.set("commit", context.reference)
-  for (const [key, value] of Object.entries(selection)) if (value !== undefined) query.set(key, String(value))
-  // Old SHA-only branch links lack a ref name; preserve their readable identity.
-  if (named && !context.name) {
-    query.delete("commit")
-    return `/github/${context.kind}/${repository}/${encodeURIComponent(context.reference)}/${view}${query.size ? `?${readableQuery(query)}` : ""}`
+  let prefix = `/github/${repository}`
+  if (context.kind === "pulls" || context.kind === "runs") {
+    prefix += `/${context.kind === "pulls" ? "pull_requests" : "runs"}/${encodeURIComponent(context.reference)}`
+  } else {
+    if (context.name) query.set(context.kind === "tags" ? "tag" : "branch", context.name)
+    if (context.reference) query.set("commit", context.reference)
   }
-  return `/github/${repository}/${routeSegments[context.kind]}/${encodeURIComponent(named ? context.name! : context.reference)}/${view}${query.size ? `?${readableQuery(query)}` : ""}`
+  for (const [key, value] of Object.entries(selection)) if (value !== undefined) query.set(key, String(value))
+  return `${prefix}/${view}${query.size ? `?${readableQuery(query)}` : ""}`
 }
 
 type DeploymentSource = {
@@ -95,7 +117,7 @@ export type DeploymentPrefill = { repository: string; source: "branch" | "tag" |
 export function deploymentCreatePath(context: GitHubContext | null, commitSHA = ""): string {
   if (!context || context.kind === "runs") return "/deployments/new"
   const ref = context.kind === "pulls" ? context.reference : context.name
-  if (!ref) return "/deployments/new"
+  if (!ref) return `/deployments/new?${readableQuery(new URLSearchParams({ repository: context.repository }))}`
   const query = new URLSearchParams({ repository: context.repository, source: context.kind === "pulls" ? "pull_request" : context.kind === "tags" ? "tag" : "branch", ref })
   const sha = commitSHA || (context.kind !== "pulls" ? context.reference : "")
   if (sha) query.set("commit_sha", sha)
@@ -105,10 +127,10 @@ export function deploymentCreatePath(context: GitHubContext | null, commitSHA = 
 export function deploymentPrefillFromSearch(search: string): DeploymentPrefill | null {
   const query = new URLSearchParams(search)
   const repository = query.get("repository") || ""
-  const source = query.get("source")
+  const source = query.get("source") || "branch"
   const ref = query.get("ref") || ""
   const commitSHA = query.get("commit_sha") || ""
-  if (!/^[^/\\?#%\s]+\/[^/\\?#%\s]+$/.test(repository) || !["branch", "tag", "pull_request"].includes(source || "") || !ref || [...ref].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return null
+  if (!/^[^/\\?#%\s]+\/[^/\\?#%\s]+$/.test(repository) || !["branch", "tag", "pull_request"].includes(source || "") || (query.has("source") && !ref) || [...ref].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return null
   if (source === "pull_request" && !/^[1-9]\d*$/.test(ref)) return null
   if (commitSHA && !/^[a-f0-9]{40}$/.test(commitSHA)) return null
   return { repository, source: source as DeploymentPrefill["source"], ref, commitSHA }
@@ -119,4 +141,16 @@ export function jobDeploymentContext(job: { repository_full_name?: string; pull_
   if (job.pull_request_number && job.pull_request_number > 0) return { kind: "pulls", repository: job.repository_full_name, reference: String(job.pull_request_number) }
   if (job.head_branch) return { kind: "branches", repository: job.repository_full_name, name: job.head_branch, reference: job.head_sha! }
   return null
+}
+
+// Restrict the visible Jobs groups without treating URL context as authorization.
+// RunnerState currently has no reliable Tag evidence; Tag filters are deployment-only.
+export function githubContextMatchesJobGroup(context: GitHubContext | null, group: { repository: string; headBranch?: string; headSHA?: string; pullRequestNumber?: number; workflowRunIDs?: number[] }): boolean {
+  if (!context) return true
+  if (group.repository.toLowerCase() !== context.repository.toLowerCase()) return false
+  if (context.kind === "pulls") return group.pullRequestNumber === Number(context.reference)
+  if (context.kind === "runs") return Boolean(group.workflowRunIDs?.includes(Number(context.reference)))
+  if (context.kind === "tags") return false
+  if (context.kind === "branches" && (group.pullRequestNumber || (context.name && group.headBranch !== context.name))) return false
+  return !context.reference || group.headSHA === context.reference
 }

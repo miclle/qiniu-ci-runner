@@ -229,7 +229,8 @@ export function userRunnerRequestsPath(limit: number, offset: number): string {
   return `/user/runner_requests?limit=${limit}&offset=${offset}`
 }
 
-export function appRouteAccess(path: string): AppRouteAccess {
+export function appRouteAccess(path: string, search = ""): AppRouteAccess {
+  if (githubContextFromPath(path) && !githubContextFromPath(path, search)) return "not-found"
   if (path === "/" || isSiteDocumentPath(path)) return "public"
   if (isAdminRoute(path)) return "admin"
   if (isUserRoute(path)) return "user"

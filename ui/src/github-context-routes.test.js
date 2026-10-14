@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { deploymentCreatePath, deploymentPrefillFromSearch, jobDeploymentContext, deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "./github-context-routes"
+import { githubContextMatchesJobGroup, deploymentCreatePath, deploymentPrefillFromSearch, jobDeploymentContext, deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "./github-context-routes"
 import { appRouteAccess, deploymentIDFromPath, signInURL, userDataResources } from "./app-load-policy"
 
 describe("GitHub source context routes", () => {
@@ -22,10 +22,10 @@ describe("GitHub source context routes", () => {
   test("canonicalizes by saved revision evidence and retains legacy untyped refs", () => {
     const deployment = { id: "d1", repository_full_name: "qiniu/deployment", source: "branch", ref: "main", commit_sha: "b".repeat(40) }
     const revision = { number: 1, ref: "refs/heads/example/vite", commit_sha: "a".repeat(40) }
-    expect(deploymentPath(deployment, revision)).toBe(`/github/qiniu/deployment/branch/example%2Fvite/deployments?commit=${"a".repeat(40)}&deployment=d1&revision=1`)
+    expect(deploymentPath(deployment, revision)).toBe(`/github/qiniu/deployment/deployments?branch=example/vite&commit=${"a".repeat(40)}&deployment=d1&revision=1`)
     expect(deploymentPath({ ...deployment, source: undefined, ref: "legacy" })).toBe("/deployments/d1")
     expect(deploymentListAPIPath(deploymentContext(deployment, revision))).toContain("ref=refs%2Fheads%2Fexample%2Fvite")
-    expect(deploymentPath({ ...deployment, pull_request_number: 125 }, revision)).toBe("/github/qiniu/deployment/pr/125/deployments?deployment=d1&revision=1")
+    expect(deploymentPath({ ...deployment, pull_request_number: 125 }, revision)).toBe("/github/qiniu/deployment/pull_requests/125/deployments?deployment=d1&revision=1")
   })
   test("rejects malformed source paths and keeps creation separate", () => {
     for (const path of ["/github/pulls/o/r/0/deployments", "/github/pulls/o/r/no/deployments", "/github/branches/o%2Fr/r/a/deployments", "/github/tags/o/r/%zz/deployments", "/github/pulls/o/r/1/deployments/more"]) expect(githubContextFromPath(path)).toBeNull()
@@ -47,7 +47,7 @@ test("repository-first routes keep source history independent from immutable com
 test("Job creation links pin the selected Job, including older PR commits", () => {
   const job = { repository_full_name: "qiniu/deployment", pull_request_number: 7, head_sha: "a".repeat(40), head_branch: "feature/中文" }
   const context = jobDeploymentContext(job)
-  expect(githubContextPath(context, "deployments")).toBe("/github/qiniu/deployment/pr/7/deployments")
+  expect(githubContextPath(context, "deployments")).toBe("/github/qiniu/deployment/pull_requests/7/deployments")
   const url = new URL(deploymentCreatePath(context, job.head_sha), "https://example.com")
   expect(deploymentPrefillFromSearch(url.search)).toEqual({ repository: job.repository_full_name, source: "pull_request", ref: "7", commitSHA: job.head_sha })
   expect(deploymentPrefillFromSearch("?repository=o/r&source=pull_request&ref=7&commit_sha=not-a-sha")).toBeNull()
@@ -55,4 +55,70 @@ test("Job creation links pin the selected Job, including older PR commits", () =
   const branch = jobDeploymentContext({ ...job, pull_request_number: 0 })
   const branchURL = new URL(deploymentCreatePath(branch), "https://example.com")
   expect(deploymentPrefillFromSearch(branchURL.search).ref).toBe("feature/中文")
+})
+
+
+test("repository collections preserve readable branch/tag filters and repository-only history", () => {
+  for (const view of ["jobs", "deployments"]) {
+    const context = githubContextFromPath(`/github/qiniu/deployment/${view}`)
+    expect(context).toEqual({ kind: "repository", repository: "qiniu/deployment", reference: "" })
+    expect(githubContextPath(context, view)).toBe(`/github/qiniu/deployment/${view}`)
+    expect(appRouteAccess(`/github/qiniu/deployment/${view}`)).toBe("user")
+    expect(deploymentListAPIPath(context)).toBe("/user/deployments?repository_full_name=qiniu%2Fdeployment")
+    const prefill = new URL(deploymentCreatePath(context), "https://example.com")
+    expect(deploymentPrefillFromSearch(prefill.search)).toEqual({ repository: "qiniu/deployment", source: "branch", ref: "", commitSHA: "" })
+  }
+  const branch = { kind: "branches", repository: "qiniu/deployment", name: "feature/jobs/deployments", reference: "a".repeat(40) }
+  expect(githubContextPath(branch, "jobs", { job: "j1" })).toBe(`/github/qiniu/deployment/jobs?branch=feature/jobs/deployments&commit=${branch.reference}&job=j1`)
+  for (const name of ["example/vite", "release/v1.0", "中文/a&tag=b#c+d=e", "literal%2Fname"]) {
+    for (const kind of ["branches", "tags"]) {
+      const source = { ...branch, kind, name }
+      const url = new URL(githubContextPath(source, "deployments"), "https://example.com")
+      expect(url.pathname).toBe("/github/qiniu/deployment/deployments")
+      expect(githubContextFromPath(url.pathname, url.search)).toEqual(source)
+    }
+  }
+})
+
+test("all previous named branch and PR links resolve to the new canonical location", () => {
+  const sha = "a".repeat(40)
+  for (const path of [
+    `/github/qiniu/deployment/branch/feature%2Fpreview/jobs?commit=${sha}&job=j1`,
+    `/github/branches/qiniu/deployment/${sha}/jobs?branch=feature%2Fpreview&job=j1`,
+    `/github/branches/qiniu/deployment/feature/preview/${sha}/jobs?job=j1`,
+  ]) {
+    const url = new URL(path, "https://example.com")
+    expect(githubContextPath(githubContextFromPath(url.pathname, url.search), "jobs", { job: url.searchParams.get("job") })).toBe(`/github/qiniu/deployment/jobs?branch=feature/preview&commit=${sha}&job=j1`)
+  }
+  for (const path of ["/github/pulls/qiniu/deployment/7/jobs", "/github/qiniu/deployment/pr/7/jobs", "/github/qiniu/deployment/pull_requests/7/jobs"]) {
+    expect(githubContextPath(githubContextFromPath(path), "jobs")).toBe("/github/qiniu/deployment/pull_requests/7/jobs")
+  }
+  expect(githubContextPath(githubContextFromPath("/github/qiniu/deployment/run/42/jobs"), "jobs")).toBe("/github/qiniu/deployment/runs/42/jobs")
+})
+
+test("ambiguous and malformed collection filters cannot fall back to account-wide data", () => {
+  for (const search of ["?branch=a&tag=b", "?branch=a&branch=b", "?branch=", "?tag=", "?commit=a&commit=b", "?branch=%00bad"]) {
+    expect(githubContextFromPath("/github/o/r/deployments", search)).toBeNull()
+    expect(appRouteAccess("/github/o/r/deployments", search)).toBe("not-found")
+  }
+  expect(appRouteAccess("/github/o/r/jobs", "?tag=release/v1")).toBe("not-found")
+  expect(githubContextFromPath("/github/o/r/pull_requests/0/jobs")).toBeNull()
+})
+
+test("Jobs collection filters never select another repository or silently widen an empty branch", () => {
+  const groups = [
+    { repository: "qiniu/deployment", headBranch: "example/vite", headSHA: "old", workflowRunIDs: [1] },
+    { repository: "qiniu/deployment", headBranch: "example/vite", headSHA: "new", workflowRunIDs: [2] },
+    { repository: "qiniu/deployment", headBranch: "main", headSHA: "main", workflowRunIDs: [3] },
+    { repository: "other/deployment", headBranch: "example/vite", headSHA: "new", workflowRunIDs: [4] },
+    { repository: "qiniu/deployment", headBranch: "example/vite", headSHA: "pr", pullRequestNumber: 7, workflowRunIDs: [5] },
+  ]
+  const filtered = (path, query = "") => groups.filter((g) => githubContextMatchesJobGroup(githubContextFromPath(path, query), g)).map((g) => g.headSHA)
+  expect(filtered("/github/qiniu/deployment/jobs")).toEqual(["old", "new", "main", "pr"])
+  expect(filtered("/github/qiniu/deployment/jobs", "?branch=example/vite")).toEqual(["old", "new"])
+  expect(filtered("/github/qiniu/deployment/jobs", "?branch=missing")).toEqual([])
+  expect(filtered("/github/qiniu/deployment/jobs", "?branch=example/vite&commit=old")).toEqual(["old"])
+  expect(filtered("/github/branches/qiniu/deployment/old/jobs")).toEqual(["old"])
+  expect(filtered("/github/qiniu/deployment/pull_requests/7/jobs")).toEqual(["pr"])
+  expect(filtered("/github/qiniu/deployment/runs/3/jobs")).toEqual(["main"])
 })

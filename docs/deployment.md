@@ -314,20 +314,35 @@ closed/disconnected streams receive the existing thirty-second idle cleanup.
 
 ## GitHub context routes
 
-Jobs and deployments use repository-first paths:
+Jobs and deployments use repository resource collections:
 
-- `/github/{owner}/{repo}/pr/{number}/jobs` or `/deployments`
-- `/github/{owner}/{repo}/branch/{encoded-name}/jobs` or `/deployments`
-- `/github/{owner}/{repo}/tag/{encoded-name}/deployments`
-- `/github/{owner}/{repo}/run/{number}/jobs` for Jobs without source context
+- `/github/{owner}/{repo}/jobs` and `/github/{owner}/{repo}/deployments`
+- `/github/{owner}/{repo}/jobs?branch=example/vite`
+- `/github/{owner}/{repo}/deployments?branch=example/vite`
+- `/github/{owner}/{repo}/deployments?tag=release/v1`
+- `/github/{owner}/{repo}/pull_requests/{number}/jobs` or `/deployments`
+- `/github/{owner}/{repo}/runs/{number}/jobs` for Jobs without source context
 
-Branch and Tag names occupy one percent-encoded segment, including `%2F` for
-slashes. `commit={sha}` optionally filters their history to an immutable commit;
-Jobs group links always include it. `job={id}` and `deployment={id}` select the
-resource, and `revision=N` selects an immutable deployment revision. Without a
-deployment selection the page lists saved deployments in that context.
+Branch and Tag names are query values. Generated browser links leave `/` readable
+while still encoding `&`, `#`, `+`, `%` and other reserved characters. Encoding is
+applied before restoring only `%2F`; a literal `%2F` in a ref remains `%252F`.
+`branch` and `tag` are mutually exclusive. Empty or repeated source filters are
+invalid. Tags are deployment-only because Jobs do not retain reliable Tag evidence.
+`commit={sha}` optionally fixes the source selection to an immutable commit;
+branch Job group links always include it. `job={id}` and `deployment={id}` select
+the resource, and `revision=N` selects an immutable deployment revision.
+
+Repository Jobs show only matching groups from the existing authorized history
+window (up to 500 loaded Runner requests); an empty filter never falls back to
+another repository. This route change does not add an unbounded Jobs archive.
+Repository deployment lists filter saved revisions before database pagination.
+Without a deployment selection the page lists saved deployments in that context.
 `/deployments` remains global account history; `/deployments/new` is the form.
-Old source-first GitHub paths and `/jobs/...` links remain compatible.
+A repository-only creation link prefills the repository and lets the user choose
+a source. Old `/github/pulls/...`, `/github/branches/...`, `/jobs/...`, and the
+previous `/pr/`, `/branch/{encoded-name}/`, `/tag/{encoded-name}/`, `/run/` paths
+remain compatible and canonicalize to the new browser URLs without losing the
+Job/deployment/revision selection. Existing API paths remain unchanged.
 
 Legacy `/deployments/{id}` links load the local record and replace the URL with
 its saved source context. Historical revisions use their own saved SHA/ref.

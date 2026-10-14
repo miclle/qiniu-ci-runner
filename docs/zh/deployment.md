@@ -228,18 +228,29 @@ shell 中的修改仅作用于当前 Sandbox。
 
 ## GitHub 上下文路由
 
-Jobs 和部署使用仓库在前的路由：
+Jobs 和部署使用仓库资源集合路由：
 
-- `/github/{owner}/{repo}/pr/{number}/jobs` 或 `/deployments`
-- `/github/{owner}/{repo}/branch/{encoded-name}/jobs` 或 `/deployments`
-- `/github/{owner}/{repo}/tag/{encoded-name}/deployments`
-- `/github/{owner}/{repo}/run/{number}/jobs` 用于缺少来源上下文的 Jobs
+- `/github/{owner}/{repo}/jobs` 与 `/github/{owner}/{repo}/deployments`
+- `/github/{owner}/{repo}/jobs?branch=example/vite`
+- `/github/{owner}/{repo}/deployments?branch=example/vite`
+- `/github/{owner}/{repo}/deployments?tag=release/v1`
+- `/github/{owner}/{repo}/pull_requests/{number}/jobs` 或 `/deployments`
+- `/github/{owner}/{repo}/runs/{number}/jobs` 用于缺少来源上下文的 Jobs
 
-分支与 Tag 名称占一个编码后的路径段，斜杠编码为 `%2F`。
-`commit={sha}` 可将历史限定到不可变提交，Jobs 分组链接始终携带它。
+Branch 和 Tag 名称放在查询参数中。浏览器链接保留可读的 `/`，同时继续编码
+`&`、`#`、`+`、`%` 等字符。先编码再仅恢复 `%2F`，ref 中字面的 `%2F` 仍保留为 `%252F`。
+`branch` 与 `tag` 互斥，空值和重复的来源条件无效。Jobs 尚无可靠的 Tag 证据，Tag 筛选仅用于部署。
+`commit={sha}` 可固定不可变提交，分支 Job 分组链接始终携带它。
 `job={id}`、`deployment={id}` 选择资源，`revision=N` 选择部署的不可变版本。
-未选择部署时展示当前账号在该上下文的部署历史。`/deployments` 保留为账号全局列表，
-`/deployments/new` 保留为创建表单。旧的来源在前的 GitHub 路由和 `/jobs/...` 链接继续兼容。
+
+仓库 Jobs 仅显示已有授权历史窗口（最多加载 500 条 Runner 请求）中的匹配分组，
+空结果不会退回其他仓库；本次路由调整不新增无限历史归档。仓库部署列表在数据库分页前
+筛选已保存版本。未选择部署时展示当前上下文的部署历史。
+`/deployments` 保留为账号全局列表，`/deployments/new` 保留为创建表单。
+仓库级创建链接预填仓库，再由用户选择版本来源。旧 `/github/pulls/...`、
+`/github/branches/...`、`/jobs/...`，以及上一版 `/pr/`、`/branch/{encoded-name}/`、
+`/tag/{encoded-name}/`、`/run/` 路径继续兼容，转换到新浏览器地址时保留 Job、部署和版本选择。
+既有 API 路径不变。
 
 旧 `/deployments/{id}` 链接读取本地记录后替换为保存的来源地址，历史版本使用自己的
 SHA／ref。URL 中的仓库与来源不授予权限：详情仍按本地账号和部署 ID 授权，再修正展示地址。
