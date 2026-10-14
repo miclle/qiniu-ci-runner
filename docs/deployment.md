@@ -338,6 +338,28 @@ sweep removed its deployment, one revision and 20 events while retaining both
 audit events. This proves deployed cleanup with timestamp injection, not seven
 days of naturally elapsed retention.
 
+Ordinary Chrome narrow-screen acceptance on 2026-10-14 at `84abfa8` used the
+real local runnerd history with three revisions and selected revision #1.
+At a 375 × 667 viewport, document scroll width stayed 375; both history and
+logs were 343 pixels wide at x=16. History ended at y=1290.5 and logs started
+at y=1524.5, confirming stacked layout. All 20 saved log rows remained present
+and DevTools reported no console errors. This uses real API data, independently
+of the production fixture; it observes a stopped historical deployment.
+
+Real CI independence acceptance on 2026-10-14 used
+[`qiniu/deployment` Commit `bd336bd`](https://github.com/qiniu/deployment/commit/bd336bdc3e93d5aca8fd25a8aa2258d90e644123)
+and [workflow Run 38533165014, attempt 2](https://github.com/qiniu/deployment/actions/runs/38533165014/attempts/2).
+Job `115752065357` and deployment `pgcwpifs2ovrpw37oayfvbz44y` were observed
+running concurrently with different Sandboxes. The Job succeeded, runnerd retained
+the success, and the provider confirmed Runner Sandbox absence. The same
+Deployment stayed running with attempt #1 and public HTTP 200 immediately after
+cleanup and after another 20 seconds. GitHub listed only the expected CI Runner
+while it ran, then zero repository Runners while the Deployment was still running.
+The API gate finally stopped all its own deployments and confirmed provider
+absence. The first CI attempt completed before overlap was observed and was not
+counted as acceptance. This proves the public same-source cleanup path, not
+private/fork execution or multi-instance recovery.
+
 1. **Preflight and plan (done):** strict repository configuration, immutable
    Commit resolution, exact OAuth/App repository intersection, encrypted Spec
    snapshot, and audited durable state.

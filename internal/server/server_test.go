@@ -9450,7 +9450,9 @@ func testServerPrivateKeyFile(t *testing.T) string {
 
 func waitForState(t *testing.T, store state.Store, id, want string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	// Race-enabled SQLite and worker scheduling can exceed two seconds on a
+	// contended host. Keep the wait bounded and return as soon as state matches.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		st, err := store.ReadState(id)
 		if err == nil && st.Status == want {

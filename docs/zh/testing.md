@@ -781,6 +781,18 @@ worker 与 Sandbox 调用均在已有服务进程中执行。同键并发请求�
 最多创建“作用域上限＋1”个新部署，只停止本次提交，保留终态记录供检查。不证明第二个账号的
 权限、私有仓库 Contents 权限或 fork PR 执行。不要发布 cookie 或配置。
 
+如需同时验收 CI 生命周期独立性，在上述 API 验收环境中增加
+`RUNNERD_DEPLOY_LIVE_CI_RUN_ID=<单 Job 的 Run ID>` 与
+`RUNNERD_DEPLOY_LIVE_CI_RUN_ATTEMPT=<attempt>`。CI 必须来自 `qiniu/deployment`，
+并与部署使用相同 Commit。测试等待精确的 attempt，实际观察两个 Sandbox 同时运行，
+要求保留 CI 成功结果并由 Provider 确认 Runner Sandbox 不存在，然后立即及 20 秒后
+检查部署 attempt 不变、公网仍返回 200。错过并行阶段会失败；测试不触发／重跑 CI，
+也不修改 Runner request。准备真实工作流，等待测试输出 `waiting for concurrent CI`，
+再单独触发选定的 attempt。为减少启动延迟，可先执行
+`go test -c -o /tmp/deployment-live.test ./internal/server`，然后使用相同环境执行该二进制，
+传入 `-test.run '^TestDeploymentLivePublicAPI$' -test.v -test.timeout 12m`。
+私有仓库和第二个用户的权限验收保持独立。
+
 SDK 协议 fixture 验证应用启动不发送远端 `Connect-Timeout-Ms` 截止时间，响应头等待与 PID
 确认仍受本地超时限制。worker 回归测试覆盖 Provider 查询跨过到期时间，以及旧到期观察
 不能停止替代 attempt 的边界。

@@ -375,7 +375,9 @@ acceptance record, never in repository files.
    wildcard allowlist. The opt-in public worker check is documented in
    [Testing](testing.md#sandbox-deploy-verification).
 3. Confirm the service remains reachable after the source GitHub Job and any
-   runner cleanup finish; Deploy must not register a GitHub Runner.
+   runner cleanup finish; Deploy must not register a GitHub Runner. The optional
+   CI Run/attempt gate in [Testing](testing.md#sandbox-deploy-verification) requires
+   an observed overlap on the same Commit and provider-confirmed Runner cleanup.
 4. Submit the same `Idempotency-Key` twice and force a provider create timeout.
    Reconcile by the exact `qiniu-deployd` metadata and confirm that retrying does
    not create a second Sandbox.

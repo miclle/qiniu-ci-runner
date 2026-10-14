@@ -818,6 +818,21 @@ limit plus one new deployment, stops only its own submissions, and preserves
 those terminal records for inspection. It does not prove a second user's access,
 private Contents permissions or fork PR execution. Never publish cookies/configs.
 
+To additionally verify CI lifecycle independence, set
+`RUNNERD_DEPLOY_LIVE_CI_RUN_ID=<single-job-run-id>` and
+`RUNNERD_DEPLOY_LIVE_CI_RUN_ATTEMPT=<attempt>` with the API gate above. CI must
+use `qiniu/deployment` and the same Commit as the deployment. The test waits for
+that exact attempt, observes concurrent running Sandboxes, requires retained CI
+success and real Runner Sandbox absence, then probes the unchanged deployment
+immediately and after 20 seconds. Missing overlap is a failure. The gate does
+not dispatch/rerun CI or mutate Runner requests. Prepare a real workflow, wait
+for the test's `waiting for concurrent CI` message, then trigger the selected
+attempt separately. For fast startup, compile first with
+`go test -c -o /tmp/deployment-live.test ./internal/server`, then run that binary
+with the same environment and `-test.run '^TestDeploymentLivePublicAPI$'
+-test.v -test.timeout 12m`. Keep private repositories and second-user acceptance
+separate from this public gate.
+
 SDK protocol fixtures verify that application startup sends no remote
 `Connect-Timeout-Ms` deadline while response-header and PID confirmation remain
 bounded locally. Worker regressions cover provider lookups that cross expiry

@@ -244,6 +244,23 @@ Sandbox 释放的 API 测试记录的 `updated_at` 回拨 169 小时。正常清
 一个版本及 20 条事件，两个审计事件保持不变。这证明实际进程在时间戳注入下的清理行为，
 不代表已自然等待七天。
 
+2026-10-14 在 `84abfa8` 上使用普通 Chrome 验收真实本地 runnerd 的窄屏详情，
+部署有三个版本，选中历史版本 #1。375 × 667 视口下，document 滚动宽度仍为 375；
+历史和日志容器均宽 343，x=16。历史底部 y=1290.5，日志顶部 y=1524.5，确认上下排列。
+20 条已保存日志均存在，DevTools 无 console 错误。该证据使用真实 API 数据，
+独立于生产 fixture，观察对象为已停止的历史部署。
+
+2026-10-14 的真实 CI 独立性验收使用
+[`qiniu/deployment` 的 Commit `bd336bd`](https://github.com/qiniu/deployment/commit/bd336bdc3e93d5aca8fd25a8aa2258d90e644123)
+与 [Workflow Run 38533165014 的 attempt 2](https://github.com/qiniu/deployment/actions/runs/38533165014/attempts/2)。
+实际观察到 Job `115752065357` 和部署 `pgcwpifs2ovrpw37oayfvbz44y` 同时运行，
+使用不同 Sandbox。Job 成功后，runnerd 保留成功结果，Provider 确认 Runner Sandbox
+不存在；部署保持 running、attempt #1，清理后立即及 20 秒后公网均返回 HTTP 200。
+GitHub 在 CI 运行时仅列出预期的 CI Runner，在部署仍运行时已无仓库 Runner。
+API 验收最后停止了自己创建的全部部署，Provider 确认资源释放。第一次 CI attempt
+因错过并行阶段未计入验收。本轮证明公开同源部署的清理独立性，不代表私有仓库／fork
+执行或多实例恢复已经验收。
+
 1. **预检与计划（已完成）**：严格解析仓库配置，固定完整 Commit，校验 OAuth/App
    精确仓库交集，加密保存 Spec 快照，并以审计事务持久化部署状态。
 2. **Sandbox 执行与恢复（本地完成）**：解析作用域 Sandbox 服务和独立 Deploy 模板，
@@ -314,7 +331,7 @@ ref，Commit SHA 从保存的版本读取。URL 中的仓库与来源不授予�
 Jobs 分组及独立详情提供“部署历史”和“部署此提交”，使用当前选中 Job 自己的仓库和
 PR／分支。历史列表包含该来源的所有提交；创建时固定所选 Job 的 SHA，包括历史 Job。创建链接使用
 `/deployments/new?repository=...&source=...&ref=...&commit_sha=...`，参数仅用于预填。
-表单等待已授权、可管理账号的目录加载，保留显式指定但已关闭的 PR，并显示固定 SHA。
+表单等待已授权仓库目录加载，保留显式指定但已关闭的 PR，并显示固定 SHA。
 修改仓库、版本来源或 ref 会清除旧 SHA；“改用版本来源的最新提交”可主动解除固定。
 提交时由 GitHub 校验最终来源。缺少完整 SHA 或来源信息的 Job 不展示这些入口。
 PR 合成 merge SHA 无法通过 head 提交归属校验，会明确拒绝。

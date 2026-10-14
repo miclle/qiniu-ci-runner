@@ -346,6 +346,8 @@ Workflow 完成后确认：
    对 Vite preview，确认原仓库无需修改，启动时传入当前 Sandbox 的精确域名，保留 Host 校验，
    不使用通配符白名单。主动启用的公开 worker 验证命令见 [Testing](testing.md#sandbox-deploy-验证)。
 3. 确认源 GitHub Job 和 Runner 清理完成后服务仍可访问；Deploy 不得注册 GitHub Runner。
+   [Testing](testing.md#sandbox-deploy-验证) 中可选的 CI Run／attempt 验收要求实际观察
+   相同 Commit 的并行运行，并由 Provider 确认 Runner 清理。
 4. 使用同一个 `Idempotency-Key` 重复提交，并人为制造 provider 创建超时。确认系统按精确的
    `qiniu-deployd` metadata 补偿查询，重试不会创建第二个 Sandbox。
    [Testing](testing.md#sandbox-deploy-验证) 中主动启用的 `create-timeout` worker 子测试
