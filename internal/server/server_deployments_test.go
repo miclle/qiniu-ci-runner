@@ -297,6 +297,13 @@ func TestUserDeploymentListReadsLocalHistoryWithoutOAuth(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"total":2`) || !strings.Contains(rec.Body.String(), "history-0") || strings.Contains(rec.Body.String(), "history-1") || strings.Contains(rec.Body.String(), "history-2") || strings.Contains(rec.Body.String(), "private-spec") {
 		t.Fatalf("list status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	filteredReq := httptest.NewRequest(http.MethodGet, "/user/deployments?repository_full_name=hubot%2Fproject&ref=main&commit_sha="+strings.Repeat("a", 40)+"&limit=1&offset=1", nil)
+	filteredReq.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
+	filtered := httptest.NewRecorder()
+	srv.ServeHTTP(filtered, filteredReq)
+	if filtered.Code != http.StatusOK || !strings.Contains(filtered.Body.String(), `"selected_revision"`) || !strings.Contains(filtered.Body.String(), `"total":2`) || strings.Contains(filtered.Body.String(), "private-spec") {
+		t.Fatalf("filtered local history: %d %s", filtered.Code, filtered.Body.String())
+	}
 	if rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("list Cache-Control=%q", rec.Header().Get("Cache-Control"))
 	}

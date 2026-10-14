@@ -646,3 +646,44 @@ func TestDeploymentRevisionsSQLBackends(t *testing.T) {
 		})
 	}
 }
+
+func TestDeploymentContextListsMatchHistoricalRevisionsBeforePagination(t *testing.T) {
+	store := New(t.TempDir())
+	for i := range 3 {
+		fixture := deploymentFixture(fmt.Sprintf("context-%d", i), 1)
+		fixture.Ref = "refs/heads/feature/context"
+		if i == 2 {
+			fixture.AccountID = 2
+		}
+		d, err := store.CreateDeployment(fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Status = DeploymentStatusCompleted
+		if err := store.UpdateDeployment(d); err != nil {
+			t.Fatal(err)
+		}
+		d, err = store.GetDeployment(d.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.CommitSHA = strings.Repeat("b", 40)
+		if err := store.RetryDeployment(d, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	options := DeploymentListOptions{RepositoryFullName: "owner/project", Ref: "refs/heads/feature/context", CommitSHA: strings.Repeat("a", 40), Limit: 1, Offset: 1}
+	items, total, err := store.ListDeploymentsForAccount(1, options)
+	if err != nil || total != 2 || len(items) != 1 {
+		t.Fatalf("items=%v total=%d err=%v", items, total, err)
+	}
+	matched := items[0].ContextRevision
+	if matched == nil || matched.RevisionNumber != 1 || matched.CommitSHA != options.CommitSHA || items[0].RevisionNumber != 2 {
+		t.Fatalf("lost historical selection: %#v", items[0])
+	}
+	options.Ref = "refs/tags/feature/context"
+	items, total, err = store.ListDeploymentsForAccount(1, options)
+	if err != nil || total != 0 || len(items) != 0 {
+		t.Fatalf("mixed branch and tag: %v %d %v", items, total, err)
+	}
+}

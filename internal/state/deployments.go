@@ -195,6 +195,24 @@ func (s *DBStore) listDeploymentsForAccount(accountID int64, access []Deployment
 		return nil, 0, err
 	}
 	query := db.Model(&deploymentRecord{}).Where("account_id = ?", accountID)
+	if options.RepositoryFullName != "" {
+		query = query.Where("repository_full_name = ?", options.RepositoryFullName)
+	}
+	revisionQuery := func() *gorm.DB {
+		q := db.Model(&deploymentRevisionRecord{})
+		if options.Ref != "" {
+			q = q.Where("ref = ?", options.Ref)
+		}
+		if options.CommitSHA != "" {
+			q = q.Where("commit_sha = ?", options.CommitSHA)
+		}
+		return q
+	}
+	matchingRevision := options.Ref != "" || options.CommitSHA != ""
+	if matchingRevision {
+		query = query.Where("id IN (?)", revisionQuery().Select("deployment_id"))
+	}
+
 	if authorized {
 		if len(access) == 0 {
 			return []Deployment{}, 0, nil
@@ -217,7 +235,16 @@ func (s *DBStore) listDeploymentsForAccount(accountID int64, access []Deployment
 	}
 	deployments := make([]Deployment, 0, len(records))
 	for _, record := range records {
-		deployments = append(deployments, deploymentFromRecord(record))
+		deployment := deploymentFromRecord(record)
+		if matchingRevision {
+			var revision deploymentRevisionRecord
+			if err := revisionQuery().Where("deployment_id = ?", record.ID).Order("number DESC").First(&revision).Error; err != nil {
+				return nil, 0, err
+			}
+			matched := revisionFromRecord(revision, record)
+			deployment.ContextRevision = &matched
+		}
+		deployments = append(deployments, deployment)
 	}
 	return deployments, total, nil
 }

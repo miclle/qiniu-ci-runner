@@ -311,3 +311,24 @@ credential, without exposing them to the browser. Connect uses remaining
 lifetime rather than a fixed Sandbox timeout. A local lifecycle check runs every
 five seconds and open sessions revalidate remote access every thirty seconds;
 closed/disconnected streams receive the existing thirty-second idle cleanup.
+
+## GitHub context routes
+
+Jobs and deployments share `/github/pulls/{owner}/{repo}/{number}` and
+`/github/branches/{owner}/{repo}/{sha}` context prefixes, ending in `/jobs` or
+`/deployments`. Tags use `/github/tags/{owner}/{repo}/{sha}/deployments`.
+Branch and Tag names are encoded in `?branch=` or `?tag=` so names containing
+slashes remain unambiguous. `deployment={id}` selects a resource and `revision=N`
+selects its immutable revision. Without a selection the page lists the account's
+saved deployments in that context. `/deployments` remains the global account
+history; `/deployments/new` remains the creation form.
+
+Legacy `/deployments/{id}` links load the local record and replace the URL with
+its saved source context. Historical revisions use their own saved SHA/ref.
+Repository/source text in a URL never grants access: detail reads still authorize
+by local account and deployment ID, then canonicalize the display URL. History
+filters (`repository_full_name`, `ref`, `commit_sha`, `pull_request_number`) on
+`GET /user/deployments` run before pagination and match persisted revisions;
+`selected_revision` identifies the matching historical revision. These reads do
+not query GitHub or the Sandbox provider. PR context routing is available; PR
+creation and the Jobs entry are the next delivery stages.

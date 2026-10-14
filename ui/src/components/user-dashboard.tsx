@@ -94,6 +94,7 @@ export function UserDashboard({
   authSession,
   githubApp,
   locationPath,
+  locationSearch = "",
   productTourOnboarding,
   userPreferences,
   userPreferencesScope,
@@ -136,6 +137,7 @@ export function UserDashboard({
   authSession: AuthSession
   githubApp: GitHubAppConfig | null
   locationPath: string
+  locationSearch?: string
   productTourOnboarding: ProductTourOnboarding | null
   userPreferences: UserPreferences | null
   userPreferencesScope: string
@@ -359,7 +361,9 @@ export function UserDashboard({
         /> : <UserDeploymentsSection
           currentLogin={authSession.login}
           request={request}
-          deploymentID={deploymentIDFromPath(locationPath)}
+          deploymentID={deploymentIDFromPath(locationPath, locationSearch)}
+          locationPath={locationPath}
+          locationSearch={locationSearch}
           onOpenDeployment={onOpenDeployment}
         />
       ) : page === "repositories" ? (

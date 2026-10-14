@@ -1,3 +1,4 @@
+import { githubContextPath } from "@/github-context-routes"
 import { lazy, Suspense, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
@@ -1287,6 +1288,7 @@ function App() {
           authSession={authSession}
           githubApp={currentGithubApp}
           locationPath={locationPath}
+          locationSearch={locationSearch}
           productTourOnboarding={productTourOnboarding}
           userPreferences={userPreferences}
           userPreferencesScope={userPreferencesScope}
@@ -1668,14 +1670,14 @@ function userJobsGroupKeyFromPath(path: string, search = "") {
 function userJobsPath(groupKey: string) {
   if (!groupKey) return "/jobs"
   const pullRequestMatch = groupKey.match(/^pr:(.+):(\d+)$/)
-  if (pullRequestMatch) return `/github/pulls/${encodeRepositoryPath(pullRequestMatch[1])}/${pullRequestMatch[2]}/jobs`
+  if (pullRequestMatch) return githubContextPath({ kind: "pulls", repository: pullRequestMatch[1], reference: pullRequestMatch[2] }, "jobs")
 
   const runMatch = groupKey.match(/^run:(.+):(\d+)$/)
-  if (runMatch) return `/github/runs/${encodeRepositoryPath(runMatch[1])}/${runMatch[2]}/jobs`
+  if (runMatch) return githubContextPath({ kind: "runs", repository: runMatch[1], reference: runMatch[2] }, "jobs")
 
   const branchMatch = groupKey.match(/^branch:([^:]+):(.+):([^:]+)$/)
   if (branchMatch) {
-    return withSearchParam(`/github/branches/${encodeRepositoryPath(branchMatch[1])}/${encodeURIComponent(branchMatch[3])}/jobs`, "branch", branchMatch[2])
+    return githubContextPath({ kind: "branches", repository: branchMatch[1], reference: branchMatch[3], name: branchMatch[2] }, "jobs")
   }
 
   const manualMatch = groupKey.match(/^manual:(.+):([^:]+)$/)

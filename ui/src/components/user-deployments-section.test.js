@@ -121,7 +121,7 @@ describe("deployment interaction", () => {
 		const { container } = await mountPage({ request, deploymentID: "versioned" }, { page: "deployments" })
 		expect(requests.filter((url) => url.endsWith("/events"))).toEqual(["/user/deployments/versioned/revisions/2/events"])
 		await act(async () => [...container.querySelectorAll("button")].find((item) => item.textContent.includes("Revision #1")).click())
-		expect(window.location.search).toBe("?revision=1")
+		expect(new URLSearchParams(window.location.search).get("revision")).toBe("1")
 		expect(container.textContent).toContain("first version retained")
 		await act(async () => finishLatest({ events: [event(10, "delayed second version")], has_more: false }))
 		expect(container.textContent).not.toContain("delayed second version")

@@ -124,6 +124,8 @@ type Deployment struct {
 	FailedAt                   time.Time `json:"failed_at,omitempty"`
 	UpdatedAt                  time.Time `json:"updated_at"`
 	Version                    int64     `json:"version"`
+
+	ContextRevision *DeploymentRevision `json:"-"`
 }
 
 // DeploymentRevision preserves one immutable source/plan and its execution history.
@@ -135,8 +137,11 @@ type DeploymentRevision struct {
 
 // DeploymentListOptions controls account-scoped deployment pagination.
 type DeploymentListOptions struct {
-	Limit  int
-	Offset int
+	RepositoryFullName string
+	Ref                string
+	CommitSHA          string
+	Limit              int
+	Offset             int
 }
 
 // DeploymentEvent is bounded, credential-free lifecycle evidence for one deployment.

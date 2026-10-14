@@ -88,6 +88,8 @@ Sandbox Deploy 控制面与执行切片见 [docs/zh/deployment.md](docs/zh/deplo
 运行中的部署详情还提供当前版本的 Web 终端。手动连接后可检查进程和应用日志文件，离开终端时关闭 shell。终端访问重新校验仓库和组织权限，并使用部署保存的 Sandbox 凭据。
 启动应用时会为 Vite 的 Host 白名单传入当前 Sandbox 的精确域名，Vite preview 无需在仓库中预先配置公网入口域名。
 
+部署链接与 Jobs 共用 GitHub 来源上下文路径，`deployment` 和 `revision` 参数保留所选部署与版本；旧 ID 链接继续兼容。详见[上下文路由](docs/zh/deployment.md#github-上下文路由)。
+
 ## 配置
 
 `runnerd` 默认读取 `./runnerd.yaml`，也可通过 `--config` 指定路径。完整注释的参考配置见 [`runnerd.yaml.example`](runnerd.yaml.example)。

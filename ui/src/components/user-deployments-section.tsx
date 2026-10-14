@@ -1,3 +1,4 @@
+import { deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "@/github-context-routes"
 import { ArrowLeft, CalendarDays, GitBranch, GitCommitHorizontal, ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -85,16 +86,22 @@ export function UserDeploymentsSection({
   currentLogin,
   request,
   deploymentID,
+  locationPath = window.location.pathname,
+  locationSearch = window.location.search,
   onOpenDeployment,
 }: {
   currentLogin?: string
   request: Request
   deploymentID?: string
+  locationPath?: string
+  locationSearch?: string
   onOpenDeployment: (id: string | null) => void
 }) {
   const { t, i18n } = useTranslation()
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const selectedID = deploymentID ?? null
+  const context = githubContextFromPath(locationPath, locationSearch)
+  const listPath = deploymentListAPIPath(context)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [action, setAction] = useState<string | null>(null)
@@ -116,6 +123,19 @@ export function UserDeploymentsSection({
     return () => window.removeEventListener("popstate", onHistory)
   }, [selectedID])
   const selectedRevision = selectedDeployment?.revisions?.find((item) => item.number === selectedRevisionNumber) ?? (selectedDeployment?.selected_revision && selectedDeployment.selected_revision.number === selectedRevisionNumber ? selectedDeployment.selected_revision : null)
+  useEffect(() => {
+    if (!selectedDeployment || (requestedRevision && !selectedRevision)) return
+    const canonical = deploymentPath(selectedDeployment, selectedRevision, requestedRevision)
+    if (window.location.pathname + window.location.search === canonical) return
+    window.history.replaceState(null, "", canonical)
+    window.dispatchEvent(new window.PopStateEvent("popstate"))
+  }, [selectedDeployment, selectedRevision, requestedRevision])
+  const backToDeployments = () => {
+    const source = selectedDeployment ? deploymentContext(selectedDeployment, selectedRevision) : context
+    if (!source) { onOpenDeployment(null); return }
+    window.history.pushState(null, "", githubContextPath(source, "deployments"))
+    window.dispatchEvent(new window.PopStateEvent("popstate"))
+  }
   const deploymentEvents = useDeploymentEvents(request, selectedDeployment ? selectedID : null, selectedRevisionNumber, selectedRevision?.status ?? selectedDeployment?.status, currentLogin)
   const selectedDeploymentID = selectedDeployment?.id
   const [deploymentResources, setDeploymentResources] = useState<DeploymentResources | null>(null)
@@ -160,7 +180,7 @@ export function UserDeploymentsSection({
     setLoading(true)
     setError(null)
     try {
-      const data = await request(deploymentID ? `/user/deployments/${encodeURIComponent(deploymentID)}${requestedRevision ? `?revision=${requestedRevision}` : ""}` : "/user/deployments") as { items?: Deployment[] } & Deployment
+      const data = await request(deploymentID ? `/user/deployments/${encodeURIComponent(deploymentID)}${requestedRevision ? `?revision=${requestedRevision}` : ""}` : listPath) as { items?: Deployment[] } & Deployment
       if (requestGeneration !== generation.current) return
       const next = deploymentID ? [data] : Array.isArray(data.items) ? data.items : []
       setDeployments((current) => next.map((item) => {
@@ -176,7 +196,7 @@ export function UserDeploymentsSection({
     } finally {
       if (requestGeneration === generation.current) setLoading(false)
     }
-  }, [request, t, deploymentID, requestedRevision])
+  }, [request, t, deploymentID, requestedRevision, listPath])
 
   useEffect(() => {
     void loadDeployments()
@@ -231,7 +251,7 @@ export function UserDeploymentsSection({
       <section className="border-b bg-muted/35 px-4 py-4 lg:px-6">
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            {deploymentID ? <Button type="button" variant="outline" size="icon" aria-label={t("user.deploymentBack")} onClick={() => onOpenDeployment(null)}><ArrowLeft /></Button> : null}
+            {deploymentID ? <Button type="button" variant="outline" size="icon" aria-label={t("user.deploymentBack")} onClick={backToDeployments}><ArrowLeft /></Button> : null}
             <div>
               <h1 className="text-xl font-semibold">{deploymentID ? t("user.deploymentDetailTitle") : t("user.deployments")}</h1>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("user.deploymentListDescription")}</p>
@@ -253,7 +273,7 @@ export function UserDeploymentsSection({
           {loading && deployments.length === 0 ? <div className="flex items-center gap-2 rounded-lg border p-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("user.loadingDeployments")}</div> : deployments.length === 0 ? <div className="rounded-lg border border-dashed p-8 text-center"><h2 className="font-semibold">{t("user.noDeployments")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("user.noDeploymentsDescription")}</p></div> : (
             <div className="space-y-4">
               {!deploymentID ? <div className="divide-y border-y" data-testid="deployment-list">
-                {deployments.map((deployment) => <a key={deployment.id} href={`/deployments/${encodeURIComponent(deployment.id)}`} className="group relative flex w-full items-start gap-3 bg-background/60 px-4 py-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                {deployments.map((deployment) => <a key={deployment.id} href={deploymentPath(deployment, deployment.selected_revision)} className="group relative flex w-full items-start gap-3 bg-background/60 px-4 py-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
                   <span aria-hidden="true" className={cn("absolute inset-y-0 left-0 w-1", deployment.status === "failed" ? "bg-destructive" : deployment.status === "running" ? "bg-emerald-500" : activeStatuses.has(deployment.status) ? "bg-yellow-500" : "bg-muted-foreground/40")} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-all text-sm font-semibold">{deployment.repository_full_name}</span><DeploymentStatus status={deployment.status} /></div>

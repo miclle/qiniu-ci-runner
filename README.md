@@ -88,6 +88,8 @@ The Sandbox Deploy control-plane and execution slice is documented in [docs/depl
 Running deployment details also offer a Web terminal for the current revision. Connect manually to inspect processes and application log files; leaving the terminal closes the shell. Terminal access revalidates repository and organization permissions and uses the saved Sandbox credentials.
 Application startup supplies the exact Sandbox hostname for Vite's Host allowlist, so Vite preview needs no repository-specific ingress domain.
 
+Deployment links now share GitHub source-context paths with Jobs; `deployment` and `revision` query parameters preserve selection. Legacy ID links remain supported. See [context routes](docs/deployment.md#github-context-routes).
+
 ## Configuration
 
 `runnerd` reads `./runnerd.yaml` by default, or the path passed with `--config`. See [`runnerd.yaml.example`](runnerd.yaml.example) for a fully commented reference.

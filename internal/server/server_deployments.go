@@ -353,14 +353,28 @@ func (s *Server) handleUserListDeployments(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	items, total, err := s.store.ListDeploymentsForAccount(account.ID, state.DeploymentListOptions{Limit: limit, Offset: offset})
+	options := state.DeploymentListOptions{Limit: limit, Offset: offset, RepositoryFullName: r.URL.Query().Get("repository_full_name"), Ref: r.URL.Query().Get("ref"), CommitSHA: r.URL.Query().Get("commit_sha")}
+	if value := r.URL.Query().Get("pull_request_number"); value != "" {
+		number, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil || number <= 0 || options.Ref != "" || options.CommitSHA != "" {
+			writeError(w, http.StatusBadRequest, "invalid pull request context")
+			return
+		}
+		options.Ref = fmt.Sprintf("refs/pull/%d/head", number)
+	}
+	items, total, err := s.store.ListDeploymentsForAccount(account.ID, options)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list deployments")
 		return
 	}
 	responses := make([]deploymentResponse, 0, len(items))
 	for _, item := range items {
-		responses = append(responses, deploymentResponseFromState(item))
+		response := deploymentResponseFromState(item)
+		if item.ContextRevision != nil {
+			revision := deploymentRevisionResponseFromState(*item.ContextRevision)
+			response.SelectedRevision = &revision
+		}
+		responses = append(responses, response)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"items": responses, "total": total, "limit": limit, "offset": offset})

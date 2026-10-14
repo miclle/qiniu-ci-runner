@@ -225,3 +225,18 @@ shell 中的修改仅作用于当前 Sandbox。
 不向浏览器暴露凭据。连接使用部署剩余有效期，不使用固定 Sandbox 超时。
 本地生命周期每 5 秒检查一次，已打开的会话每 30 秒重新检查远程权限；
 输出连接断开后沿用 30 秒空闲清理。
+
+## GitHub 上下文路由
+
+Jobs 和部署共享 `/github/pulls/{owner}/{repo}/{number}` 与
+`/github/branches/{owner}/{repo}/{sha}` 上下文前缀，以 `/jobs` 或 `/deployments`
+结尾。Tag 使用 `/github/tags/{owner}/{repo}/{sha}/deployments`。
+分支与 Tag 名称通过 `?branch=` 或 `?tag=` 编码，兼容包含斜杠的名称。
+`deployment={id}` 选择部署，`revision=N` 选择不可变版本；未选择部署时展示当前账号
+在该上下文的部署历史。`/deployments` 保留为账号全局列表，`/deployments/new` 保留为创建表单。
+
+旧 `/deployments/{id}` 链接读取本地记录后替换为保存的来源地址，历史版本使用自己的
+SHA／ref。URL 中的仓库与来源不授予权限：详情仍按本地账号和部署 ID 授权，再修正展示地址。
+`GET /user/deployments` 的 `repository_full_name`、`ref`、`commit_sha` 和
+`pull_request_number` 筛选在分页前查询已保存版本，`selected_revision` 标识匹配的历史版本。
+这些读取不请求 GitHub 或 Sandbox。PR 上下文路由已就绪；PR 创建与 Jobs 入口是后续交付阶段。

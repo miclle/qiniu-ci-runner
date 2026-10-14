@@ -1,3 +1,4 @@
+import { githubContextFromPath } from "@/github-context-routes"
 import { adminSections, githubInstallationIDFromAdminPath, runnerRequestIdentifierFromAdminPath, type AdminSection, type RunnerDisplayStatus, type RunnerState } from "@/admin-types"
 import { isSiteDocumentPath } from "@/site-doc-routes"
 
@@ -299,10 +300,11 @@ function isUserRoute(path: string): boolean {
 }
 
 export function isDeploymentRoute(path: string): boolean {
-  return path === "/deployments" || /^\/deployments\/[^/]+$/.test(path)
+  return path === "/deployments" || /^\/deployments\/[^/]+$/.test(path) || (path.endsWith("/deployments") && Boolean(githubContextFromPath(path)))
 }
 
-export function deploymentIDFromPath(path: string): string | undefined {
+export function deploymentIDFromPath(path: string, search = ""): string | undefined {
+  if (path.endsWith("/deployments") && githubContextFromPath(path)) return new URLSearchParams(search).get("deployment") || undefined
   if (path === "/deployments/new") return undefined
   const match = path.match(/^\/deployments\/([^/]+)$/)
   if (!match) return undefined
