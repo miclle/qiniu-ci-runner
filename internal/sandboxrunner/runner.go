@@ -1058,7 +1058,25 @@ type e2bTerminalSession struct {
 }
 
 func (s *E2BService) StartTerminal(ctx context.Context, sandboxID string, size PtySize, onData func([]byte)) (TerminalSession, error) {
-	sb, err := s.client.Connect(ctx, sandboxID, qnsandbox.ConnectParams{Timeout: 30})
+	return s.startTerminal(ctx, sandboxID, size, 30, onData)
+}
+
+// StartTerminalUntil connects with the deployment's remaining lifetime rather
+// than the fixed timeout used for interactive Runner diagnostics.
+func (s *E2BService) StartTerminalUntil(ctx context.Context, sandboxID string, size PtySize, expiresAt time.Time, onData func([]byte)) (TerminalSession, error) {
+	remaining := time.Until(expiresAt)
+	if remaining <= 0 {
+		return nil, errors.New("deployment has expired")
+	}
+	seconds := math.Ceil(remaining.Seconds())
+	if seconds > math.MaxInt32 {
+		return nil, errors.New("deployment lifetime exceeds limit")
+	}
+	return s.startTerminal(ctx, sandboxID, size, int32(seconds), onData)
+}
+
+func (s *E2BService) startTerminal(ctx context.Context, sandboxID string, size PtySize, timeout int32, onData func([]byte)) (TerminalSession, error) {
+	sb, err := s.client.Connect(ctx, sandboxID, qnsandbox.ConnectParams{Timeout: timeout})
 	if err != nil {
 		return nil, err
 	}

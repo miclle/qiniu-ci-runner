@@ -921,12 +921,27 @@ function fixtureRunnerEvents() {
 test("separates deployment list, creation, and refreshable detail pages", async ({ page }) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
   const diagnostics = observeBrowserDiagnostics(page)
+  const terminalInputs: string[] = []
+  let terminalClosed = false
+  await page.addInitScript(() => {
+    const BrowserEventSource = window.EventSource
+    window.EventSource = class extends BrowserEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        if (String(url).includes("/terminal/")) {
+          const stream = { onmessage: null as ((event: { data: string }) => void) | null, onerror: null, close() {} }
+          window.setTimeout(() => stream.onmessage?.({ data: JSON.stringify("Sandbox shell ready\r\n$ ") }), 100)
+          return stream as unknown as EventSource
+        }
+        super(url, options)
+      }
+    }
+  })
   let created = false
   let submittedTemplate = ""
   let submittedSource = ""
   let submittedRef = ""
   const requestedPaths: string[] = []
-  const deployment = { id: "deployment-fixture", repository_full_name: "fixture-user/project", source: "tag", ref: "v1.0", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", template_id: "custom-template", status: "running", created_at: "2026-10-13T00:00:00Z", expires_at: "2026-10-13T01:00:00Z" }
+  const deployment = { id: "deployment-fixture", repository_full_name: "fixture-user/project", source: "tag", ref: "v1.0", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", template_id: "custom-template", status: "running", sandbox_id: "sandbox-fixture", revision_number: 2, created_at: "2026-10-13T00:00:00Z", expires_at: new Date(Date.now() + 3600000).toISOString() }
   await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
   await page.route("**/user/**", async (route) => {
     const url = new URL(route.request().url())
@@ -941,6 +956,12 @@ test("separates deployment list, creation, and refreshable detail pages", async 
       submittedRef = route.request().postDataJSON().ref
       created = true
       return route.fulfill({ status: 201, json: deployment })
+    }
+    if (url.pathname.endsWith("/terminal") && route.request().method() === "POST") return route.fulfill({ status: 201, json: { session_id: "terminal-fixture", pid: 99, sandbox_id: "sandbox-fixture" } })
+    if (url.pathname.includes("/terminal/")) {
+      if (url.pathname.endsWith("/input")) terminalInputs.push(route.request().postDataJSON().data)
+      if (route.request().method() === "DELETE") terminalClosed = true
+      return route.fulfill({ json: { status: "ok" } })
     }
     if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: created ? [deployment] : [] } })
     if (url.pathname === "/user/deployments/deployment-fixture") return route.fulfill({ json: deployment })
@@ -976,11 +997,33 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await expect(page).toHaveURL(/\/deployments\/deployment-fixture$/)
   await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
   await expect(page.locator("#deployment-template")).toHaveCount(0)
+  await page.getByRole("tab", { name: "Terminal", exact: true }).click()
+  await page.getByRole("button", { name: "Connect", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible()
+  await expect(page.locator(".xterm-screen")).toBeVisible()
+  await page.locator(".xterm-helper-textarea").focus()
+  await page.keyboard.type("pwd")
+  await page.keyboard.press("Enter")
+  await expect.poll(() => terminalInputs.join("")).toContain("pwd\r")
+  await page.getByRole("tab", { name: "Deployment logs", exact: true }).click()
+  await expect.poll(() => terminalClosed).toBe(true)
   await page.getByRole("button", { name: "Back to deployments" }).click()
   await expect(page).toHaveURL(/\/deployments$/)
   await expect(page.locator("form")).toHaveCount(0)
   await expect(page.locator('[data-testid="deployment-list"]')).toContainText("fixture-user/project")
   await page.locator('[data-testid="deployment-list"] a').click()
   await expect(page).toHaveURL(/\/deployments\/deployment-fixture$/)
+  await page.goto("/deployments/deployment-fixture?revision=1", { waitUntil: "networkidle" })
+  await page.getByRole("tab", { name: "Terminal", exact: true }).click()
+  await expect(page.getByText("The terminal is available only for the current running revision.")).toBeVisible()
+  await expect(page.getByRole("button", { name: "Connect", exact: true })).toHaveCount(0)
+  await page.goto("/deployments/deployment-fixture", { waitUntil: "networkidle" })
+  await page.getByRole("tab", { name: "Terminal", exact: true }).click()
+  await page.getByRole("button", { name: "Connect", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible()
+  terminalClosed = false
+  deployment.status = "completed"
+  await expect(page.getByText("The terminal is available only for the current running revision.")).toBeVisible({ timeout: 10000 })
+  await expect.poll(() => terminalClosed).toBe(true)
   diagnostics.expectClean()
 })

@@ -1,13 +1,16 @@
 import { ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
+
+const DeploymentTerminal = lazy(() => import("@/components/deployment-terminal"))
 
 export type Deployment = {
   id: string
@@ -254,7 +257,7 @@ export function UserDeploymentsSection({
                   <div className="mt-1 text-xs text-muted-foreground">{formatTime(deployment.created_at)}</div>
                 </a>)}
               </div> : null}
-              {selectedDeployment ? <DeploymentDetail deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
+              {selectedDeployment ? <DeploymentDetail request={request} selectedRevisionNumber={selectedRevisionNumber} deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
             </div>
           )}
         </div>
@@ -263,7 +266,9 @@ export function UserDeploymentsSection({
   )
 }
 
-function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLoading, onSelectRevision, onLoadOlderRevisions, eventState, formatTime, action, onAction }: {
+function DeploymentDetail({ request, selectedRevisionNumber, deployment, selectedRevision, resources, resourcesLoading, onSelectRevision, onLoadOlderRevisions, eventState, formatTime, action, onAction }: {
+  request: Request
+  selectedRevisionNumber?: number
   deployment: Deployment
   selectedRevision: DeploymentRevision | null
   resources: DeploymentResources | null
@@ -279,6 +284,7 @@ function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLo
   const { events, loading, error, hasOlder, refresh, loadOlder } = eventState
   const canStop = activeStatuses.has(deployment.status)
   const canRetry = ["failed", "completed", "expired"].includes(deployment.status)
+  const terminalAvailable = deployment.status === "running" && Boolean(deployment.sandbox_id) && selectedRevisionNumber === deployment.revision_number
   const revisions = deployment.revisions ?? []
   const [redeployOpen, setRedeployOpen] = useState(false)
   const [redeployMode, setRedeployMode] = useState<"latest" | "revision">(deployment.source === "branch" ? "latest" : "revision")
@@ -363,6 +369,12 @@ function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLo
           {deployment.revisions_has_more ? <Button type="button" variant="ghost" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
         </CardContent>
       </Card>
+      <Tabs defaultValue="logs" className="min-w-0">
+        <TabsList>
+          <TabsTrigger value="logs">{t("user.deploymentEvents")}</TabsTrigger>
+          <TabsTrigger value="terminal">{t("common.terminal")}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="logs">
       <Card className="min-w-0 gap-4 py-4">
         <CardHeader className="border-b px-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -393,6 +405,13 @@ function DeploymentDetail({ deployment, selectedRevision, resources, resourcesLo
           </div>}
         </CardContent>
       </Card>
+        </TabsContent>
+        <TabsContent value="terminal">
+          {terminalAvailable ? <Suspense fallback={<p className="p-5 text-sm text-muted-foreground">{t("common.loading")}</p>}>
+            <DeploymentTerminal key={`${deployment.id}:${deployment.revision_number}:${deployment.sandbox_id}`} endpoint={`/user/deployments/${encodeURIComponent(deployment.id)}/revisions/${deployment.revision_number}`} request={request} />
+          </Suspense> : <div className="rounded-lg border p-5 text-sm text-muted-foreground">{t("user.deploymentTerminalUnavailable")}</div>}
+        </TabsContent>
+      </Tabs>
     </div>
     <Dialog open={redeployOpen} onOpenChange={(open) => !action && setRedeployOpen(open)}>
       <DialogContent className="sm:max-w-2xl">

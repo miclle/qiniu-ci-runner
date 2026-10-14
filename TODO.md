@@ -4,9 +4,9 @@ This file tracks active project work. Completed behavior should move into `READM
 
 ## Active Roadmap
 
-- Before Issue #125 can close, run the real Sandbox acceptance and record the endpoint contract, per-scope quota, and terminal retention behavior against a deployed runnerd. The first implementation uses public HTTPS endpoints, a transactional per-scope concurrency limit, and configurable terminal retention; an authenticated reverse proxy remains a follow-up if product requirements change.
+- Before Issue #125 can close, complete the remaining acceptance gates below and record the endpoint contract, per-scope quota, and terminal retention behavior against a deployed runnerd. The first implementation uses public HTTPS endpoints, a transactional per-scope concurrency limit, and configurable terminal retention; an authenticated reverse proxy remains a follow-up if product requirements change.
 
-- Complete the remaining Issue #125 acceptance for private repository Contents access, organization owner isolation, authenticated revision redeploy/delete flows, revision history and narrow-screen log layout, duplicate/idempotent creation, provider timeout reconciliation, full runnerd process restart, and CI Job lifecycle independence. Public `base` worker execution/reconnection/TTL and authenticated local browser creation/detail/reload/stop evidence is recorded in [Deploy configuration](docs/deployment.md#iteration-plan); local fakes and browser fixtures remain supporting evidence only.
+- Complete the remaining Issue #125 acceptance for private repository Contents access, organization owner isolation, authenticated revision redeploy/delete flows, revision history and narrow-screen log layout, duplicate/idempotent creation, provider timeout reconciliation, full runnerd process restart, and CI Job lifecycle independence. Public `base` worker execution/reconnection/TTL, authenticated local browser creation/detail/reload/stop evidence, and the user's 2026-10-14 confirmation of real Sandbox acceptance for the Web terminal iteration are recorded in [Deploy configuration](docs/deployment.md#iteration-plan); local fakes and browser fixtures remain supporting evidence only.
 
 - Before promoting the pipx isolation fix, rebuild and smoke-test Ubuntu 26.04 in each supported Sandbox region; the local Docker regression is not regional release evidence.
 

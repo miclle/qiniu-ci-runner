@@ -481,7 +481,7 @@ func TestUserDeploymentHistoryReadsLocallyWithoutOAuth(t *testing.T) {
 			t.Fatalf("anonymous history: %d %s", anonymous.Code, anonymous.Body.String())
 		}
 	}
-	for _, action := range []struct{ method, suffix string }{{"POST", "/stop"}, {"POST", "/retry"}, {"DELETE", ""}} {
+	for _, action := range []struct{ method, suffix string }{{"POST", "/stop"}, {"POST", "/retry"}, {"DELETE", ""}, {"POST", "/revisions/1/terminal"}, {"GET", "/revisions/1/terminal/other/events"}, {"POST", "/revisions/1/terminal/other/input"}, {"POST", "/revisions/1/terminal/other/resize"}} {
 		req := httptest.NewRequest(action.method, "/user/deployments/"+fixture.ID+action.suffix, nil)
 		req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
 		rec := httptest.NewRecorder()
@@ -545,14 +545,14 @@ func TestDeploymentHistoryIsAccountOwnedAndMutationsRecheckAuthorization(t *test
 				t.Fatal(err)
 			}
 			for _, action := range []struct{ method, path string }{
-				{"GET", ""}, {"GET", "/events"}, {"GET", "/revisions"}, {"GET", "/revisions/1/events"}, {"POST", "/stop"}, {"POST", "/retry"}, {"DELETE", ""},
+				{"GET", ""}, {"GET", "/events"}, {"GET", "/revisions"}, {"GET", "/revisions/1/events"}, {"POST", "/stop"}, {"POST", "/retry"}, {"DELETE", ""}, {"POST", "/revisions/1/terminal"}, {"GET", "/revisions/1/terminal/other/events"}, {"POST", "/revisions/1/terminal/other/input"}, {"POST", "/revisions/1/terminal/other/resize"},
 			} {
 				req := httptest.NewRequest(action.method, "/user/deployments/"+fixture.ID+action.path, nil)
 				req.AddCookie(testSessionCookie("hubot-id", "hubot", "user"))
 				rec := httptest.NewRecorder()
 				srv.ServeHTTP(rec, req)
 				want := http.StatusNotFound
-				if action.method == http.MethodGet && scenario != "different account" {
+				if action.method == http.MethodGet && !strings.Contains(action.path, "/terminal") && scenario != "different account" {
 					want = http.StatusOK
 				}
 				if rec.Code != want || (want != http.StatusOK && strings.Contains(rec.Body.String(), "private-output")) {

@@ -263,6 +263,11 @@ reference. The Chinese form's Branch/Tag labels and empty-Tag submission guard
 were also checked. Private repository access, authenticated retry/delete flows,
 full process restart, and provider failure injection remain separate gates.
 
+On 2026-10-14, the user confirmed that real Sandbox acceptance passed following
+the Web terminal implementation. This records user-performed acceptance; no
+additional command transcript or per-scenario results were supplied. The separate
+Issue #125 gates above remain open.
+
 1. **Preflight and plan (done):** strict repository configuration, immutable
    Commit resolution, exact OAuth/App repository intersection, encrypted Spec
    snapshot, and audited durable state.
@@ -283,3 +288,26 @@ full process restart, and provider failure injection remain separate gates.
 5. **Acceptance:** run focused tests, local startup/build checks, then a real
    GitHub App and Sandbox deployment with stop, expiry, restart recovery, and
    unauthorized-access evidence.
+
+## Deployment Web terminal
+
+The detail page has Deployment logs and Terminal tabs. Only the current running,
+unexpired revision with a Sandbox ID can open a terminal. Connection is manual;
+switching tabs/revisions, leaving the detail page or stopping the deployment
+closes the interactive shell. The shell can inspect processes and application
+log files; it does not automatically replay the deployment log or attach to the
+service process's stdout. Shell changes are local to that Sandbox.
+
+Terminal routes use `/user/deployments/{id}/revisions/{number}/terminal`:
+`POST` creates a PTY; `GET /{sessionID}/events` streams output;
+`POST /{sessionID}/input` sends input; `POST /{sessionID}/resize` resizes it;
+`DELETE /{sessionID}` closes it. Every access checks account ownership and current
+repository/organization permissions. Closing an existing shell only requires
+account ownership, so cleanup still works after permissions or lifecycle change.
+Sessions bind deployment, revision, attempt and Sandbox identity; historical
+revisions cannot connect to the current Sandbox. Persisted details/logs remain
+local reads; opening a terminal uses the saved provider endpoint and encrypted
+credential, without exposing them to the browser. Connect uses remaining
+lifetime rather than a fixed Sandbox timeout. A local lifecycle check runs every
+five seconds and open sessions revalidate remote access every thirty seconds;
+closed/disconnected streams receive the existing thirty-second idle cleanup.

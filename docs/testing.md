@@ -799,3 +799,7 @@ API regressions cover qualified branch/tag resolution, same-name idempotency
 conflicts, source-prefix length limits, and unauthorized discovery before provider reads.
 
 Deployment revision verification must cover initial #1, atomic next-version creation and audit rollback, frozen old state, revision-scoped cursor pages, stale-output rejection, repeated legacy SQLite upgrade, Postgres/MySQL schema and mutations, URL-restored selection, and delayed-response isolation. Verify the history/log columns stack on a narrow screen and read without provider calls.
+
+### Deployment terminal checks
+
+Run `go test ./internal/server ./internal/sandboxrunner -run 'TestDeploymentTerminal|TestDeploymentHistoryIsAccountOwned|TestUser.*Terminal|TestTerminalHub' -count=1` for PTY input/resize/close, account/repository/organization authorization, revision/attempt identity, stopped/expired rejection, and remaining-lifetime Connect coverage. Run `cd ui && bun run test:production --grep 'separates deployment'` for browser tab navigation, manual connection, typing and disconnect with fixture APIs/output. Fixtures do not prove a real Sandbox PTY. For live acceptance, open a running revision, connect, run `pwd` and inspect an application log file, resize, disconnect, reconnect, then stop the deployment and confirm the terminal becomes unavailable. Historical revisions must never open the current Sandbox.

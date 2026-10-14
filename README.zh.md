@@ -84,6 +84,8 @@ Organization owner 可以在 **Settings → Fork 赞助** 中允许可信个人 
 本地开发请使用 `task dev` 配合 `runnerd.local.yaml`。详细的本地环境搭建（包括 GitHub App 创建和 webhook 转发）请参阅 [docs/zh/testing.md](docs/zh/testing.md)。
 
 Sandbox Deploy 控制面与执行切片见 [docs/zh/deployment.md](docs/zh/deployment.md)。`/deployments` 展示当前账号的本地部署历史，通过“创建部署”链接进入 `/deployments/new`。创建页只展示仓库、分支／Tag 和作用域 Sandbox 模板等表单；`deploy.template_id` 仅作为 API 可选默认值。创建成功后进入 `/deployments/{id}`，刷新仍保留该部署与日志。列表、详情与已保存日志均只读取本地账号历史，创建及生命周期操作重新检查当前 GitHub 权限。首次部署生成版本 #1，重新部署为固定计划创建新版本并保留旧版状态与日志。详情展示所选模板名称及 CPU、内存、磁盘快照，左侧展示部署历史，右侧以行号、毫秒时间戳和正文展示所选版本日志，`?revision=N` 在刷新后恢复版本选择。
+
+运行中的部署详情还提供当前版本的 Web 终端。手动连接后可检查进程和应用日志文件，离开终端时关闭 shell。终端访问重新校验仓库和组织权限，并使用部署保存的 Sandbox 凭据。
 启动应用时会为 Vite 的 Host 白名单传入当前 Sandbox 的精确域名，Vite preview 无需在仓库中预先配置公网入口域名。
 
 ## 配置
