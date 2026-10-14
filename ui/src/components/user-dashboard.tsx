@@ -312,7 +312,7 @@ export function UserDashboard({
         </div>
       </header>
 
-      <nav className="flex items-center gap-1 border-b px-4 py-2 md:hidden" aria-label={t("user.workspace")}>
+      <nav className="flex items-center gap-1 overflow-x-auto border-b px-4 py-2 md:hidden [&>a]:shrink-0 [&>a]:whitespace-nowrap" aria-label={t("user.workspace")}>
         <a
           href="/jobs"
           className={navItemClass(page === "home")}

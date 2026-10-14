@@ -1,4 +1,4 @@
-import { ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
+import { ArrowLeft, CalendarDays, GitBranch, GitCommitHorizontal, ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
@@ -229,10 +229,13 @@ export function UserDeploymentsSection({
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <section className="border-b bg-muted/35 px-4 py-4 lg:px-6">
-        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{deploymentID ? t("user.deploymentDetailTitle") : t("user.deployments")}</h1>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("user.deploymentListDescription")}</p>
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            {deploymentID ? <Button type="button" variant="outline" size="icon" aria-label={t("user.deploymentBack")} onClick={() => onOpenDeployment(null)}><ArrowLeft /></Button> : null}
+            <div>
+              <h1 className="text-xl font-semibold">{deploymentID ? t("user.deploymentDetailTitle") : t("user.deployments")}</h1>
+              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("user.deploymentListDescription")}</p>
+            </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             {!deploymentID ? <Button asChild><a href="/deployments/new"><Plus className="h-4 w-4" />{t("user.createDeployment")}</a></Button> : null}
@@ -244,17 +247,22 @@ export function UserDeploymentsSection({
         </div>
       </section>
 
-      <section className="mx-auto w-full max-w-7xl space-y-4 p-4 lg:p-6">
-        {deploymentID ? <Button type="button" variant="outline" className="w-fit" onClick={() => onOpenDeployment(null)}>{t("user.deploymentBack")}</Button> : null}
+      <section className="w-full min-w-0 space-y-4 p-4 lg:p-6">
         <div className="min-w-0 space-y-4">
           {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">{error}</div> : null}
           {loading && deployments.length === 0 ? <div className="flex items-center gap-2 rounded-lg border p-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("user.loadingDeployments")}</div> : deployments.length === 0 ? <div className="rounded-lg border border-dashed p-8 text-center"><h2 className="font-semibold">{t("user.noDeployments")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("user.noDeploymentsDescription")}</p></div> : (
             <div className="space-y-4">
-              {!deploymentID ? <div className="space-y-2" data-testid="deployment-list">
-                {deployments.map((deployment) => <a key={deployment.id} href={`/deployments/${encodeURIComponent(deployment.id)}`} className="block w-full rounded-lg border p-4 transition-colors hover:bg-accent">
-                  <div className="flex items-start justify-between gap-2"><span className="truncate text-sm font-semibold">{deployment.repository_full_name}</span><DeploymentStatus status={deployment.status} /></div>
-                  <div className="mt-2 text-xs text-muted-foreground">{deployment.ref || deployment.commit_sha.slice(0, 12)}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{formatTime(deployment.created_at)}</div>
+              {!deploymentID ? <div className="divide-y border-y" data-testid="deployment-list">
+                {deployments.map((deployment) => <a key={deployment.id} href={`/deployments/${encodeURIComponent(deployment.id)}`} className="group relative flex w-full items-start gap-3 bg-background/60 px-4 py-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+                  <span aria-hidden="true" className={cn("absolute inset-y-0 left-0 w-1", deployment.status === "failed" ? "bg-destructive" : deployment.status === "running" ? "bg-emerald-500" : activeStatuses.has(deployment.status) ? "bg-yellow-500" : "bg-muted-foreground/40")} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-all text-sm font-semibold">{deployment.repository_full_name}</span><DeploymentStatus status={deployment.status} /></div>
+                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+                      <span className="inline-flex min-w-0 items-center gap-1"><GitBranch className="h-3.5 w-3.5 shrink-0" /><span className="break-all">{displayRevisionRef(deployment.ref) || "—"}</span></span>
+                      <span className="inline-flex items-center gap-1"><GitCommitHorizontal className="h-3.5 w-3.5" /><code>{deployment.commit_sha.slice(0, 8)}</code></span>
+                      <span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" />{formatTime(deployment.created_at)}</span>
+                    </div>
+                  </div>
                 </a>)}
               </div> : null}
               {selectedDeployment ? <DeploymentDetail request={request} selectedRevisionNumber={selectedRevisionNumber} deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
@@ -308,12 +316,12 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
     }).format(parsed)
     return `${time}.${String(parsed.getMilliseconds()).padStart(3, "0")}`
   }
-  return <div className="space-y-3">
-    <Card className="gap-4 py-4">
-      <CardHeader className="px-5">
+  return <div className="space-y-4">
+    <Card className="gap-4 rounded-none border-0 border-b bg-transparent pb-4 pt-0 shadow-none">
+      <CardHeader className="px-0">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-3">
-            <CardTitle className="break-words text-xl sm:text-2xl">{deployment.repository_full_name}</CardTitle>
+            <CardTitle className="break-words text-2xl">{deployment.repository_full_name}</CardTitle>
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <DeploymentStatus status={deployment.status} />
               <span>{deployment.ref || deployment.commit_sha.slice(0, 8)}</span>
@@ -333,14 +341,14 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           </div>
         </div>
       </CardHeader>
-      {deployment.endpoint ? <CardContent className="space-y-2 px-5">
-        <a className="flex items-center gap-2 break-all rounded-md border bg-muted/30 p-3 text-sm font-medium text-primary hover:underline" href={deployment.endpoint} target="_blank" rel="noopener noreferrer">{deployment.endpoint}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></a>
+      {deployment.endpoint ? <CardContent className="space-y-2 px-0">
+        <a className="inline-flex items-center gap-2 break-all text-sm font-medium text-primary hover:underline" href={deployment.endpoint} target="_blank" rel="noopener noreferrer">{deployment.endpoint}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></a>
         {deployment.endpoint_access === "public" ? <p className="text-xs text-muted-foreground">{t("user.deploymentEndpointPublic")}</p> : null}
       </CardContent> : null}
     </Card>
-    <Card className="gap-4 py-4">
-      <CardHeader className="border-b px-5"><div className="flex items-center gap-2"><CardTitle>{t("user.deploymentResources")}</CardTitle>{resourcesLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label={t("common.loading")} /> : null}</div><CardDescription>{t("user.deploymentResourcesDescription")}</CardDescription></CardHeader>
-      <CardContent className="px-5 pt-1">
+    <Card className="gap-3 rounded-none border-0 border-b bg-transparent pb-4 pt-0 shadow-none">
+      <CardHeader className="px-0"><div className="flex items-center gap-2"><CardTitle>{t("user.deploymentResources")}</CardTitle>{resourcesLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label={t("common.loading")} /> : null}</div><CardDescription>{t("user.deploymentResourcesDescription")}</CardDescription></CardHeader>
+      <CardContent className="px-0">
         <dl className="grid gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-7">
           <Info label={t("user.deploymentTemplate")} value={resourceSnapshot.template_name || resourceSnapshot.template_id || "—"} mono={!resourceSnapshot.template_name} />
           <Info label={t("user.deploymentCPU")} value={resourceSnapshot.template_cpu ? `${resourceSnapshot.template_cpu} vCPU` : "—"} />
@@ -352,9 +360,9 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         </dl>
       </CardContent>
     </Card>
-    <div className="grid items-start gap-3 lg:grid-cols-[minmax(16rem,0.32fr)_minmax(0,1fr)]">
-      <Card className="min-w-0 gap-4 py-4" data-testid="deployment-history">
-        <CardHeader className="border-b px-5">
+    <div className="grid items-start lg:grid-cols-[280px_minmax(0,1fr)]">
+      <Card className="min-w-0 gap-0 rounded-none border-0 border-b bg-muted/20 py-0 shadow-none lg:border-b-0 lg:border-r" data-testid="deployment-history">
+        <CardHeader className="border-b px-4 py-3">
           <div className="flex items-start justify-between gap-2"><div className="space-y-2"><CardTitle>{t("user.deploymentHistory")}</CardTitle><CardDescription>{t("user.deploymentHistoryDescription")}</CardDescription></div><Badge variant="secondary">{revisions.length}</Badge></div>
         </CardHeader>
         <CardContent className="p-0">
@@ -369,14 +377,14 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           {deployment.revisions_has_more ? <Button type="button" variant="ghost" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
         </CardContent>
       </Card>
-      <Tabs defaultValue="logs" className="min-w-0">
-        <TabsList>
-          <TabsTrigger value="logs">{t("user.deploymentEvents")}</TabsTrigger>
-          <TabsTrigger value="terminal">{t("common.terminal")}</TabsTrigger>
+      <Tabs defaultValue="logs" className="min-w-0 gap-0 pt-3 lg:pl-6 lg:pt-0">
+        <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent p-0 text-muted-foreground">
+          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="logs">{t("user.deploymentEvents")}</TabsTrigger>
+          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="terminal">{t("common.terminal")}</TabsTrigger>
         </TabsList>
-        <TabsContent value="logs">
-      <Card className="min-w-0 gap-4 py-4">
-        <CardHeader className="border-b px-5">
+        <TabsContent value="logs" className="m-0 pt-2">
+      <Card className="min-w-0 gap-0 rounded-none border-0 bg-transparent py-0 shadow-none">
+        <CardHeader className="border-b px-0 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 space-y-2">
               <CardTitle>{t("user.deploymentEvents")}</CardTitle>
@@ -406,10 +414,10 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         </CardContent>
       </Card>
         </TabsContent>
-        <TabsContent value="terminal">
+        <TabsContent value="terminal" className="m-0 pt-2">
           {terminalAvailable ? <Suspense fallback={<p className="p-5 text-sm text-muted-foreground">{t("common.loading")}</p>}>
             <DeploymentTerminal key={`${deployment.id}:${deployment.revision_number}:${deployment.sandbox_id}`} endpoint={`/user/deployments/${encodeURIComponent(deployment.id)}/revisions/${deployment.revision_number}`} request={request} />
-          </Suspense> : <div className="rounded-lg border p-5 text-sm text-muted-foreground">{t("user.deploymentTerminalUnavailable")}</div>}
+          </Suspense> : <div className="border-y bg-muted/20 px-4 py-12 text-center text-sm text-muted-foreground">{t("user.deploymentTerminalUnavailable")}</div>}
         </TabsContent>
       </Tabs>
     </div>

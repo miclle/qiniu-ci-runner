@@ -1025,5 +1025,12 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   deployment.status = "completed"
   await expect(page.getByText("The terminal is available only for the current running revision.")).toBeVisible({ timeout: 10000 })
   await expect.poll(() => terminalClosed).toBe(true)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole("tab", { name: "Deployment logs", exact: true }).click()
+  await expect(page.locator('[data-testid="deployment-logs"]')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.getByRole("button", { name: "Back to deployments" }).click()
+  await expect(page.locator('[data-testid="deployment-list"]')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   diagnostics.expectClean()
 })
