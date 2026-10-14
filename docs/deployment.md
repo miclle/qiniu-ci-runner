@@ -218,7 +218,7 @@ If the App cannot read versions, the form asks the installation owner to approve
 Contents read permission and retry; repository visibility alone does not prove
 App Contents access.
 
-The creation page opens the canonical `/deployments/{id}` detail
+The creation page opens the repository/PR-context deployment detail
 after success. The URL selects the resource directly, including deployments
 outside the first list page. Reload and browser history preserve selection. The
 detail shows chronological stage/stdout/stderr rows, polls active attempts,
@@ -373,7 +373,7 @@ private/fork execution or multi-instance recovery.
    available in the backend; real lost-response reconciliation and cleanup passed.
 4. **User surface (first slice done):** `/deployments` lists local history,
    `/deployments/new` handles authorized repository and Branch/Tag selection,
-   template choice and immutable deployment creation, and `/deployments/{id}`
+   template choice and immutable deployment creation, and the deployment detail
    shows status, endpoint, TTL, template resources (CPU, memory, and disk), lifecycle/output events and stop/delete/retry
    actions. Local verification and the authenticated public create/detail/reload/
    stop browser flow passed; the remaining real acceptance gates are listed above.
@@ -421,8 +421,11 @@ applied before restoring only `%2F`; a literal `%2F` in a ref remains `%252F`.
 `branch` and `tag` are mutually exclusive. Empty or repeated source filters are
 invalid. Tags are deployment-only because Jobs do not retain reliable Tag evidence.
 `commit={sha}` optionally filters a collection to an immutable commit;
-branch Job group links always include it. `job={id}` and `deployment={id}` select
-the resource, and `revision=N` selects an immutable deployment revision.
+branch Job group links always include it. Jobs use `job={id}` to select a resource.
+Deployment details put the ID in the path:
+`/github/{owner}/{repo}/deployments/{id}?branch=example/vite` (or `?tag=release/v1`),
+and `/github/{owner}/{repo}/pull_requests/{number}/deployments/{id}`.
+`revision=N` selects an immutable deployment revision.
 Deployment detail URLs omit `commit`: the saved deployment/revision owns the
 SHA. Detail headers show a short SHA linked to the source repository's GitHub
 commit, with a full-SHA copy button. Returning to history lists the whole source
@@ -432,15 +435,15 @@ Repository Jobs show only matching groups from the existing authorized history
 window (up to 500 loaded Runner requests); an empty filter never falls back to
 another repository. This route change does not add an unbounded Jobs archive.
 Repository deployment lists filter saved revisions before database pagination.
-Without a deployment selection the page lists saved deployments in that context.
+The collection route lists saved deployments in that context; the detail route
+loads the selected local deployment.
 `/deployments` lists all authorized repository history; `/deployments/new` is the form.
 A repository-only creation link prefills the repository and lets the user choose
-a source. Old `/github/pulls/...`, `/github/branches/...`, `/jobs/...`, and the
-previous `/pr/`, `/branch/{encoded-name}/`, `/tag/{encoded-name}/`, `/run/` paths
-remain compatible and canonicalize to the new browser URLs without losing the
-Job/deployment/revision selection. Existing API paths remain unchanged.
+a source. Existing Jobs links remain compatible and canonicalize to the current
+Jobs URLs. Deploy is not released: old deployment source paths and
+`?deployment={id}` links are unsupported. Existing API paths remain unchanged.
 
-Legacy `/deployments/{id}` links load the local record and replace the URL with
+`/deployments/{id}` is a context-free local-record entry and replaces the URL with
 its saved source context. Historical revisions use their own saved ref; their
 Commit SHA is read from the stored revision, not the URL.
 Repository/source text in a URL never grants access: detail reads still authorize

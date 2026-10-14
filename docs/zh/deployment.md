@@ -157,7 +157,7 @@ Sandbox，然后记录 `expired`。创建或清理失败时只记录 `failed`，
 App 无法读取版本时，表单提示 Installation owner 批准 Contents 读取权限后重试；
 仓库可见不代表 App 已获准读取内容。
 
-创建成功后进入独立的 `/deployments/{id}` 详情地址，按 ID 直接读取资源，
+创建成功后进入仓库或 PR 上下文的部署详情地址，按路径中的 ID 直接读取资源，
 不依赖列表第一页。刷新和浏览器前进／后退保留选择。详情逐行展示阶段、stdout／stderr，
 轮询活动 attempt 并合并已有历史，支持更早日志和手动刷新；读取失败时保留已加载日志并显示重试提示。
 
@@ -269,7 +269,7 @@ API 验收最后停止了自己创建的全部部署，Provider 确认资源释�
 3. **生命周期 API（本地完成）**：后端已经提供停止／删除／重试、TTL 到期、有界部署事件
    和日志，以及带状态的清理证据；真实创建响应丢失后的恢复与清理已验证。
 4. **用户界面（首片已完成）**：`/deployments` 展示本地历史，`/deployments/new` 处理授权
-   仓库、分支／Tag、模板选择与不可变部署创建，`/deployments/{id}` 展示状态、地址、TTL、模板 CPU／内存／磁盘资源、
+   仓库、分支／Tag、模板选择与不可变部署创建，部署详情展示状态、地址、TTL、模板 CPU／内存／磁盘资源、
    生命周期／输出事件及停止／删除／重试操作。
    本地验证和已登录的公开仓库创建／详情／刷新／停止流程已通过；剩余真实验收见上文。
 5. **验收**：完成聚焦测试、本地启动／构建检查，再用真实 GitHub App 和 Sandbox
@@ -308,25 +308,27 @@ Branch 和 Tag 名称放在查询参数中。浏览器链接保留可读的 `/`�
 `&`、`#`、`+`、`%` 等字符。先编码再仅恢复 `%2F`，ref 中字面的 `%2F` 仍保留为 `%252F`。
 `branch` 与 `tag` 互斥，空值和重复的来源条件无效。Jobs 尚无可靠的 Tag 证据，Tag 筛选仅用于部署。
 `commit={sha}` 可按不可变提交筛选列表，分支 Job 分组链接始终携带它。
-`job={id}`、`deployment={id}` 选择资源，`revision=N` 选择部署的不可变版本。
+Jobs 使用 `job={id}` 选择资源。部署详情将 ID 放在路径中：
+`/github/{owner}/{repo}/deployments/{id}?branch=example/vite`（Tag 使用 `?tag=release/v1`），
+PR 使用 `/github/{owner}/{repo}/pull_requests/{number}/deployments/{id}`。
+`revision=N` 选择部署的不可变版本。
 部署详情 URL 不携带 `commit`，实际 SHA 由已保存的部署和版本确定。
 详情展示短 SHA，链接到来源仓库的 GitHub Commit，并提供完整 SHA 的复制按钮。
 返回历史列表时展示整个版本来源，不自动添加 Commit 筛选；显式筛选 Commit 的列表 URL 仍然有效。
 
 仓库 Jobs 仅显示已有授权历史窗口（最多加载 500 条 Runner 请求）中的匹配分组，
 空结果不会退回其他仓库；本次路由调整不新增无限历史归档。仓库部署列表在数据库分页前
-筛选已保存版本。未选择部署时展示当前上下文的部署历史。
+筛选已保存版本。集合路由展示当前上下文的部署历史，详情路由读取选中的本地部署。
 `/deployments` 保留为账号全局列表，`/deployments/new` 保留为创建表单。
-仓库级创建链接预填仓库，再由用户选择版本来源。旧 `/github/pulls/...`、
-`/github/branches/...`、`/jobs/...`，以及上一版 `/pr/`、`/branch/{encoded-name}/`、
-`/tag/{encoded-name}/`、`/run/` 路径继续兼容，转换到新浏览器地址时保留 Job、部署和版本选择。
+仓库级创建链接预填仓库，再由用户选择版本来源。已有 Jobs 链接继续兼容并转换为
+当前 Jobs 地址。Deploy 尚未上线，不兼容旧部署来源路径及 `?deployment={id}` 链接。
 既有 API 路径不变。
 
-旧 `/deployments/{id}` 链接读取本地记录后替换为保存的来源地址，历史版本使用自己的
+`/deployments/{id}` 是不携带来源上下文的本地记录入口，读取后替换为保存的来源地址，历史版本使用自己的
 ref，Commit SHA 从保存的版本读取。URL 中的仓库与来源不授予权限：详情仍按授权仓库和部署 ID 校验，再修正展示地址。
 `GET /user/deployments` 的 `repository_full_name`、`ref`、`commit_sha` 和
 `pull_request_number` 筛选在分页前查询已保存版本，`selected_revision` 标识匹配的历史版本。
-这些读取不请求 GitHub 或 Sandbox。
+内容读取不请求 Sandbox；授权仍可能刷新 GitHub 仓库权限。
 
 Jobs 分组及独立详情提供“部署历史”和“部署此提交”，使用当前选中 Job 自己的仓库和
 PR／分支。历史列表包含该来源的所有提交；创建时固定所选 Job 的 SHA，包括历史 Job。创建链接使用

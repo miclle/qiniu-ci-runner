@@ -721,6 +721,8 @@ apt 管理的 `packaging` 保持不变、pipx 工具目录兼容、普通用户�
 
 ## Sandbox Deploy 验证
 
+部署详情将 ID 放在仓库或 PR 上下文路径中，保留可读的 Branch／Tag 与 revision 查询参数，拒绝旧 query-ID／来源链接。验证这些路径的未登录返回地址、直接刷新、版本选择及浏览器前进／后退。
+
 先运行 `go test ./internal/state -count=1`，再运行
 `go test ./internal/deployment/... ./internal/server -count=1` 与 `task test`。
 状态测试覆盖旧 SQLite 部署目标列升级、乐观锁生命周期隔离、保留期限和有界事件。

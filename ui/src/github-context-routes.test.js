@@ -12,7 +12,7 @@ describe("GitHub source context routes", () => {
         expect(githubContextFromPath(url.pathname, url.search)).toEqual(view === "deployments" && kind !== "pulls" ? { ...source, reference: "" } : source)
         if (view === "deployments") {
           expect(appRouteAccess(url.pathname)).toBe("user")
-          expect(deploymentIDFromPath(url.pathname, url.search)).toBe("d1")
+          expect(deploymentIDFromPath(url.pathname)).toBe("d1")
           expect(userDataResources(url.pathname)).toEqual([])
           expect(decodeURIComponent(signInURL(url.pathname, url.search))).toContain(path)
         }
@@ -22,20 +22,20 @@ describe("GitHub source context routes", () => {
   test("canonicalizes by saved revision evidence and retains legacy untyped refs", () => {
     const deployment = { id: "d1", repository_full_name: "qiniu/deployment", source: "branch", ref: "main", commit_sha: "b".repeat(40) }
     const revision = { number: 1, ref: "refs/heads/example/vite", commit_sha: "a".repeat(40) }
-    expect(deploymentPath(deployment, revision)).toBe("/github/qiniu/deployment/deployments?branch=example/vite&deployment=d1&revision=1")
+    expect(deploymentPath(deployment, revision)).toBe("/github/qiniu/deployment/deployments/d1?branch=example/vite&revision=1")
     expect(deploymentPath({ ...deployment, source: undefined, ref: "legacy" })).toBe("/deployments/d1")
     expect(deploymentListAPIPath(deploymentContext(deployment, revision))).toContain("ref=refs%2Fheads%2Fexample%2Fvite")
-    expect(deploymentPath({ ...deployment, pull_request_number: 125 }, revision)).toBe("/github/qiniu/deployment/pull_requests/125/deployments?deployment=d1&revision=1")
+    expect(deploymentPath({ ...deployment, pull_request_number: 125 }, revision)).toBe("/github/qiniu/deployment/pull_requests/125/deployments/d1?revision=1")
   })
   test("rejects malformed source paths and keeps creation separate", () => {
     for (const path of ["/github/pulls/o/r/0/deployments", "/github/pulls/o/r/no/deployments", "/github/branches/o%2Fr/r/a/deployments", "/github/tags/o/r/%zz/deployments", "/github/pulls/o/r/1/deployments/more"]) expect(githubContextFromPath(path)).toBeNull()
     expect(deploymentIDFromPath("/deployments/new")).toBeUndefined()
-    expect(deploymentIDFromPath("/deployments/old-id", "?revision=2")).toBe("old-id")
+    expect(deploymentIDFromPath("/deployments/old-id")).toBe("old-id")
   })
 })
 
 test("repository-first routes keep source history independent from immutable commit selection", () => {
-  const context = githubContextFromPath("/github/qiniu/deployment/branch/example%2Fvite/deployments")
+  const context = githubContextFromPath("/github/qiniu/deployment/deployments", "?branch=example/vite")
   expect(context).toEqual({ kind: "branches", repository: "qiniu/deployment", name: "example/vite", reference: "" })
   expect(deploymentListAPIPath(context)).toBe("/user/deployments?repository_full_name=qiniu%2Fdeployment&ref=refs%2Fheads%2Fexample%2Fvite")
   expect(githubContextFromPath("/github/pulls/qiniu/deployment/7/jobs")).toEqual(githubContextFromPath("/github/qiniu/deployment/pr/7/jobs"))
@@ -64,6 +64,8 @@ test("deployment details omit commit while explicit list filters retain it", () 
   expect(list.searchParams.get("commit")).toBe(source.reference)
   expect(deploymentListAPIPath(githubContextFromPath(list.pathname, list.search))).toContain(`commit_sha=${source.reference}`)
   const detail = new URL(githubContextPath(source, "deployments", { deployment: "d1", revision: 2 }), "https://example.com")
+  expect(detail.pathname).toBe("/github/qiniu/deployment/deployments/d1")
+  expect(detail.searchParams.has("deployment")).toBe(false)
   expect(detail.searchParams.has("commit")).toBe(false)
   expect(detail.searchParams.get("revision")).toBe("2")
 })
@@ -132,4 +134,34 @@ test("Jobs collection filters never select another repository or silently widen 
   expect(filtered("/github/branches/qiniu/deployment/old/jobs")).toEqual(["old"])
   expect(filtered("/github/qiniu/deployment/pull_requests/7/jobs")).toEqual(["pr"])
   expect(filtered("/github/qiniu/deployment/runs/3/jobs")).toEqual(["main"])
+})
+
+ test("deployment IDs use paths and retired deployment links are rejected", () => {
+  for (const path of [
+    "/github/o/r/deployments/d1?branch=feature/preview&revision=2",
+    "/github/o/r/deployments/d1?tag=release/v1",
+    "/github/o/r/pull_requests/7/deployments/d1?revision=2",
+  ]) {
+    const url = new URL(path, "https://example.com")
+    expect(appRouteAccess(url.pathname, url.search)).toBe("user")
+    expect(deploymentIDFromPath(url.pathname)).toBe("d1")
+    expect(userDataResources(url.pathname)).toEqual([])
+    expect(decodeURIComponent(signInURL(url.pathname, url.search))).toContain(path)
+  }
+  for (const path of [
+    "/github/o/r/deployments?deployment=d1",
+    "/github/o/r/pull_requests/7/deployments?deployment=d1",
+    "/github/o/r/branch/feature%2Fpreview/deployments",
+    "/github/o/r/tag/release/deployments",
+    "/github/o/r/pr/7/deployments",
+    "/github/pulls/o/r/7/deployments",
+    "/github/o/r/deployments/d1/extra",
+    "/github/o/r/deployments/%2F",
+    "/github/o/r/jobs/d1",
+    "/github/o/r/pull_requests/7/jobs/d1",
+    "/github/o/r/deployments/d1?branch=a&tag=b",
+  ]) {
+    const url = new URL(path, "https://example.com")
+    expect(appRouteAccess(url.pathname, url.search)).toBe("not-found")
+  }
 })

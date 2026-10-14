@@ -419,7 +419,8 @@ appears; the list must not load form catalogs and creation must not load history
 Switch Version source between Branch and Tag, confirm
 the matching live reference list, and choose an available template for the selected scope.
 Empty or failed reference discovery must prevent stale submission and allow refresh.
-Create the deployment and verify navigation to `/deployments/{id}`. Refresh
+Create the deployment and verify navigation to the repository/PR-context
+`/deployments/{id}` detail path (the ID must not be a query value). Refresh
 that address during execution and after readiness; the same deployment and
 stage/stdout/stderr logs must remain visible. Exercise earlier-log pagination
 and a failed event read without discarding existing history. Missing template

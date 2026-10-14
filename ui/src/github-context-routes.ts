@@ -1,6 +1,6 @@
 import { readableQuery } from "@/url-query"
 
-// Jobs and deployments share repository/source identity; selection stays in the query.
+// Jobs and deployments share repository/source identity. Deployment IDs are path segments.
 export type GitHubContext = {
   kind: "repository" | "pulls" | "branches" | "tags" | "runs"
   repository: string
@@ -29,14 +29,16 @@ export function githubContextFromPath(path: string, search = ""): GitHubContext 
     const value = query.get(key)
     if (value !== null && (!value || [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127))) return null
   }
-  const collection = path.match(/^\/github\/([^/]+)\/([^/]+)\/(jobs|deployments)$/)
+  const collection = path.match(/^\/github\/([^/]+)\/([^/]+)\/(jobs|deployments)(?:\/([a-zA-Z0-9_-]+))?$/)
   if (collection) {
+    if (collection[3] === "jobs" && collection[4]) return null
+    if (collection[3] === "deployments" && query.has("deployment")) return null
     const owner = decode(collection[1]), repository = decode(collection[2])
     if (!validRepository(owner, repository) || (collection[3] === "jobs" && query.has("tag"))) return null
     const name = query.get("branch") ?? query.get("tag")
     return { kind: query.has("branch") ? "branches" : query.has("tag") ? "tags" : "repository", repository: `${owner}/${repository}`, reference: query.get("commit") || "", ...(name ? { name } : {}) }
   }
-  const current = path.match(/^\/github\/([^/]+)\/([^/]+)\/(pull_requests|runs|pr|branch|tag|run)\/([^/]+)\/(jobs|deployments)$/)
+  const current = path.match(/^\/github\/([^/]+)\/([^/]+)\/(pull_requests|runs|pr|branch|tag|run)\/([^/]+)\/(jobs|deployments)(?:\/([a-zA-Z0-9_-]+))?$/)
   const legacy = current ? null : path.match(/^\/github\/(pulls|branches|tags|runs)\/([^/]+)\/([^/]+)\/([^/]+)\/(jobs|deployments)$/)
   // Older Jobs paths placed the full branch before the SHA, sometimes unescaped.
   const oldBranch = current || legacy ? null : path.match(/^\/github\/branches\/([^/]+)\/([^/]+)\/(.+)\/([^/]+)\/jobs$/)
@@ -47,6 +49,9 @@ export function githubContextFromPath(path: string, search = ""): GitHubContext 
   if (!current && !legacy) return null
   const kind = current ? routeKinds[current[3] as keyof typeof routeKinds] : legacy![1] as GitHubContext["kind"]
   const view = (current ?? legacy)![5]
+  if (view === "jobs" && current?.[6]) return null
+  // Deploy is unpublished: retired source paths and query IDs need no compatibility.
+  if (view === "deployments" && (!current || current[3] !== "pull_requests" || query.has("deployment"))) return null
   if ((kind === "runs" && view === "deployments") || (kind === "tags" && view === "jobs")) return null
   const owner = decode(current ? current[1] : legacy![2])
   const repository = decode(current ? current[2] : legacy![3])
@@ -71,8 +76,9 @@ export function githubContextPath(context: GitHubContext, view: "jobs" | "deploy
     if (context.name) query.set(context.kind === "tags" ? "tag" : "branch", context.name)
     if (context.reference && !(view === "deployments" && selection.deployment !== undefined)) query.set("commit", context.reference)
   }
-  for (const [key, value] of Object.entries(selection)) if (value !== undefined) query.set(key, String(value))
-  return `${prefix}/${view}${query.size ? `?${readableQuery(query)}` : ""}`
+  for (const [key, value] of Object.entries(selection)) if (value !== undefined && !(view === "deployments" && key === "deployment")) query.set(key, String(value))
+  const detail = view === "deployments" && selection.deployment !== undefined ? `/${encodeURIComponent(selection.deployment)}` : ""
+  return `${prefix}/${view}${detail}${query.size ? `?${readableQuery(query)}` : ""}`
 }
 
 type DeploymentSource = {

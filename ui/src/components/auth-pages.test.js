@@ -99,7 +99,7 @@ test("repository-first Job and deployment routes preserve OAuth destinations", (
     ["/github/octo/repo/jobs?branch=feature/preview&commit=abc", "Branch jobs"],
     ["/github/octo/repo/deployments?tag=release/v1", "Deployments"],
     ["/github/octo/repo/branch/feature%2Fpreview/jobs?commit=abc", "Branch jobs"],
-    ["/github/octo/repo/pr/12/deployments?deployment=d1&revision=2", "Deployments"],
+    ["/github/octo/repo/pull_requests/12/deployments/d1?revision=2", "Deployments"],
   ]) {
     const html = renderToStaticMarkup(createElement(SignInPage, { oauthEnabled: true, returnTo }))
     expect(html).toContain(label)

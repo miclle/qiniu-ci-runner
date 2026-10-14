@@ -738,6 +738,8 @@ still stop the build. This does not replace regional Sandbox build/smoke gates.
 
 ## Sandbox Deploy verification
 
+Deployment details use path IDs under the repository or PR context, retain readable Branch/Tag and revision queries, and reject retired query-ID/source links. Verify signed-out return destinations, direct reload, revision selection, and browser history against those paths.
+
 Run `go test ./internal/state -count=1` first, then
 `go test ./internal/deployment/... ./internal/server -count=1` and `task test`.
 The state coverage includes old SQLite deployment target-column upgrades,

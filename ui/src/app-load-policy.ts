@@ -302,11 +302,11 @@ function isUserRoute(path: string): boolean {
 }
 
 export function isDeploymentRoute(path: string): boolean {
-  return path === "/deployments" || /^\/deployments\/[^/]+$/.test(path) || (path.endsWith("/deployments") && Boolean(githubContextFromPath(path)))
+  return path === "/deployments" || /^\/deployments\/[^/]+$/.test(path) || (/\/deployments(?:\/[^/]+)?$/.test(path) && Boolean(githubContextFromPath(path)))
 }
 
-export function deploymentIDFromPath(path: string, search = ""): string | undefined {
-  if (path.endsWith("/deployments") && githubContextFromPath(path)) return new URLSearchParams(search).get("deployment") || undefined
+export function deploymentIDFromPath(path: string): string | undefined {
+  if (githubContextFromPath(path)) return path.match(/\/deployments\/([a-zA-Z0-9_-]+)$/)?.[1]
   if (path === "/deployments/new") return undefined
   const match = path.match(/^\/deployments\/([^/]+)$/)
   if (!match) return undefined

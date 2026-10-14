@@ -366,7 +366,7 @@ export function UserDashboard({
         /> : <UserDeploymentsSection
           currentLogin={authSession.login}
           request={request}
-          deploymentID={deploymentIDFromPath(locationPath, locationSearch)}
+          deploymentID={deploymentIDFromPath(locationPath)}
           locationPath={locationPath}
           locationSearch={locationSearch}
           onOpenDeployment={onOpenDeployment}

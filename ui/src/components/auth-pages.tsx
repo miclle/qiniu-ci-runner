@@ -186,7 +186,7 @@ type ProtectedDestinationKey =
 function protectedDestinationLabel(returnTo: string): ProtectedDestinationKey {
   const [path, query = ""] = returnTo.split("?")
   const context = githubContextFromPath(path, query)
-  if (path === "/deployments" || path.startsWith("/deployments/") || (context && path.endsWith("/deployments"))) return "user.deployments"
+  if (path === "/deployments" || path.startsWith("/deployments/") || (context && /\/deployments(?:\/[^/]+)?$/.test(path))) return "user.deployments"
   if (context?.kind === "pulls") return "auth.pullRequestJobs"
   if (context?.kind === "runs") return "auth.workflowRunJobs"
   if (context?.kind === "branches") return "auth.branchJobs"

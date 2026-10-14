@@ -110,14 +110,15 @@ describe("deployment interaction", () => {
     const sha = "b".repeat(40)
     const revision = { ...deployment("d1-r1", "completed"), number: 1, ref: "refs/heads/example/vite", commit_sha: sha, source_repository_full_name: "contributor/fork" }
     const saved = { ...deployment("d1", "completed"), source: "branch", ref: "example/vite", revision_number: 2, revisions: [revision], selected_revision: revision }
-    window.history.replaceState(null, "", `/github/miclle/demo/deployments?branch=example/vite&commit=${"c".repeat(40)}&deployment=d1&revision=1`)
+    window.history.replaceState(null, "", `/github/miclle/demo/deployments/d1?branch=example/vite&commit=${"c".repeat(40)}&revision=1`)
     const request = async (url) => url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : saved
     let copied
     const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard")
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { copied = text } } })
     try {
       const { container } = await mountPage({ request, deploymentID: "d1" }, { page: "deployments" })
-      expect(window.location.search).toBe("?branch=example/vite&deployment=d1&revision=1")
+      expect(window.location.pathname).toBe("/github/miclle/demo/deployments/d1")
+      expect(window.location.search).toBe("?branch=example/vite&revision=1")
       const link = container.querySelector(`a[href="https://github.com/contributor/fork/commit/${sha}"]`)
       expect(link.textContent).toBe("bbbbbbbb")
       expect(link.title).toBe(sha)
