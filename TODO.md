@@ -4,6 +4,8 @@ This file tracks active project work. Completed behavior should move into `READM
 
 ## Active Roadmap
 
+- Migrate UI links to repository collections with readable Branch/Tag query filters and `pull_requests/{number}` paths. Preserve existing source links and fixed commit/revision selections; verify scoped Jobs/history, OAuth return and browser reload before the final phase commit.
+
 - Complete real fork PR Sandbox acceptance for the [GitHub context workflow](docs/deployment.md#github-context-routes), including an older Job commit and revoked source access. Automated admission and browser fixtures cover these boundaries; they do not prove real fork execution.
 
 - Before Issue #125 can close, complete the remaining acceptance gates below and record the endpoint contract, per-scope quota, and terminal retention behavior against a deployed runnerd. The first implementation uses public HTTPS endpoints, a transactional per-scope concurrency limit, and configurable terminal retention; an authenticated reverse proxy remains a follow-up if product requirements change.

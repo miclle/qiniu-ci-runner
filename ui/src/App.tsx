@@ -1,3 +1,4 @@
+import { readableQuery } from "@/url-query"
 import { githubContextFromPath, githubContextPath } from "@/github-context-routes"
 import { lazy, Suspense, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
@@ -1696,7 +1697,7 @@ function withSearchParam(path: string, key: string, value: string) {
   const [pathname, search = ""] = path.split("?")
   const params = new URLSearchParams(search)
   params.set(key, value)
-  const query = params.toString()
+  const query = readableQuery(params)
   return query ? `${pathname}?${query}` : pathname
 }
 

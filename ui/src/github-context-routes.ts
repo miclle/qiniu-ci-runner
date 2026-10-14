@@ -1,3 +1,5 @@
+import { readableQuery } from "@/url-query"
+
 // Jobs and deployments share repository/source identity; selection stays in the query.
 export type GitHubContext = {
   kind: "pulls" | "branches" | "tags" | "runs"
@@ -46,9 +48,9 @@ export function githubContextPath(context: GitHubContext, view: "jobs" | "deploy
   // Old SHA-only branch links lack a ref name; preserve their readable identity.
   if (named && !context.name) {
     query.delete("commit")
-    return `/github/${context.kind}/${repository}/${encodeURIComponent(context.reference)}/${view}${query.size ? `?${query}` : ""}`
+    return `/github/${context.kind}/${repository}/${encodeURIComponent(context.reference)}/${view}${query.size ? `?${readableQuery(query)}` : ""}`
   }
-  return `/github/${repository}/${routeSegments[context.kind]}/${encodeURIComponent(named ? context.name! : context.reference)}/${view}${query.size ? `?${query}` : ""}`
+  return `/github/${repository}/${routeSegments[context.kind]}/${encodeURIComponent(named ? context.name! : context.reference)}/${view}${query.size ? `?${readableQuery(query)}` : ""}`
 }
 
 type DeploymentSource = {
@@ -97,7 +99,7 @@ export function deploymentCreatePath(context: GitHubContext | null, commitSHA = 
   const query = new URLSearchParams({ repository: context.repository, source: context.kind === "pulls" ? "pull_request" : context.kind === "tags" ? "tag" : "branch", ref })
   const sha = commitSHA || (context.kind !== "pulls" ? context.reference : "")
   if (sha) query.set("commit_sha", sha)
-  return `/deployments/new?${query}`
+  return `/deployments/new?${readableQuery(query)}`
 }
 
 export function deploymentPrefillFromSearch(search: string): DeploymentPrefill | null {
