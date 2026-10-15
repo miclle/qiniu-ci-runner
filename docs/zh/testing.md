@@ -817,13 +817,19 @@ SDK 协议 fixture 验证应用启动不发送远端 `Connect-Timeout-Ms` 截止
 部署列表、详情及事件测试应证明跨账号仓库共享、计数／分页前的 Installation＋仓库
 精确隔离、Jobs 授权缓存复用，以及 OAuth 缺失或被拒绝时失败关闭。覆盖非 owner 创建、
 仅公共模板选择、owner 私有目录／设置边界、revision 执行账号持久化与 worker 重新授权，
-以及每个用户的 PTY 隔离。部署内容仍从本地读取；授权缓存未命中时可能访问 GitHub。UI 测试应验证 `/deployments` 只加载历史，并通过链接进入
+以及每个用户的 PTY 隔离。部署内容仍从本地读取；授权缓存未命中时可能访问 GitHub。UI 测试应验证 `/deployments` 只加载本地历史与导航，并通过链接进入
 `/deployments/new`；创建页只加载表单依赖，两条路由均支持直接刷新。
 部署 UI 验证还覆盖分支／Tag 发现、空列表与失败重试、版本分页、延迟来源／scope 响应、
 模板选择、创建后进入详情、直接刷新
 `/deployments/{id}`，以及 before／after 日志分页和错误时保留历史。执行部署交互的
 聚焦 Bun 测试及 `task ui-production-smoke`；其中部署 fixture 验证 production bundle，
 已登录的真实 Sandbox 验收仍单独记录。
+导航测试还覆盖超过 100 条历史、只有终态部署的仓库、仓库计数／分页前的精确权限隔离、无凭据活动摘要、列表与侧边栏独立分页、选中终态入口保留、切换仓库／账号后的迟到响应隔离、应用内前进／后退及桌面／窄屏独立滚动。fixture 浏览器检查不代表真实 Sandbox 验收。
+单选状态筛选验证覆盖完整授权及来源范围的跨页计数、八种生命周期状态、历史来源按当前状态分组、
+非法／重复／空的 API 组合成员、各 UI 状态、默认“运行中”、互斥选择、重复点击保持选中、空结果、
+保留来源的 URL 选择及刷新、前进／后退、键盘焦点及空格切换、窄屏溢出、
+分页重置及切换状态后的迟到分页隔离。运行 `go test ./internal/state -run TestDeploymentStatus -count=1`
+及 `filters deployment status` production 浏览器夹具。
 API 回归还覆盖完整分支／Tag 引用解析、同名来源的幂等冲突、包含来源前缀的长度限制，
 以及未授权时禁止读取上游引用。
 

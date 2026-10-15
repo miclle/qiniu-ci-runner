@@ -69,7 +69,7 @@ func (s *DBStore) createDeployment(db *gorm.DB, deployment Deployment) (Deployme
 	record := deploymentRecord{
 		CreateRequestHash:  deployment.CreateRequestHash,
 		ExecutionAccountID: deployment.ExecutionAccountID,
-		SourceRepositoryID: deployment.SourceRepositoryID, SourceRepositoryFullName: deployment.SourceRepositoryFullName, SourceRef: deployment.SourceRef,
+		SourceRepositoryID: deployment.SourceRepositoryID, SourceRepositoryFullName: deployment.SourceRepositoryFullName, SourceRef: deployment.SourceRef, PullRequestTitle: deployment.PullRequestTitle,
 		RevisionNumber:             deployment.RevisionNumber,
 		ID:                         deployment.ID,
 		AccountID:                  deployment.AccountID,
@@ -185,6 +185,149 @@ func (s *DBStore) ListAuthorizedDeployments(access []GitHubInstallationRepositor
 	return s.listDeploymentsForAccount(0, access, true, options)
 }
 
+// ListDeploymentRepositories counts all retained authorized history, then reads
+// only credential-free active summaries for this repository page. Historical
+// list limits never hide an active deployment or a repository with no activity.
+func (s *DBStore) ListDeploymentRepositories(access []GitHubInstallationRepositoryAccess, repository string, limit, offset int) ([]DeploymentRepository, bool, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return nil, false, err
+	}
+	limit, offset, err = normalizeDeploymentPagination(DeploymentListOptions{Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, false, err
+	}
+	active := []string{DeploymentStatusQueued, DeploymentStatusPlanning, DeploymentStatusCreating, DeploymentStatusRunning, DeploymentStatusStopping}
+	query := db.Model(&deploymentRecord{}).Where(authorizedDeploymentRepositories(db, access))
+	if repository != "" {
+		query = query.Where("LOWER(repository_full_name) = ?", strings.ToLower(repository))
+	}
+	var repositories []DeploymentRepository
+	err = query.Select("MIN(repository_full_name) AS repository_full_name, COUNT(*) AS total, SUM(CASE WHEN status IN ? THEN 1 ELSE 0 END) AS active_count", active).
+		Group("LOWER(repository_full_name)").Order("LOWER(repository_full_name) ASC").Limit(limit + 1).Offset(offset).Scan(&repositories).Error
+	if err != nil {
+		return nil, false, err
+	}
+	more := len(repositories) > limit
+	if more {
+		repositories = repositories[:limit]
+	}
+	if len(repositories) == 0 {
+		return []DeploymentRepository{}, false, nil
+	}
+	names := make([]string, 0, len(repositories))
+	indices := make(map[string]int, len(repositories))
+	for i := range repositories {
+		name := strings.ToLower(repositories[i].RepositoryFullName)
+		names = append(names, name)
+		indices[name] = i
+		repositories[i].ActiveDeployments = []DeploymentNavigationItem{}
+	}
+	var deployments []DeploymentNavigationItem
+	err = db.Model(&deploymentRecord{}).Select("id, repository_full_name, ref, commit_sha, status, updated_at").
+		Where(authorizedDeploymentRepositories(db, access)).Where("LOWER(repository_full_name) IN ? AND status IN ?", names, active).
+		Order("created_at DESC, id DESC").Scan(&deployments).Error
+	if err != nil {
+		return nil, false, err
+	}
+	for _, deployment := range deployments {
+		i := indices[strings.ToLower(deployment.RepositoryFullName)]
+		repositories[i].ActiveDeployments = append(repositories[i].ActiveDeployments, deployment)
+	}
+	return repositories, more, nil
+}
+
+func authorizedDeploymentRepositories(db *gorm.DB, access []GitHubInstallationRepositoryAccess) *gorm.DB {
+	allowed := db.Where("1 = 0")
+	for _, item := range normalizeGitHubInstallationRepositoryAccess(access) {
+		allowed = allowed.Or("github_installation_id = ? AND LOWER(repository_full_name) IN ?", item.InstallationID, item.Repositories)
+	}
+	return allowed
+}
+
+// DeploymentListStatusValues validates the public list filter without accepting SQL expressions.
+func DeploymentListStatusValues(status string) ([]string, error) {
+	if status == "" || status == "all" {
+		return nil, nil
+	}
+	seen := make(map[string]bool)
+	var statuses []string
+	for _, group := range strings.Split(status, ",") {
+		if seen[group] {
+			return nil, fmt.Errorf("invalid deployment status filter")
+		}
+		seen[group] = true
+		switch group {
+		case "running":
+			statuses = append(statuses, DeploymentStatusRunning)
+		case "processing":
+			statuses = append(statuses, DeploymentStatusQueued, DeploymentStatusPlanning, DeploymentStatusCreating, DeploymentStatusStopping)
+		case "stopped":
+			statuses = append(statuses, DeploymentStatusCompleted, DeploymentStatusExpired)
+		case "failed":
+			statuses = append(statuses, DeploymentStatusFailed)
+		default:
+			return nil, fmt.Errorf("invalid deployment status filter")
+		}
+	}
+	return statuses, nil
+}
+
+func deploymentRevisionListQuery(db *gorm.DB, options DeploymentListOptions) *gorm.DB {
+	query := db.Model(&deploymentRevisionRecord{})
+	if options.Ref != "" {
+		query = query.Where("ref = ?", options.Ref)
+	}
+	if options.CommitSHA != "" {
+		query = query.Where("commit_sha = ?", options.CommitSHA)
+	}
+	return query
+}
+
+func deploymentListQuery(db *gorm.DB, accountID int64, access []GitHubInstallationRepositoryAccess, authorized bool, options DeploymentListOptions) *gorm.DB {
+	query := db.Model(&deploymentRecord{})
+	if !authorized {
+		query = query.Where("account_id = ?", accountID)
+	}
+	if options.RepositoryFullName != "" {
+		query = query.Where("LOWER(repository_full_name) = ?", strings.ToLower(options.RepositoryFullName))
+	}
+	if options.Ref != "" || options.CommitSHA != "" {
+		query = query.Where("id IN (?)", deploymentRevisionListQuery(db, options).Select("deployment_id"))
+	}
+	if authorized {
+		query = query.Where(authorizedDeploymentRepositories(db, access))
+	}
+	return query
+}
+
+func (s *DBStore) CountAuthorizedDeploymentsByStatus(access []GitHubInstallationRepositoryAccess, options DeploymentListOptions) (DeploymentStatusCounts, error) {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return DeploymentStatusCounts{}, err
+	}
+	var groups []struct {
+		Status string
+		Total  int64
+	}
+	err = deploymentListQuery(db, 0, access, true, options).Select("status, COUNT(*) AS total").Group("status").Scan(&groups).Error
+	var counts DeploymentStatusCounts
+	for _, group := range groups {
+		counts.All += group.Total
+		switch group.Status {
+		case DeploymentStatusRunning:
+			counts.Running += group.Total
+		case DeploymentStatusQueued, DeploymentStatusPlanning, DeploymentStatusCreating, DeploymentStatusStopping:
+			counts.Processing += group.Total
+		case DeploymentStatusCompleted, DeploymentStatusExpired:
+			counts.Stopped += group.Total
+		case DeploymentStatusFailed:
+			counts.Failed += group.Total
+		}
+	}
+	return counts, err
+}
+
 func (s *DBStore) listDeploymentsForAccount(accountID int64, access []GitHubInstallationRepositoryAccess, authorized bool, options DeploymentListOptions) ([]Deployment, int64, error) {
 	db, err := s.dbOrEnsure()
 	if err != nil {
@@ -197,38 +340,15 @@ func (s *DBStore) listDeploymentsForAccount(accountID int64, access []GitHubInst
 	if err != nil {
 		return nil, 0, err
 	}
-	query := db.Model(&deploymentRecord{})
-	if !authorized {
-		query = query.Where("account_id = ?", accountID)
+	statuses, err := DeploymentListStatusValues(options.Status)
+	if err != nil {
+		return nil, 0, err
 	}
-	if options.RepositoryFullName != "" {
-		query = query.Where("repository_full_name = ?", options.RepositoryFullName)
-	}
-	revisionQuery := func() *gorm.DB {
-		q := db.Model(&deploymentRevisionRecord{})
-		if options.Ref != "" {
-			q = q.Where("ref = ?", options.Ref)
-		}
-		if options.CommitSHA != "" {
-			q = q.Where("commit_sha = ?", options.CommitSHA)
-		}
-		return q
+	query := deploymentListQuery(db, accountID, access, authorized, options)
+	if len(statuses) > 0 {
+		query = query.Where("status IN ?", statuses)
 	}
 	matchingRevision := options.Ref != "" || options.CommitSHA != ""
-	if matchingRevision {
-		query = query.Where("id IN (?)", revisionQuery().Select("deployment_id"))
-	}
-
-	if authorized {
-		if len(access) == 0 {
-			return []Deployment{}, 0, nil
-		}
-		allowed := db.Where("1 = 0")
-		for _, item := range normalizeGitHubInstallationRepositoryAccess(access) {
-			allowed = allowed.Or("github_installation_id = ? AND LOWER(repository_full_name) IN ?", item.InstallationID, item.Repositories)
-		}
-		query = query.Where(allowed)
-	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -242,7 +362,7 @@ func (s *DBStore) listDeploymentsForAccount(accountID int64, access []GitHubInst
 		deployment := deploymentFromRecord(record)
 		if matchingRevision {
 			var revision deploymentRevisionRecord
-			if err := revisionQuery().Where("deployment_id = ?", record.ID).Order("number DESC").First(&revision).Error; err != nil {
+			if err := deploymentRevisionListQuery(db, options).Where("deployment_id = ?", record.ID).Order("number DESC").First(&revision).Error; err != nil {
 				return nil, 0, err
 			}
 			matched := revisionFromRecord(revision, record)
@@ -391,7 +511,7 @@ func retryDeployment(db *gorm.DB, deployment Deployment, expiresAt time.Time) er
 	result := db.Model(&deploymentRecord{}).Where("id = ? AND version = ? AND status IN ?", deployment.ID, deployment.Version, []string{DeploymentStatusFailed, DeploymentStatusCompleted, DeploymentStatusExpired}).Updates(map[string]any{
 		"execution_account_id": deployment.ExecutionAccountID,
 		"revision_number":      gorm.Expr("revision_number + 1"),
-		"source_repository_id": deployment.SourceRepositoryID, "source_repository_full_name": deployment.SourceRepositoryFullName, "source_ref": deployment.SourceRef,
+		"source_repository_id": deployment.SourceRepositoryID, "source_repository_full_name": deployment.SourceRepositoryFullName, "source_ref": deployment.SourceRef, "pull_request_title": deployment.PullRequestTitle,
 		"ref":                           deployment.Ref,
 		"commit_sha":                    deployment.CommitSHA,
 		"config_path":                   deployment.ConfigPath,
@@ -714,7 +834,7 @@ func applyDeploymentTimestamps(record *deploymentRecord, now time.Time) {
 func deploymentFromRecord(record deploymentRecord) Deployment {
 	return Deployment{
 		CreateRequestHash: record.CreateRequestHash, ExecutionAccountID: record.ExecutionAccountID,
-		SourceRepositoryID: record.SourceRepositoryID, SourceRepositoryFullName: record.SourceRepositoryFullName, SourceRef: record.SourceRef, RevisionNumber: record.RevisionNumber,
+		SourceRepositoryID: record.SourceRepositoryID, SourceRepositoryFullName: record.SourceRepositoryFullName, SourceRef: record.SourceRef, PullRequestTitle: record.PullRequestTitle, RevisionNumber: record.RevisionNumber,
 		ID:                         record.ID,
 		AccountID:                  record.AccountID,
 		ScopeType:                  record.ScopeType,

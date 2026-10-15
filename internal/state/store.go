@@ -131,6 +131,7 @@ type Deployment struct {
 	SourceRepositoryID       int64               `json:"source_repository_id,omitempty"`
 	SourceRepositoryFullName string              `json:"source_repository_full_name,omitempty"`
 	SourceRef                string              `json:"source_ref,omitempty"`
+	PullRequestTitle         string              `json:"pull_request_title,omitempty"`
 }
 
 // DeploymentRevision preserves one immutable source/plan and its execution history.
@@ -145,8 +146,36 @@ type DeploymentListOptions struct {
 	RepositoryFullName string
 	Ref                string
 	CommitSHA          string
+	Status             string
 	Limit              int
 	Offset             int
+}
+
+// DeploymentStatusCounts covers all authorized source matches before status filtering or pagination.
+type DeploymentStatusCounts struct {
+	All        int64 `json:"all"`
+	Running    int64 `json:"running"`
+	Processing int64 `json:"processing"`
+	Stopped    int64 `json:"stopped"`
+	Failed     int64 `json:"failed"`
+}
+
+// DeploymentNavigationItem contains only the local fields needed to navigate to a deployment.
+type DeploymentNavigationItem struct {
+	ID                 string    `json:"id"`
+	RepositoryFullName string    `json:"repository_full_name"`
+	Ref                string    `json:"ref"`
+	CommitSHA          string    `json:"commit_sha"`
+	Status             string    `json:"status"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// DeploymentRepository groups retained history independently of deployment-list pagination.
+type DeploymentRepository struct {
+	RepositoryFullName string                     `json:"repository_full_name"`
+	Total              int64                      `json:"total"`
+	ActiveCount        int64                      `json:"active_count"`
+	ActiveDeployments  []DeploymentNavigationItem `json:"active_deployments" gorm:"-"`
 }
 
 // DeploymentEvent is bounded, credential-free lifecycle evidence for one deployment.
@@ -633,6 +662,8 @@ type DeploymentStore interface {
 	GetDeployment(id string) (Deployment, error)
 	ListDeploymentsForAccount(accountID int64, options DeploymentListOptions) ([]Deployment, int64, error)
 	ListAuthorizedDeployments(access []GitHubInstallationRepositoryAccess, options DeploymentListOptions) ([]Deployment, int64, error)
+	CountAuthorizedDeploymentsByStatus(access []GitHubInstallationRepositoryAccess, options DeploymentListOptions) (DeploymentStatusCounts, error)
+	ListDeploymentRepositories(access []GitHubInstallationRepositoryAccess, repository string, limit, offset int) ([]DeploymentRepository, bool, error)
 	ListActiveDeployments() ([]Deployment, error)
 	UpdateDeployment(deployment Deployment) error
 	RetryDeployment(deployment Deployment, expiresAt time.Time) error

@@ -54,6 +54,9 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 	}
 	for i := range 4 {
 		d := state.Deployment{ID: fmt.Sprintf("shared-%d", i), AccountID: account.ID + 1, ScopeType: state.AccountScopeTypeGitHubInstall, ScopeID: 987, GitHubInstallationID: 987, RepositoryID: 42, RepositoryFullName: "acme/project", Ref: "refs/heads/main", CommitSHA: strings.Repeat("a", 40), ConfigPath: ".qiniu/deploy.yaml", SnapshotVersion: 1, SpecHash: "hash", SpecJSONEncrypted: "private-spec", SandboxAPIKeyEncrypted: "private-key", Status: state.DeploymentStatusCompleted, ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now().Add(time.Duration(i) * time.Second)}
+		if i == 1 {
+			d.Status = state.DeploymentStatusRunning
+		}
 		if i == 2 {
 			d.GitHubInstallationID = 988
 		}
@@ -67,7 +70,7 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, path := range []string{"/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions"} {
+	for _, path := range []string{"/user/deployment-repositories", "/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions"} {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), "saved-output") {
@@ -83,6 +86,44 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"total":2`) || !strings.Contains(rec.Body.String(), "shared-0") || strings.Contains(rec.Body.String(), "shared-1") {
 			t.Fatalf("list %d %s", rec.Code, rec.Body.String())
 		}
+	}
+	for _, test := range []struct {
+		status string
+		total  int64
+		id     string
+	}{{"all", 2, "shared-1"}, {"running", 1, "shared-1"}, {"processing", 0, ""}, {"stopped", 1, "shared-0"}, {"failed", 0, ""}, {"running,stopped", 2, "shared-1"}, {"stopped,failed", 1, "shared-0"}, {"running,processing,stopped,failed", 2, "shared-1"}} {
+		rec := deploymentAuthCall(srv, "GET", "/user/deployments?repository_full_name=ACME/PROJECT&ref=refs/heads/main&limit=1&status="+test.status, "")
+		var page struct {
+			Items        []deploymentResponse         `json:"items"`
+			Total        int64                        `json:"total"`
+			StatusCounts state.DeploymentStatusCounts `json:"status_counts"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || rec.Code != 200 || page.Total != test.total || page.StatusCounts != (state.DeploymentStatusCounts{All: 2, Running: 1, Stopped: 1}) {
+			t.Fatalf("status %s: %d %s %v", test.status, rec.Code, rec.Body.String(), err)
+		}
+		if test.id != "" && (len(page.Items) != 1 || page.Items[0].ID != test.id) || test.id == "" && len(page.Items) != 0 {
+			t.Fatalf("status %s items: %#v", test.status, page.Items)
+		}
+	}
+	for _, query := range []string{"status=unknown", "status=running&status=failed", "status=running%27%20OR%201%3D1", "status=running,unknown", "status=running,running", "status=all,running", "status=running,"} {
+		if rec := deploymentAuthCall(srv, "GET", "/user/deployments?"+query, ""); rec.Code != 400 {
+			t.Fatalf("accepted invalid filter %s: %d", query, rec.Code)
+		}
+	}
+	if rec := deploymentAuthCall(srv, "GET", "/user/deployments?repository_full_name=acme/hidden&status=running", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status_counts":{"all":0,"running":0,"processing":0,"stopped":0,"failed":0}`) {
+		t.Fatalf("hidden repository counts: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, suffix := range []string{"", "?repository_full_name=ACME/PROJECT"} {
+		rec := deploymentAuthCall(srv, "GET", "/user/deployment-repositories"+suffix, "")
+		if rec.Code != 200 || rec.Header().Get("Cache-Control") != "no-store" || !strings.Contains(rec.Body.String(), `"total":2`) || !strings.Contains(rec.Body.String(), `"active_count":1`) || strings.Contains(rec.Body.String(), "hidden") || strings.Contains(rec.Body.String(), "private-") {
+			t.Fatalf("navigation %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	if rec := deploymentAuthCall(srv, "GET", "/user/deployment-repositories?repository_full_name=acme/hidden", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"items":[]`) {
+		t.Fatalf("hidden repository navigation: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := deploymentAuthCall(srv, "GET", "/user/deployment-repositories?limit=-1", ""); rec.Code != 400 {
+		t.Fatalf("navigation limit: %d", rec.Code)
 	}
 	for _, suffix := range []string{"", "?revision=1", "/events", "/events?limit=1", "/events?after_id=1", "/events?before_id=2", "/revisions", "/revisions/1/events"} {
 		rec := deploymentAuthCall(srv, "GET", "/user/deployments/shared-0"+suffix, "")
@@ -117,7 +158,7 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 		t.Fatal("worker accepted revoked repository access")
 	}
 	srv.invalidateUserRepositoryAccess(account.ID)
-	for _, path := range []string{"/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions"} {
+	for _, path := range []string{"/user/deployment-repositories", "/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions"} {
 		if rec := deploymentAuthCall(srv, "GET", path, ""); rec.Code != 403 || !strings.Contains(rec.Body.String(), "REAUTH_REQUIRED") {
 			t.Fatalf("revoked OAuth %d %s", rec.Code, rec.Body.String())
 		}
@@ -126,8 +167,10 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.invalidateUserRepositoryAccess(account.ID)
-	if rec := deploymentAuthCall(srv, "GET", "/user/deployments/shared-0", ""); rec.Code != 403 {
-		t.Fatalf("missing OAuth %d", rec.Code)
+	for _, path := range []string{"/user/deployment-repositories", "/user/deployments/shared-0"} {
+		if rec := deploymentAuthCall(srv, "GET", path, ""); rec.Code != 403 {
+			t.Fatalf("missing OAuth %d", rec.Code)
+		}
 	}
 }
 

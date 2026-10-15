@@ -246,7 +246,7 @@ export function UserDashboard({
     <main
       className={cn(
         "flex min-h-screen flex-col bg-background text-foreground",
-        (page === "home" || (page === "deployments" && deploymentIDFromPath(locationPath))) && "xl:h-dvh xl:min-h-0 xl:overflow-hidden",
+        (page === "home" || (page === "deployments" && locationPath !== "/deployments/new")) && "xl:h-dvh xl:min-h-0 xl:overflow-hidden",
       )}
     >
       <UserOnboardingTour

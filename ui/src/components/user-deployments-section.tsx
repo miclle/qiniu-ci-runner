@@ -1,9 +1,12 @@
-import { deploymentCreatePath, deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "@/github-context-routes"
+import { deploymentCreatePath, deploymentListAPIPath, deploymentListPath, deploymentPath, githubContextFromPath, githubContextPath } from "@/github-context-routes"
 import { ArrowLeft, CalendarDays, Copy, GitBranch, GitCommitHorizontal, ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { formatTime as formatEventTime } from "@/admin-format"
+import { DeploymentNavigation } from "@/components/deployment-navigation"
+import { DeploymentStatus } from "@/components/deployment-status"
+import { activeDeploymentStatuses as activeStatuses, deploymentListStatuses, deploymentListStatusFromSearch, type DeploymentListStatus, type DeploymentStatusCounts } from "@/deployment-status"
 import { AppLink } from "@/components/app-link"
 import { useSandboxRegions } from "@/components/sandbox-catalog-utils"
 import { Badge } from "@/components/ui/badge"
@@ -12,6 +15,7 @@ import { DetailField } from "@/components/ui/detail-field"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -24,6 +28,7 @@ export type Deployment = {
   ref?: string
   source?: "branch" | "tag" | "pull_request"
   pull_request_number?: number
+  pull_request_title?: string
   source_repository_full_name?: string
   source_ref?: string
   commit_sha: string
@@ -57,6 +62,7 @@ export type DeploymentRevision = {
   ref?: string
   commit_sha: string
   source_repository_full_name?: string
+  pull_request_title?: string
   config_path: string
   template_id?: string
   template_name?: string
@@ -85,10 +91,11 @@ type DeploymentEvent = {
 type Request = (url: string, options?: RequestInit) => Promise<unknown>
 
 type EventPage = { events?: DeploymentEvent[]; has_more?: boolean }
+type DeploymentPage = { items?: Deployment[]; total?: number; status_counts?: DeploymentStatusCounts }
+
+const statusFilterLabels = { running: "common.statusRunning", processing: "user.deploymentStatusProcessing", stopped: "user.deploymentStatusStopped", failed: "common.statusFailed" } as const
 
 type DeploymentResources = Pick<Deployment, "template_id" | "template_name" | "template_cpu" | "template_memory_mb" | "template_disk_mb" | "sandbox_id" | "sandbox_region" | "expires_at"> & { remote_error?: string }
-
-const activeStatuses = new Set(["queued", "planning", "creating", "running", "stopping"])
 
 export function UserDeploymentsSection({
   currentLogin,
@@ -109,8 +116,16 @@ export function UserDeploymentsSection({
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const selectedID = deploymentID ?? null
   const context = githubContextFromPath(locationPath, locationSearch)
-  const listPath = deploymentListAPIPath(context)
-  const listCanonicalPath = context && !deploymentID ? githubContextPath(context, "deployments") : null
+  const sourceListPath = deploymentListAPIPath(context)
+  const statusFilter = deploymentListStatusFromSearch(locationSearch)
+  const [statusCounts, setStatusCounts] = useState<DeploymentStatusCounts | null>(null)
+  const listPath = deploymentListAPIPath(context, statusFilter)
+  const listCanonicalPath = !deploymentID ? deploymentListPath(context, statusFilter) : null
+  const selectStatus = (value: string) => {
+    if (!value) return
+    window.history.pushState(null, "", deploymentListPath(context, value as DeploymentListStatus))
+    window.dispatchEvent(new window.PopStateEvent("popstate"))
+  }
   useEffect(() => {
     if (!listCanonicalPath || window.location.pathname + window.location.search === listCanonicalPath) return
     window.history.replaceState(null, "", listCanonicalPath)
@@ -120,6 +135,12 @@ export function UserDeploymentsSection({
   const [error, setError] = useState<string | null>(null)
   const [action, setAction] = useState<string | null>(null)
   const [navigationRefresh, setNavigationRefresh] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const loadedPages = useRef(1)
+  const listPageLoading = useRef(false)
+  const viewKey = deploymentID || listPath
+  const contentRef = useRef<HTMLElement>(null)
   const generation = useRef(0)
   const selectedDeployment = deployments.find((item) => item.id === selectedID) ?? null
   const [revisionSelection, setRevisionSelection] = useState<{ id: string; number?: number } | null>(null)
@@ -147,7 +168,7 @@ export function UserDeploymentsSection({
     window.dispatchEvent(new window.PopStateEvent("popstate"))
   }, [selectedDeployment, selectedRevision, requestedRevision])
   const backToDeployments = () => {
-    const source = selectedDeployment ? deploymentContext(selectedDeployment, selectedRevision) : context
+    const source = selectedDeployment ? { kind: "repository" as const, repository: selectedDeployment.repository_full_name, reference: "" } : context
     if (!source) { onOpenDeployment(null); return }
     window.history.pushState(null, "", githubContextPath(source, "deployments"))
     window.dispatchEvent(new window.PopStateEvent("popstate"))
@@ -192,13 +213,19 @@ export function UserDeploymentsSection({
   }, [i18n.resolvedLanguage])
 
   const loadDeployments = useCallback(async () => {
+    if (listPageLoading.current) return
     const requestGeneration = ++generation.current
     setLoading(true)
     setError(null)
     try {
-      const data = await request(deploymentID ? `/user/deployments/${encodeURIComponent(deploymentID)}${requestedRevision ? `?revision=${requestedRevision}` : ""}` : listPath) as { items?: Deployment[] } & Deployment
+      const paths = deploymentID
+        ? [`/user/deployments/${encodeURIComponent(deploymentID)}${requestedRevision ? `?revision=${requestedRevision}` : ""}`]
+        : Array.from({ length: loadedPages.current }, (_, index) => index === 0 ? listPath : `${listPath}${listPath.includes("?") ? "&" : "?"}limit=100&offset=${index * 100}`)
+      const pages = await Promise.all(paths.map((path) => request(path) as Promise<DeploymentPage & Deployment>))
       if (requestGeneration !== generation.current) return
-      const next = deploymentID ? [data] : Array.isArray(data.items) ? data.items : []
+      const next = deploymentID ? [pages[0]] : [...new Map(pages.flatMap((data) => Array.isArray(data.items) ? data.items : []).map((item) => [item.id, item])).values()]
+      setHasMore(!deploymentID && (pages[0].total ?? next.length) > next.length)
+      if (!deploymentID) setStatusCounts(pages[0].status_counts ?? null)
       setDeployments((current) => next.map((item) => {
         const previous = current.find((old) => old.id === item.id)
         if (!previous?.revisions?.length || !item.revisions?.length) return item
@@ -215,19 +242,51 @@ export function UserDeploymentsSection({
   }, [request, t, deploymentID, requestedRevision, listPath])
 
   useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0
+    loadedPages.current = 1
+    listPageLoading.current = false
+    setDeployments([])
+    setHasMore(false)
+    setLoadingOlder(false)
+  }, [viewKey, currentLogin])
+
+  useEffect(() => { setStatusCounts(null) }, [sourceListPath, currentLogin])
+
+  useEffect(() => {
     void loadDeployments()
     return () => {
       generation.current += 1
+      listPageLoading.current = false
+      setLoadingOlder(false)
     }
   }, [loadDeployments, currentLogin])
 
   useEffect(() => {
-    if (!deployments.some((item) => activeStatuses.has(item.status))) return
-    const timer = window.setInterval(() => { void loadDeployments() }, 3000)
+    if (deploymentID && !deployments.some((item) => activeStatuses.has(item.status))) return
+    const timer = window.setInterval(() => { void loadDeployments() }, deploymentID ? 3000 : 5000)
     return () => {
       window.clearInterval(timer)
     }
-  }, [loadDeployments, deployments])
+  }, [loadDeployments, deployments, deploymentID])
+
+  const loadOlderDeployments = async () => {
+    if (loadingOlder || loading || !hasMore) return
+    const epoch = generation.current
+    listPageLoading.current = true
+    setLoadingOlder(true)
+    try {
+      const page = await request(`${listPath}${listPath.includes("?") ? "&" : "?"}limit=100&offset=${loadedPages.current * 100}`) as DeploymentPage
+      if (epoch !== generation.current) return
+      loadedPages.current += 1
+      setDeployments((current) => [...new Map([...current, ...(page.items ?? [])].map((item) => [item.id, item])).values()])
+      setHasMore((page.total ?? 0) > loadedPages.current * 100)
+      setStatusCounts(page.status_counts ?? null)
+    } catch (cause) {
+      if (epoch === generation.current) setError(cause instanceof Error ? cause.message : t("user.deploymentLoadFailed"))
+    } finally {
+      if (epoch === generation.current) { listPageLoading.current = false; setLoadingOlder(false) }
+    }
+  }
 
   const loadOlderRevisions = async () => {
     if (!selectedDeployment || !selectedDeployment.revisions_has_more) return
@@ -253,7 +312,8 @@ export function UserDeploymentsSection({
       if (kind === "retry") { setRevisionSelection({ id: result.id, number: result.revision_number }); const url = new URL(window.location.href); url.searchParams.delete("revision"); window.history.replaceState(null, "", url) }
       setDeployments((current) => kind === "delete" ? current.filter((item) => item.id !== selectedDeployment.id) : current.map((item) => item.id === result.id ? { ...result, revisions: item.revisions, revisions_has_more: item.revisions_has_more } : item))
       if (kind !== "delete") void loadDeployments()
-      if (kind === "delete" && deploymentID) onOpenDeployment(null)
+      if (kind === "delete" && deploymentID) backToDeployments()
+      setNavigationRefresh((value) => value + 1)
       toast.success(t(`user.deployment${kind[0].toUpperCase()}${kind.slice(1)}d` as "user.deploymentStopped" | "user.deploymentDeleted" | "user.deploymentRetried"))
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : t("user.deploymentActionFailed"))
@@ -262,12 +322,36 @@ export function UserDeploymentsSection({
     }
   }
 
+  const deploymentContent = <>
+    {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">{error}</div> : null}
+    {loading && deployments.length === 0 ? <div className="flex items-center gap-2 rounded-lg border p-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("user.loadingDeployments")}</div> : deployments.length === 0 ? <div className="rounded-lg border border-dashed p-8 text-center"><h2 className="font-semibold">{t(!deploymentID ? "user.deploymentStatusEmpty" : "user.noDeployments")}</h2><p className="mt-1 text-sm text-muted-foreground">{t(!deploymentID ? "user.deploymentStatusEmptyDescription" : "user.noDeploymentsDescription")}</p></div> : (
+      <div className="space-y-4">
+        {!deploymentID ? <div className="divide-y border-y" data-testid="deployment-list">
+          {deployments.map((deployment) => <AppLink key={deployment.id} href={deploymentPath(deployment, deployment.selected_revision)} className="group relative flex w-full items-start gap-3 bg-background/60 px-4 py-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+            <span aria-hidden="true" className={cn("absolute inset-y-0 left-0 w-1", deployment.status === "failed" ? "bg-destructive" : deployment.status === "running" ? "bg-emerald-500" : activeStatuses.has(deployment.status) ? "bg-yellow-500" : "bg-muted-foreground/40")} />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-all text-sm font-semibold">{deployment.repository_full_name}</span><DeploymentStatus status={deployment.status} /></div>
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+                <code title={deployment.id}>{deployment.id.slice(0, 10)}</code>
+                <span className="inline-flex min-w-0 items-center gap-1"><GitBranch className="h-3.5 w-3.5 shrink-0" /><span className="break-all">{displayRevisionRef(deployment.ref) || "—"}</span></span>
+                <span className="inline-flex items-center gap-1"><GitCommitHorizontal className="h-3.5 w-3.5" /><code>{deployment.commit_sha.slice(0, 8)}</code></span>
+                <span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" />{formatTime(deployment.created_at)}</span>
+              </div>
+            </div>
+          </AppLink>)}
+        </div> : null}
+        {!deploymentID && hasMore ? <Button type="button" variant="outline" disabled={loadingOlder || loading} onClick={() => void loadOlderDeployments()}>{loadingOlder ? t("common.loading") : t("user.deploymentMore")}</Button> : null}
+        {selectedDeployment ? <DeploymentDetail key={selectedDeployment.id} request={request} selectedRevisionNumber={selectedRevisionNumber} deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
+      </div>
+    )}
+  </>
+
   return (
-    <div className={cn("min-h-0 flex-1 overflow-y-auto", deploymentID && "flex flex-col xl:overflow-hidden")}>
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto xl:overflow-hidden">
       <section className="shrink-0 border-b bg-muted/35 px-4 py-4 lg:px-6">
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            {deploymentID ? <Button type="button" variant="outline" size="icon" aria-label={t("user.deploymentBack")} onClick={backToDeployments}><ArrowLeft /></Button> : null}
+            {deploymentID ? <Button type="button" variant="outline" size="icon" className="xl:hidden" aria-label={t("user.deploymentBack")} onClick={backToDeployments}><ArrowLeft /></Button> : null}
             <div>
               <h1 className="text-xl font-semibold">{deploymentID ? t("user.deploymentDetailTitle") : t("user.deployments")}</h1>
               <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("user.deploymentListDescription")}</p>
@@ -283,85 +367,24 @@ export function UserDeploymentsSection({
         </div>
       </section>
 
-      <div className={cn("min-h-0", deploymentID && "grid flex-1 xl:grid-cols-[320px_minmax(0,1fr)] xl:overflow-hidden")} data-testid="deployment-layout">
-        {deploymentID ? <DeploymentNavigation key={currentLogin} request={request} selected={selectedDeployment} selectedID={deploymentID} refreshVersion={navigationRefresh} formatTime={formatTime} /> : null}
-      <section className={cn("w-full min-w-0 space-y-4 p-4 lg:p-6", deploymentID && "min-h-0 xl:overflow-y-auto")}>
+      <div className="grid min-h-0 flex-1 xl:grid-cols-[360px_minmax(0,1fr)] xl:overflow-hidden" data-testid="deployment-layout">
+        <DeploymentNavigation key={currentLogin} request={request} selected={selectedDeployment} selectedID={deploymentID} repository={context?.repository} refreshVersion={navigationRefresh} />
+      <section ref={contentRef} className="min-h-0 w-full min-w-0 space-y-4 p-4 lg:p-6 xl:overflow-y-auto">
         <div className="min-w-0 space-y-4">
-          {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">{error}</div> : null}
-          {loading && deployments.length === 0 ? <div className="flex items-center gap-2 rounded-lg border p-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("user.loadingDeployments")}</div> : deployments.length === 0 ? <div className="rounded-lg border border-dashed p-8 text-center"><h2 className="font-semibold">{t("user.noDeployments")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("user.noDeploymentsDescription")}</p></div> : (
-            <div className="space-y-4">
-              {!deploymentID ? <div className="divide-y border-y" data-testid="deployment-list">
-                {deployments.map((deployment) => <AppLink key={deployment.id} href={deploymentPath(deployment, deployment.selected_revision)} className="group relative flex w-full items-start gap-3 bg-background/60 px-4 py-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-                  <span aria-hidden="true" className={cn("absolute inset-y-0 left-0 w-1", deployment.status === "failed" ? "bg-destructive" : deployment.status === "running" ? "bg-emerald-500" : activeStatuses.has(deployment.status) ? "bg-yellow-500" : "bg-muted-foreground/40")} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-all text-sm font-semibold">{deployment.repository_full_name}</span><DeploymentStatus status={deployment.status} /></div>
-                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-                      <span className="inline-flex min-w-0 items-center gap-1"><GitBranch className="h-3.5 w-3.5 shrink-0" /><span className="break-all">{displayRevisionRef(deployment.ref) || "—"}</span></span>
-                      <span className="inline-flex items-center gap-1"><GitCommitHorizontal className="h-3.5 w-3.5" /><code>{deployment.commit_sha.slice(0, 8)}</code></span>
-                      <span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" />{formatTime(deployment.created_at)}</span>
-                    </div>
-                  </div>
-                </AppLink>)}
-              </div> : null}
-              {selectedDeployment ? <DeploymentDetail key={selectedDeployment.id} request={request} selectedRevisionNumber={selectedRevisionNumber} deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
-            </div>
-          )}
+          {!deploymentID ? <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="min-w-0 break-all text-2xl font-semibold">{context?.repository || t("user.deploymentAll")}</h2>{context && context.kind !== "repository" ? <Badge variant="secondary">{context.kind === "pulls" ? t("user.deploymentPullRequestNumber", { number: Number(context.reference) }) : context.name || context.reference}</Badge> : null}</div> : null}
+          {!deploymentID ? <div className="flex flex-wrap items-center gap-3" data-testid="deployment-status-filter">
+            <ToggleGroup type="single" role="radiogroup" value={statusFilter} onValueChange={selectStatus} className="grid w-full grid-cols-2 sm:inline-flex sm:w-fit" aria-label={t("user.deploymentStatusFilter")}>
+              {deploymentListStatuses.map((status) => <ToggleGroupItem key={status} value={status}>
+                {t(statusFilterLabels[status])}{statusCounts ? <Badge variant="secondary">{statusCounts[status]}</Badge> : null}
+              </ToggleGroupItem>)}
+            </ToggleGroup>
+          </div> : null}
+          {deploymentContent}
         </div>
       </section>
       </div>
     </div>
   )
-}
-
-function DeploymentNavigation({ request, selected, selectedID, refreshVersion, formatTime }: {
-  request: Request
-  selected: Deployment | null
-  selectedID: string
-  refreshVersion: number
-  formatTime: (value?: string) => string
-}) {
-  const { t } = useTranslation()
-  const [items, setItems] = useState<Deployment[]>([])
-  const [loading, setLoading] = useState(true)
-  const [failed, setFailed] = useState(false)
-  const [refreshRevision, setRefreshRevision] = useState(0)
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      setLoading(true)
-      setFailed(false)
-      try {
-        const value = await request("/user/deployments") as { items?: Deployment[] }
-        if (!cancelled) setItems(Array.isArray(value.items) ? value.items : [])
-      } catch {
-        if (!cancelled) setFailed(true)
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    void load()
-    return () => { cancelled = true }
-  }, [request, selectedID, refreshRevision, refreshVersion])
-  const visible = selected
-    ? items.some((item) => item.id === selected.id) ? items.map((item) => item.id === selected.id ? selected : item) : [selected, ...items]
-    : items
-  return <aside className="flex min-h-0 min-w-0 flex-col border-b bg-muted/20 xl:border-b-0 xl:border-r" data-testid="deployment-navigation">
-    <div className="flex h-10 shrink-0 items-center justify-between border-b px-4 text-sm font-medium">
-      <span>{t("user.deployments")}</span>
-      <Button asChild variant="ghost" size="icon" className="size-7"><AppLink href={deploymentCreatePath(null)} aria-label={t("user.createDeployment")}><Plus className="size-4" /></AppLink></Button>
-    </div>
-    {failed ? <div className="flex flex-wrap items-center gap-2 border-b p-3 text-xs text-muted-foreground" role="alert"><span>{t("user.deploymentLoadFailed")}</span><Button type="button" variant="outline" size="sm" onClick={() => setRefreshRevision((value) => value + 1)}>{t("user.tryAgain")}</Button></div> : null}
-    <nav aria-label={t("user.deployments")} className="max-h-60 overflow-y-auto xl:min-h-0 xl:max-h-none xl:flex-1">
-      {visible.map((item) => <AppLink key={item.id} href={deploymentPath(item)} aria-current={item.id === selectedID ? "page" : undefined} className={cn("block border-b border-l-2 px-4 py-3 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", item.id === selectedID ? "border-l-primary bg-primary/5" : "border-l-transparent")}>
-        <div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-all text-sm font-semibold">{item.repository_full_name}</span><DeploymentStatus status={item.status} /></div>
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span className="break-all">{item.pull_request_number ? t("user.deploymentPullRequestNumber", { number: item.pull_request_number }) : `${t(item.source === "tag" ? "user.deploymentTag" : "user.deploymentBranch")} ${displayRevisionRef(item.ref) || "—"}`}</span>
-          <time dateTime={item.updated_at || item.created_at}>{formatTime(item.updated_at || item.created_at)}</time>
-        </div>
-      </AppLink>)}
-      {loading && !visible.length ? <p className="flex items-center gap-2 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t("user.loadingDeployments")}</p> : null}
-    </nav>
-  </aside>
 }
 
 function DeploymentDetail({ request, selectedRevisionNumber, deployment, selectedRevision, resources, resourcesLoading, onSelectRevision, onLoadOlderRevisions, eventState, formatTime, action, onAction }: {
@@ -402,32 +425,37 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
     ...(resources?.sandbox_region ? { sandbox_region: resources.sandbox_region } : {}),
     ...(resources?.expires_at ? { expires_at: resources.expires_at } : {}),
   }
+  const sourcePullRequest = deployment.pull_request_number || Number(deployment.ref?.match(/^refs\/pull\/(\d+)\/head$/)?.[1])
+  const sourceLabel = sourcePullRequest
+    ? t("user.deploymentPullRequest")
+    : t(deployment.source === "tag" || deployment.ref?.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")
+  const sourceValue = sourcePullRequest ? `#${sourcePullRequest}` : displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)
+  const sourcePullRequestTitle = selectedRevision?.pull_request_title?.trim() || deployment.pull_request_title?.trim()
+  const sourceTitle = sourcePullRequest && sourcePullRequestTitle ? ` · ${sourcePullRequestTitle}` : ""
   return <div className="space-y-4">
     <Card className="gap-4 rounded-none border-0 border-b bg-transparent pb-4 pt-0 shadow-none">
-      <CardHeader className="px-0">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 space-y-3">
-            <CardTitle className="break-words text-2xl">{deployment.repository_full_name}</CardTitle>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <DeploymentStatus status={deployment.status} />
-              <span>{t("user.deploymentCurrentRevision", { number: deployment.revision_number ?? 1 })}</span>
-              <span>{deployment.pull_request_number ? t("user.deploymentPullRequestNumber", { number: deployment.pull_request_number }) : displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</span>
-              {deployment.source_repository_full_name ? <span>{deployment.source_repository_full_name}:{deployment.source_ref}</span> : null}
-              <span aria-hidden="true">·</span><DeploymentCommit repository={deployment.source_repository_full_name || deployment.repository_full_name} sha={deployment.commit_sha} />
-            </div>
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
-              <span>{t("user.deploymentCreatedAt")} {formatTime(deployment.created_at)}</span>
-              <span>{t("user.deploymentExpires")} {formatTime(resourceSnapshot.expires_at)}</span>
-              {deployment.last_successful_revision_number ? <span>
-                {t("user.deploymentLastSuccessful")} <button type="button" className="text-primary hover:underline" onClick={() => viewRevision(deployment.last_successful_revision_number!)}>{t("user.deploymentRevisionShortNumber", { number: deployment.last_successful_revision_number })}</button>
-              </span> : null}
-            </div>
+      <CardHeader className="space-y-2 px-0">
+        <CardDescription className="break-words text-sm font-medium text-foreground">{deployment.repository_full_name}</CardDescription>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <CardTitle className="min-w-0 break-words text-2xl">{sourceLabel} {sourceValue}{sourceTitle}</CardTitle>
+            <DeploymentStatus status={deployment.status} />
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             <Button type="button" size="sm" variant="outline" disabled={!canStop || Boolean(action)} onClick={() => onAction("stop")}><Square className="h-3.5 w-3.5" />{t("user.stopDeployment")}</Button>
             <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode(deployment.source === "branch" || deployment.source === "pull_request" ? "latest" : "revision"); setRedeployRevision(deployment.revision_number ?? revisions[0]?.number ?? 1); setRedeployOpen(true) }}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
             <Button type="button" size="sm" variant="outline" disabled={Boolean(action)} onClick={() => onAction("delete")}><Trash2 className="h-3.5 w-3.5" />{t("common.delete")}</Button>
           </div>
+        </div>
+        {deployment.source_repository_full_name ? <p className="text-sm text-muted-foreground">{deployment.source_repository_full_name}:{deployment.source_ref}</p> : null}
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+          <span>{t("user.deploymentCurrentRevision", { number: deployment.revision_number ?? 1 })}</span>
+          <DeploymentCommit repository={deployment.source_repository_full_name || deployment.repository_full_name} sha={deployment.commit_sha} />
+          <span>{t("user.deploymentCreatedAt")} {formatTime(deployment.created_at)}</span>
+          <span>{t("user.deploymentExpires")} {formatTime(resourceSnapshot.expires_at)}</span>
+          {deployment.last_successful_revision_number ? <span>
+            {t("user.deploymentLastSuccessful")} <button type="button" className="text-primary hover:underline" onClick={() => viewRevision(deployment.last_successful_revision_number!)}>{t("user.deploymentRevisionShortNumber", { number: deployment.last_successful_revision_number })}</button>
+          </span> : null}
         </div>
       </CardHeader>
       {deployment.endpoint ? <CardContent className="px-0">
@@ -589,11 +617,6 @@ function RedeployOption({ selected, onSelect, title, description, children }: { 
   </button>
 }
 
-function DeploymentStatus({ status }: { status: string }) {
-  const { t } = useTranslation()
-  const label: Record<string, string> = { queued: t("common.statusQueued"), planning: t("user.deploymentPlanning"), creating: t("common.statusCreating"), running: t("common.statusRunning"), stopping: t("common.statusStopping"), completed: t("user.deploymentStatusStopped"), expired: t("user.deploymentExpired"), failed: t("common.statusFailed") }
-  return <Badge variant={status === "failed" ? "destructive" : status === "running" ? "success" : "secondary"}>{label[status] || status}</Badge>
-}
 
 function useDeploymentEvents(request: Request, id: string | null, revisionNumber?: number, status?: string, login?: string) {
   const [events, setEvents] = useState<DeploymentEvent[]>([])

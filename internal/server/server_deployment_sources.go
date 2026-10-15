@@ -18,6 +18,7 @@ type deploymentSourceSnapshot struct {
 	RepositoryID       int64
 	RepositoryFullName string
 	Ref                string
+	PullRequestTitle   string
 }
 
 func deploymentPullRequestNumber(ref string) int64 {
@@ -57,7 +58,7 @@ func (s *Server) resolveDeploymentSource(ctx context.Context, repository github.
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || len(pull.Head.Repository.FullName) > 256 || strings.ContainsAny(pull.Head.Repository.FullName, "\\?#%\r\n") {
 			return source, errors.New("invalid pull request source repository")
 		}
-		source = deploymentSourceSnapshot{CommitSHA: pull.Head.SHA, RepositoryID: pull.Head.Repository.ID, RepositoryFullName: pull.Head.Repository.FullName, Ref: pull.Head.Ref}
+		source = deploymentSourceSnapshot{CommitSHA: pull.Head.SHA, RepositoryID: pull.Head.Repository.ID, RepositoryFullName: pull.Head.Repository.FullName, Ref: pull.Head.Ref, PullRequestTitle: strings.TrimSpace(pull.Title)}
 	}
 	head, err := s.gh.ResolveCommit(ctx, repository.FullName, ref)
 	if err != nil {

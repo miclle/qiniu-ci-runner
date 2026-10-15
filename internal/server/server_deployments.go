@@ -97,6 +97,7 @@ type deploymentResponse struct {
 	SourceRepositoryID           int64                        `json:"source_repository_id,omitempty"`
 	SourceRepositoryFullName     string                       `json:"source_repository_full_name,omitempty"`
 	SourceRef                    string                       `json:"source_ref,omitempty"`
+	PullRequestTitle             string                       `json:"pull_request_title,omitempty"`
 }
 
 type deploymentRevisionResponse struct {
@@ -123,6 +124,7 @@ type deploymentRevisionResponse struct {
 	SourceRepositoryID       int64     `json:"source_repository_id,omitempty"`
 	SourceRepositoryFullName string    `json:"source_repository_full_name,omitempty"`
 	SourceRef                string    `json:"source_ref,omitempty"`
+	PullRequestTitle         string    `json:"pull_request_title,omitempty"`
 }
 
 // deploymentResourcesResponse is intentionally separate from the persisted
@@ -284,7 +286,7 @@ func (s *Server) handleUserCreateDeployment(w http.ResponseWriter, r *http.Reque
 	}
 	deployment := state.Deployment{
 		CreateRequestHash:  deploymentCreateRequestHash(input, installation.InstallationID, repository.ID),
-		SourceRepositoryID: sourceSnapshot.RepositoryID, SourceRepositoryFullName: sourceSnapshot.RepositoryFullName, SourceRef: sourceSnapshot.Ref,
+		SourceRepositoryID: sourceSnapshot.RepositoryID, SourceRepositoryFullName: sourceSnapshot.RepositoryFullName, SourceRef: sourceSnapshot.Ref, PullRequestTitle: sourceSnapshot.PullRequestTitle,
 		ID:                         deploymentID,
 		AccountID:                  account.ID,
 		ExecutionAccountID:         account.ID,
@@ -361,6 +363,30 @@ func githubDeploymentSourceURL(repository string) string {
 	return "https://github.com/" + strings.TrimSuffix(strings.TrimSpace(repository), ".git") + ".git"
 }
 
+func (s *Server) handleUserDeploymentRepositories(w http.ResponseWriter, r *http.Request) {
+	_, account, ok := s.requireUserSession(w, r)
+	if !ok {
+		return
+	}
+	limit, offset, err := parsePagination(r, 100, 500)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	access, err := s.userAuthorizedRepositoryAccess(r.Context(), account.ID)
+	if err != nil {
+		s.writeUserRepositoryAuthorizationError(w, err)
+		return
+	}
+	items, more, err := s.store.ListDeploymentRepositories(access, r.URL.Query().Get("repository_full_name"), limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list deployment repositories")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": more, "limit": limit, "offset": offset})
+}
+
 func (s *Server) handleUserListDeployments(w http.ResponseWriter, r *http.Request) {
 	_, account, ok := s.requireUserSession(w, r)
 	if !ok {
@@ -371,7 +397,11 @@ func (s *Server) handleUserListDeployments(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	options := state.DeploymentListOptions{Limit: limit, Offset: offset, RepositoryFullName: r.URL.Query().Get("repository_full_name"), Ref: r.URL.Query().Get("ref"), CommitSHA: r.URL.Query().Get("commit_sha")}
+	options := state.DeploymentListOptions{Limit: limit, Offset: offset, RepositoryFullName: r.URL.Query().Get("repository_full_name"), Ref: r.URL.Query().Get("ref"), CommitSHA: r.URL.Query().Get("commit_sha"), Status: r.URL.Query().Get("status")}
+	if _, err := state.DeploymentListStatusValues(options.Status); err != nil || len(r.URL.Query()["status"]) > 1 {
+		writeError(w, http.StatusBadRequest, "invalid deployment status filter")
+		return
+	}
 	if value := r.URL.Query().Get("pull_request_number"); value != "" {
 		number, parseErr := strconv.ParseInt(value, 10, 64)
 		if parseErr != nil || number <= 0 || options.Ref != "" || options.CommitSHA != "" {
@@ -390,6 +420,11 @@ func (s *Server) handleUserListDeployments(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "list deployments")
 		return
 	}
+	counts, err := s.store.CountAuthorizedDeploymentsByStatus(access, options)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "count deployments")
+		return
+	}
 	responses := make([]deploymentResponse, 0, len(items))
 	for _, item := range items {
 		response := deploymentResponseFromState(item)
@@ -400,7 +435,7 @@ func (s *Server) handleUserListDeployments(w http.ResponseWriter, r *http.Reques
 		responses = append(responses, response)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"items": responses, "total": total, "limit": limit, "offset": offset})
+	writeJSON(w, http.StatusOK, map[string]any{"items": responses, "total": total, "status_counts": counts, "limit": limit, "offset": offset})
 }
 
 func (s *Server) handleUserGetDeployment(w http.ResponseWriter, r *http.Request) {
@@ -770,6 +805,7 @@ func (s *Server) handleUserRetryDeployment(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		deployment.SourceRepositoryID, deployment.SourceRepositoryFullName, deployment.SourceRef = revision.SourceRepositoryID, revision.SourceRepositoryFullName, revision.SourceRef
+		deployment.PullRequestTitle = revision.PullRequestTitle
 		deployment.Ref = revision.Ref
 		deployment.CommitSHA = revision.CommitSHA
 		deployment.ConfigPath = revision.ConfigPath
@@ -878,6 +914,7 @@ func (s *Server) refreshDeploymentPlanFromGitHub(ctx context.Context, accountID 
 		return err
 	}
 	deployment.SourceRepositoryID, deployment.SourceRepositoryFullName, deployment.SourceRef = sourceSnapshot.RepositoryID, sourceSnapshot.RepositoryFullName, sourceSnapshot.Ref
+	deployment.PullRequestTitle = sourceSnapshot.PullRequestTitle
 	deployment.CommitSHA = commitSHA
 	deployment.SnapshotVersion = plan.Snapshot().Version
 	deployment.SpecHash = plan.Snapshot().SpecHash
@@ -1046,7 +1083,7 @@ func deploymentResponseFromState(item state.Deployment) deploymentResponse {
 		source, ref = "pull_request", strconv.FormatInt(number, 10)
 	}
 	return deploymentResponse{
-		PullRequestNumber: deploymentPullRequestNumber(item.Ref), SourceRepositoryID: item.SourceRepositoryID, SourceRepositoryFullName: item.SourceRepositoryFullName, SourceRef: item.SourceRef,
+		PullRequestNumber: deploymentPullRequestNumber(item.Ref), SourceRepositoryID: item.SourceRepositoryID, SourceRepositoryFullName: item.SourceRepositoryFullName, SourceRef: item.SourceRef, PullRequestTitle: item.PullRequestTitle,
 		ID: item.ID, ScopeType: item.ScopeType, ScopeID: item.ScopeID,
 		GitHubInstallationID: item.GitHubInstallationID, RepositoryID: item.RepositoryID,
 		RepositoryFullName: item.RepositoryFullName, Ref: ref, Source: source, CommitSHA: item.CommitSHA,
@@ -1063,7 +1100,7 @@ func deploymentResponseFromState(item state.Deployment) deploymentResponse {
 }
 
 func deploymentRevisionResponseFromState(item state.DeploymentRevision) deploymentRevisionResponse {
-	return deploymentRevisionResponse{PullRequestNumber: deploymentPullRequestNumber(item.Ref), SourceRepositoryID: item.SourceRepositoryID, SourceRepositoryFullName: item.SourceRepositoryFullName, SourceRef: item.SourceRef, ID: item.RevisionID, Number: item.RevisionNumber, Status: item.Status, Ref: item.Ref, CommitSHA: item.CommitSHA, ConfigPath: item.ConfigPath, TemplateID: item.DeploymentTemplateID, TemplateName: item.DeploymentTemplateName, TemplateCPU: item.DeploymentTemplateCPU, TemplateMemoryMB: item.DeploymentTemplateMemoryMB, TemplateDiskMB: item.DeploymentTemplateDiskMB, SandboxID: item.SandboxID, SandboxRegion: item.SandboxRegion, Endpoint: item.Endpoint, FailureStage: item.FailureStage, FailureReason: item.FailureReason, ExpiresAt: item.ExpiresAt, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	return deploymentRevisionResponse{PullRequestNumber: deploymentPullRequestNumber(item.Ref), SourceRepositoryID: item.SourceRepositoryID, SourceRepositoryFullName: item.SourceRepositoryFullName, SourceRef: item.SourceRef, PullRequestTitle: item.PullRequestTitle, ID: item.RevisionID, Number: item.RevisionNumber, Status: item.Status, Ref: item.Ref, CommitSHA: item.CommitSHA, ConfigPath: item.ConfigPath, TemplateID: item.DeploymentTemplateID, TemplateName: item.DeploymentTemplateName, TemplateCPU: item.DeploymentTemplateCPU, TemplateMemoryMB: item.DeploymentTemplateMemoryMB, TemplateDiskMB: item.DeploymentTemplateDiskMB, SandboxID: item.SandboxID, SandboxRegion: item.SandboxRegion, Endpoint: item.Endpoint, FailureStage: item.FailureStage, FailureReason: item.FailureReason, ExpiresAt: item.ExpiresAt, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
 func deploymentEndpointAccess(endpoint string) string {

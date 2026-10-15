@@ -15,7 +15,7 @@ func revisionRecordFromDeployment(d deploymentRecord, created time.Time) deploym
 	}
 	return deploymentRevisionRecord{
 		ExecutionAccountID: d.ExecutionAccountID,
-		SourceRepositoryID: d.SourceRepositoryID, SourceRepositoryFullName: d.SourceRepositoryFullName, SourceRef: d.SourceRef,
+		SourceRepositoryID: d.SourceRepositoryID, SourceRepositoryFullName: d.SourceRepositoryFullName, SourceRef: d.SourceRef, PullRequestTitle: d.PullRequestTitle,
 		ID: fmt.Sprintf("%s-r%d", d.ID, d.RevisionNumber), DeploymentID: d.ID, Number: d.RevisionNumber,
 		Ref: d.Ref, CommitSHA: d.CommitSHA, ConfigPath: d.ConfigPath, SnapshotVersion: d.SnapshotVersion,
 		SpecHash: d.SpecHash, SpecJSONEncrypted: d.SpecJSONEncrypted, TemplateID: d.DeploymentTemplateID, TemplateName: d.DeploymentTemplateName,
@@ -82,7 +82,7 @@ func revisionFromRecord(r deploymentRevisionRecord, d deploymentRecord) Deployme
 	return DeploymentRevision{
 		Deployment: Deployment{
 			ExecutionAccountID: r.ExecutionAccountID,
-			SourceRepositoryID: r.SourceRepositoryID, SourceRepositoryFullName: r.SourceRepositoryFullName, SourceRef: r.SourceRef,
+			SourceRepositoryID: r.SourceRepositoryID, SourceRepositoryFullName: r.SourceRepositoryFullName, SourceRef: r.SourceRef, PullRequestTitle: r.PullRequestTitle,
 			ID: d.ID, AccountID: d.AccountID, ScopeType: d.ScopeType, ScopeID: d.ScopeID,
 			GitHubInstallationID: d.GitHubInstallationID, RepositoryID: d.RepositoryID, RepositoryFullName: d.RepositoryFullName,
 			Ref: r.Ref, CommitSHA: r.CommitSHA, ConfigPath: r.ConfigPath, SnapshotVersion: r.SnapshotVersion,

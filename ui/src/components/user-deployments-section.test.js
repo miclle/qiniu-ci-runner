@@ -80,6 +80,16 @@ async function settle() {
 
 const installation = (id, login = "miclle") => ({ id, account_login: login, account_type: "User", repositories: [`${login}/demo`], manageable: true })
 const deployment = (id, status = "running") => ({ id, repository_full_name: "miclle/demo", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", status, template_id: "public-base", template_name: "base", template_cpu: 4, template_memory_mb: 8192, template_disk_mb: 40960, created_at: "2026-10-13T00:00:00Z", expires_at: "2026-10-13T01:00:00Z" })
+function navigationPage(items) {
+  const groups = new Map()
+  for (const item of items) {
+    const group = groups.get(item.repository_full_name) || { repository_full_name: item.repository_full_name, total: 0, active_count: 0, active_deployments: [] }
+    group.total++
+    if (["queued", "planning", "creating", "running", "stopping"].includes(item.status)) { group.active_count++; group.active_deployments.push(item) }
+    groups.set(item.repository_full_name, group)
+  }
+  return { items: [...groups.values()], has_more: false }
+}
 const event = (id, message) => ({ id, event_type: "output", stage: "installing", stream: "stdout", message, created_at: "2026-10-13T00:00:00Z" })
 async function mountPage(props, { chooseRepository = true, page = "create" } = {}) {
   const container = document.createElement("div")
@@ -147,6 +157,16 @@ describe("deployment interaction", () => {
       else Reflect.deleteProperty(navigator, "clipboard")
     }
   })
+
+  test("shows the persisted GitHub pull request title beside the source and status", async () => {
+    const saved = { ...deployment("pr-title", "running"), source: "pull_request", ref: "7", pull_request_number: 7, pull_request_title: "Preview deployment", revision_number: 1 }
+    const request = async (url) => url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : saved
+    const { container } = await mountPage({ request, deploymentID: saved.id }, { page: "deployments" })
+    expect(container.textContent).toContain("Pull request #7 · Preview deployment")
+    const title = container.querySelector('[data-slot="card-title"]')
+    expect(title?.textContent).toContain("Pull request #7 · Preview deployment")
+    expect(title?.nextElementSibling?.textContent).toBe("Running")
+  })
 	 test("switches immutable revisions, rejects delayed logs, and restores the URL selection", async () => {
 		let finishLatest
 		const latestOutput = new Promise((resolve) => { finishLatest = resolve })
@@ -179,7 +199,8 @@ describe("deployment interaction", () => {
     const calls = []
     const request = async (url) => {
       calls.push(url)
-      if (url === "/user/deployments") return { items: [current, { ...deployment("other", "failed"), source: "pull_request", pull_request_number: 7 }] }
+      if (url.startsWith("/user/deployment-repositories")) return navigationPage([current, { ...deployment("other", "queued"), source: "pull_request", pull_request_number: 7 }])
+      if (url === "/user/deployments") return { items: [current] }
       if (url.includes("/events")) return { events: [event(url.includes("/revisions/1/") ? 1 : 2, url.includes("/revisions/1/") ? "historical log" : "current log")], has_more: false }
       if (url.includes("/resources")) return { template_name: "current-template", sandbox_id: "current-sandbox" }
       return current
@@ -206,14 +227,14 @@ describe("deployment interaction", () => {
   test("renders a direct detail before sidebar loading finishes and discards a previous account's delayed list", async () => {
     let finishList
     const delayedList = new Promise((resolve) => { finishList = resolve })
-    const request = async (url) => url === "/user/deployments" ? delayedList : url.includes("/events") ? { events: [event(1, "ready log")], has_more: false } : url.includes("/resources") ? {} : deployment("direct", "completed")
+    const request = async (url) => url.startsWith("/user/deployment-repositories") ? delayedList : url.includes("/events") ? { events: [event(1, "ready log")], has_more: false } : url.includes("/resources") ? {} : deployment("direct", "completed")
     const mounted = await mountPage({ request, deploymentID: "direct" }, { page: "deployments" })
     expect(mounted.container.textContent).toContain("ready log")
     expect(mounted.container.querySelector('a[aria-current="page"]')).not.toBeNull()
-    const nextRequest = async (url) => url === "/user/deployments" ? { items: [] } : url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : { ...deployment("direct", "completed"), repository_full_name: "next/demo" }
+    const nextRequest = async (url) => url.startsWith("/user/deployment-repositories") ? { items: [] } : url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : { ...deployment("direct", "completed"), repository_full_name: "next/demo" }
     await act(async () => mounted.root.render(createElement(UserDeploymentsSection, { ...mounted.props, currentLogin: "next", request: nextRequest })))
     await settle()
-    await act(async () => finishList({ items: [{ ...deployment("private"), repository_full_name: "previous/private" }] }))
+    await act(async () => finishList(navigationPage([{ ...deployment("private"), repository_full_name: "previous/private" }])))
     expect(mounted.container.querySelector('[data-testid="deployment-navigation"]').textContent).not.toContain("previous/private")
     expect(mounted.container.querySelector('[data-testid="deployment-navigation"]').textContent).toContain("next/demo")
   })
@@ -222,11 +243,12 @@ describe("deployment interaction", () => {
     const requested = []
     const request = async (url) => {
       requested.push(url)
-      if (url !== "/user/deployments") throw new Error(`list requested a form dependency: ${url}`)
-      return { items: [deployment("existing", "completed")] }
+      if (url.startsWith("/user/deployment-repositories")) return navigationPage([deployment("existing", "running")])
+      if (url !== "/user/deployments?status=running") throw new Error(`list requested a form dependency: ${url}`)
+      return { items: [deployment("existing", "running")] }
     }
     const { container } = await mountPage({ request }, { page: "deployments" })
-    expect(requested).toEqual(["/user/deployments"])
+    expect(requested).toEqual(["/user/deployment-repositories?limit=100&offset=0", "/user/deployments?status=running"])
     expect(container.querySelector("form")).toBeNull()
     expect(container.querySelector('a[href="/deployments/new"]').textContent).toContain("Create deployment")
     expect(container.querySelector('a[href="/deployments/existing"]').textContent).toContain("miclle/demo")
@@ -235,7 +257,7 @@ describe("deployment interaction", () => {
 
   test("navigates deployment links without a reload while preserving native modified clicks", async () => {
     window.history.replaceState(null, "", "/deployments")
-    const { container } = await mountPage({ request: async () => ({ items: [deployment("existing", "completed")] }) }, { page: "deployments" })
+    const { container } = await mountPage({ request: async (url) => url.startsWith("/user/deployment-repositories") ? navigationPage([deployment("existing", "completed")]) : ({ items: [deployment("existing", "completed")] }) }, { page: "deployments" })
     const createLink = container.querySelector('a[href="/deployments/new"]')
     const locations = []
     const onHistory = () => locations.push(window.location.pathname)
@@ -257,6 +279,188 @@ describe("deployment interaction", () => {
     } finally {
       window.removeEventListener("popstate", onHistory)
     }
+  })
+
+  test("groups navigation by repository, distinguishes active deployments, and pins a selected terminal deployment", async () => {
+    let status = "running"
+    const old = { ...deployment("stopped-preview", "completed"), ref: "refs/heads/preview" }
+    const running = { ...deployment("running-preview", "running"), ref: "refs/heads/preview" }
+    const other = { ...deployment("other-active", "creating"), repository_full_name: "another/project", ref: "refs/pull/17/head" }
+    const request = async (url) => {
+      if (url.startsWith("/user/deployment-repositories")) return navigationPage([{ ...running, status }, old, other])
+      if (url.includes("/events")) return { events: [], has_more: false }
+      if (url.includes("/resources")) return {}
+      return { ...running, status }
+    }
+    const { container } = await mountPage({ request, deploymentID: running.id }, { page: "deployments" })
+    const navigation = container.querySelector('[data-testid="deployment-navigation"]')
+    expect(navigation.querySelectorAll('[data-testid="deployment-repository"]')).toHaveLength(2)
+    expect(navigation.querySelector(`a[aria-current="page"]`).textContent).toContain(running.id.slice(0, 10))
+    expect(navigation.textContent).not.toContain("stopped-preview")
+    const repositoryLink = navigation.querySelector('a[href="/github/miclle/demo/deployments"]')
+    expect(repositoryLink.textContent).toBe("miclle/demo")
+    const toggle = [...navigation.querySelectorAll("button")].find((item) => item.getAttribute("aria-label")?.includes("another/project"))
+    await act(async () => toggle.click())
+    expect(navigation.textContent).toContain("PR #17")
+    status = "completed"
+    await act(async () => button(container, "Refresh").click())
+    expect(navigation.querySelector('a[aria-current="page"]').textContent).toContain("Stopped")
+    expect(navigation.textContent).not.toContain("stopped-preview")
+    expect(navigation.querySelector('a[href="/github/miclle/demo/deployments"]')).not.toBeNull()
+    const destinations = []
+    const observe = () => destinations.push(window.location.pathname + window.location.search)
+    window.addEventListener("popstate", observe)
+    try {
+      await act(async () => container.querySelector('button[aria-label="Back to deployments"]').click())
+      expect(destinations).toContain("/github/miclle/demo/deployments")
+    } finally { window.removeEventListener("popstate", observe) }
+  })
+
+  test("summarizes all active deployments without assigning one child's state to its repository", async () => {
+    const records = [
+      ["queued", ["queued", "queued"], "Queued"],
+      ["creating", ["creating", "creating"], "Deploying"],
+      ["running", ["running"], "Deploying"],
+      ["mixed", ["running", "queued"], "Active deployments"],
+      ["stopping", ["stopping"], "Active deployments"],
+      ["archived", ["completed", "failed"], null],
+    ]
+    const items = records.flatMap(([name, statuses]) => statuses.map((status, index) => ({ ...deployment(`${name}-${index}`, status), repository_full_name: `miclle/${name}` })))
+    const { container } = await mountPage({ request: async (url) => url.startsWith("/user/deployment-repositories") ? navigationPage(items) : { items: [] } }, { page: "deployments" })
+    const navigation = container.querySelector('[data-testid="deployment-navigation"]')
+    for (const [name, statuses, label] of records) {
+      const repository = navigation.querySelector(`a[href="/github/miclle/${name}/deployments"]`).closest('[data-testid="deployment-repository"]')
+      const badge = repository.querySelector('[data-slot="badge"]')
+      expect(badge?.textContent ?? null).toBe(label)
+      expect(repository.textContent).toContain(`${statuses.filter((status) => !["completed", "failed"].includes(status)).length} active`)
+    }
+  })
+
+  test("resolves a direct detail's repository beyond loaded navigation pages", async () => {
+    const selected = { ...deployment("deep-selected", "completed"), repository_full_name: "z/selected" }
+    const calls = []
+    const request = async (url) => {
+      calls.push(url)
+      if (url.startsWith("/user/deployment-repositories?repository_full_name=")) return navigationPage([selected, { ...selected, id: "other-live", status: "running" }])
+      if (url.startsWith("/user/deployment-repositories")) return { ...navigationPage([{ ...selected, id: "a-item", repository_full_name: "a/project" }]), has_more: true }
+      if (url.includes("/events")) return { events: [], has_more: false }
+      if (url.includes("/resources")) return {}
+      return selected
+    }
+    const { container } = await mountPage({ request, deploymentID: selected.id }, { page: "deployments" })
+    const navigation = container.querySelector('[data-testid="deployment-navigation"]')
+    expect(calls).toContain("/user/deployment-repositories?repository_full_name=z%2Fselected")
+    expect(navigation.querySelector('[data-testid="deployment-repository"]').textContent).toContain("z/selected")
+    expect(navigation.querySelector('a[aria-current="page"]').textContent).toContain("deep-selec")
+    expect(navigation.textContent).toContain("other-live")
+    expect(navigation.textContent).toContain("1 active")
+  })
+
+  test("loads independent history and repository pages and retains loaded history after refresh", async () => {
+    const first = Array.from({ length: 100 }, (_, index) => deployment(`past-${index}`, "completed"))
+    const last = { ...deployment("old-active", "creating"), repository_full_name: "z/older", ref: "refs/heads/main" }
+    const requested = []
+    const request = async (url) => {
+      requested.push(url)
+      if (url.startsWith("/user/deployment-repositories")) {
+        return { ...navigationPage(url.includes("offset=100") ? [last] : first), has_more: !url.includes("offset=100") }
+      }
+      return { items: url.includes("offset=100") ? [last] : first, total: 101 }
+    }
+    const { container } = await mountPage({ request }, { page: "deployments" })
+    expect(container.querySelectorAll('[data-testid="deployment-list"] > a')).toHaveLength(100)
+    await act(async () => button(container, "Load more repositories").click())
+    expect(container.querySelector('[data-testid="deployment-navigation"]').textContent).toContain("z/older")
+    expect(container.querySelectorAll('[data-testid="deployment-list"] > a')).toHaveLength(100)
+    await act(async () => button(container, "Load more deployments").click())
+    expect(container.querySelectorAll('[data-testid="deployment-list"] > a')).toHaveLength(101)
+    await act(async () => button(container, "Refresh").click())
+    expect(container.querySelectorAll('[data-testid="deployment-list"] > a')).toHaveLength(101)
+    expect(requested).toContain("/user/deployments?status=running&limit=100&offset=100")
+  })
+
+  test("filters through URL state and server counts, resets paging, and discards the previous status page", async () => {
+    window.history.replaceState(null, "", "/github/miclle/demo/deployments?branch=feature/preview&status=stopped")
+    let finishOld
+    let stopped = false
+    let navigationCalls = 0
+    const oldPage = new Promise((resolve) => { finishOld = resolve })
+    const requests = []
+    const request = async (url) => {
+      requests.push(url)
+      if (url.startsWith("/user/deployment-repositories")) { navigationCalls++; return navigationPage([deployment("live-preview")]) }
+      const query = new URL(url, window.location.href).searchParams
+      const counts = { all: 107, running: stopped ? 0 : 2, processing: 3, stopped: stopped ? 104 : 102, failed: 0 }
+      if (query.get("offset") === "100") return oldPage
+      const status = query.get("status")
+      const items = status === "stopped" ? Array.from({ length: 100 }, (_, index) => deployment(`past-${index}`, "completed")) : status === "running" && !stopped ? [deployment("live-one"), deployment("live-two")] : []
+      return { items, total: counts[status], status_counts: counts }
+    }
+    const { container } = await mountPage({ request }, { page: "deployments" })
+    const filters = container.querySelector('[data-testid="deployment-status-filter"]')
+    const filter = (label) => [...filters.querySelectorAll('button')].find((item) => item.textContent.startsWith(label))
+    expect(filter("Stopped").getAttribute("aria-checked")).toBe("true")
+    expect(filter("All")).toBeUndefined()
+    expect(filter("Stopped").textContent).toBe("Stopped102")
+    await act(async () => button(container, "Load more deployments").click())
+    await act(async () => filter("Running").click())
+    expect(filter("Stopped").getAttribute("aria-checked")).toBe("false")
+    await settle()
+    expect(new URLSearchParams(window.location.search).get("branch")).toBe("feature/preview")
+    expect(new URLSearchParams(window.location.search).get("status")).toBeNull()
+    expect(filter("Running").getAttribute("aria-checked")).toBe("true")
+    expect(container.querySelectorAll('[data-testid="deployment-list"] > a')).toHaveLength(2)
+    const selectedURL = window.location.href
+    await act(async () => filter("Running").click())
+    expect(window.location.href).toBe(selectedURL)
+    expect(filter("Running").getAttribute("aria-checked")).toBe("true")
+    expect(navigationCalls).toBe(1)
+    await act(async () => finishOld({ items: [deployment("stale-page", "completed")], total: 999, status_counts: { all: 999 } }))
+    expect(filters.textContent).not.toContain("999")
+    expect(container.querySelector('[data-testid="deployment-list"]').textContent).not.toContain("stale-page")
+    expect(button(container, "Load more deployments")).toBeUndefined()
+    stopped = true
+    await act(async () => button(container, "Refresh").click())
+    expect(filter("Running").textContent).toBe("Running0")
+    expect(container.textContent).toContain("No deployments match these filters")
+    expect(container.querySelector('[data-testid="deployment-list"]')).toBeNull()
+    expect(requests.some((url) => url.includes("status=running") && url.includes("ref=refs%2Fheads%2Ffeature%2Fpreview"))).toBe(true)
+  })
+
+  test("discards an older repository's pending history page on navigation", async () => {
+    let finishOld
+    const pending = new Promise((resolve) => { finishOld = resolve })
+    const request = async (url) => {
+      if (url.startsWith("/user/deployment-repositories")) return { items: [], has_more: false }
+      if (url.includes("offset=100")) return pending
+      const repository = url.includes("new%2Frepo") ? "new/repo" : "miclle/demo"
+      return { items: Array.from({ length: repository === "new/repo" ? 1 : 100 }, (_, index) => ({ ...deployment(`item-${index}`, "completed"), repository_full_name: repository })), total: repository === "new/repo" ? 1 : 101 }
+    }
+    const mounted = await mountPage({ request, locationPath: "/github/miclle/demo/deployments" }, { page: "deployments" })
+    await act(async () => button(mounted.container, "Load more deployments").click())
+    await act(async () => mounted.root.render(createElement(UserDeploymentsSection, { ...mounted.props, locationPath: "/github/new/repo/deployments" })))
+    await settle()
+    await act(async () => finishOld({ items: [deployment("stale-private", "completed")], total: 101 }))
+    expect(mounted.container.querySelector('[data-testid="deployment-list"]').textContent).toContain("new/repo")
+    expect(mounted.container.querySelector('[data-testid="deployment-list"]').textContent).not.toContain("stale-private")
+    expect(button(mounted.container, "Load more deployments")).toBeUndefined()
+  })
+
+  test("unlocks paging when the request context changes during a pending history page", async () => {
+    let finishOld
+    const pending = new Promise((resolve) => { finishOld = resolve })
+    const first = Array.from({ length: 100 }, (_, index) => deployment(`previous-${index}`, "completed"))
+    const request = async (url) => url.startsWith("/user/deployment-repositories") ? { items: [] } : url.includes("offset=100") ? pending : { items: first, total: 101 }
+    const mounted = await mountPage({ request }, { page: "deployments" })
+    await act(async () => button(mounted.container, "Load more deployments").click())
+    const nextRequest = async (url) => url.startsWith("/user/deployment-repositories") ? { items: [] } : { items: [deployment("new-context", "completed")], total: 1 }
+    await act(async () => mounted.root.render(createElement(UserDeploymentsSection, { ...mounted.props, request: nextRequest })))
+    await settle()
+    await act(async () => finishOld({ items: [deployment("stale-page", "completed")], total: 101 }))
+    expect(mounted.container.querySelectorAll('[data-testid="deployment-list"] > a')).toHaveLength(1)
+    expect(mounted.container.querySelector('[data-testid="deployment-list"]').textContent).toContain("new-contex")
+    expect(mounted.container.querySelector('[data-testid="deployment-list"]').textContent).not.toContain("stale-page")
+    expect(button(mounted.container, "Load more deployments")).toBeUndefined()
   })
 
   test("loads only creation dependencies and provides a link back to the list", async () => {
@@ -484,7 +688,7 @@ describe("deployment interaction", () => {
     const requested = []
     const request = async (url) => {
       requested.push(url)
-      if (url === "/user/deployments") return { items: [] }
+      if (url.startsWith("/user/deployment-repositories")) return { items: [] }
       if (url === "/user/deployments/deep-link") return deployment("deep-link", "completed")
       if (url.endsWith("?before_id=205")) return { events: [event(203, "earlier install output"), event(204, "older output")], has_more: false }
       if (url.endsWith("?after_id=206")) {
@@ -497,7 +701,7 @@ describe("deployment interaction", () => {
     }
     const { container } = await mountPage({ request, deploymentID: "deep-link" }, { page: "deployments" })
     expect(requested).toContain("/user/deployments/deep-link")
-    expect(requested).toContain("/user/deployments")
+    expect(requested).toContain("/user/deployment-repositories?limit=100&offset=0")
     expect(container.textContent).toContain("base")
     expect(container.textContent).toContain("4 vCPU")
     expect(container.textContent).toContain("8192 MB")

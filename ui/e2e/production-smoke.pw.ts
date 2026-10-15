@@ -459,6 +459,8 @@ test("deploys a historical PR Job through the repository context", async ({ page
       await route.fulfill({ json: { refs: [], has_more: false } })
     } else if (url.pathname === "/user/deployment-templates") {
       await route.fulfill({ json: { templates: [{ template_id: "base", names: ["base"] }] } })
+    } else if (url.pathname === "/user/deployment-repositories") {
+      await route.fulfill({ json: deploymentNavigationFixture([{ ...deployment, repository_full_name: selected.repository_full_name! }]) })
     } else if (url.pathname === "/user/deployments" && route.request().method() === "POST") {
       submitted = route.request().postDataJSON()
       await route.fulfill({ status: 201, json: deployment })
@@ -976,6 +978,228 @@ function fixtureRunnerEvents() {
   }
 }
 
+function deploymentNavigationFixture(items: { id: string; repository_full_name: string; status: string; ref?: string; commit_sha: string }[]) {
+  const groups = new Map<string, { repository_full_name: string; total: number; active_count: number; active_deployments: typeof items }>()
+  for (const item of items) {
+    const group = groups.get(item.repository_full_name) ?? { repository_full_name: item.repository_full_name, total: 0, active_count: 0, active_deployments: [] }
+    group.total++
+    if (["queued", "planning", "creating", "running", "stopping"].includes(item.status)) { group.active_count++; group.active_deployments.push(item) }
+    groups.set(item.repository_full_name, group)
+  }
+  return { items: [...groups.values()], has_more: false }
+}
+
+function deploymentStatusPageFixture<T extends { status: string }>(items: T[], query: URLSearchParams) {
+  const groups: Record<string, string[]> = { running: ["running"], processing: ["queued", "planning", "creating", "stopping"], stopped: ["completed", "expired"], failed: ["failed"] }
+  const counts: Record<string, number> = { all: items.length }
+  for (const [key, statuses] of Object.entries(groups)) counts[key] = items.filter((item) => statuses.includes(item.status)).length
+  const selection = query.get("status")
+  const statuses = selection && selection !== "all" ? selection.split(",").flatMap((status) => groups[status] ?? []) : undefined
+  const filtered = statuses ? items.filter((item) => statuses.includes(item.status)) : items
+  const offset = Number(query.get("offset") || 0)
+  return { items: filtered.slice(offset, offset + 100), total: filtered.length, status_counts: counts }
+}
+
+test("filters deployment status before pagination and retains source, history and responsive single selection", async ({ page }, testInfo) => {
+  test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
+  const diagnostics = observeBrowserDiagnostics(page)
+  const pageLoads = observePageLoads(page)
+  const repository = "fixture/status-workspace"
+  const branch = "feature/preview"
+  const base = { repository_full_name: repository, source: "branch", ref: `refs/heads/${branch}`, commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", revision_number: 1, created_at: "2026-10-13T00:00:00Z" }
+  const states = ["queued", "planning", "creating", "running", "stopping", "completed", "expired", "failed"]
+  const records = [
+    ...states.map((status) => ({ ...base, id: `${status}-preview`, status })),
+    ...Array.from({ length: 101 }, (_, index) => ({ ...base, id: `past-${index}`, status: "completed" })),
+    { ...base, id: "different-tag", source: "tag", ref: `refs/tags/${branch}`, status: "running" },
+    { ...base, id: "other-repository", repository_full_name: "fixture/other", status: "failed" },
+  ]
+  await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture", role: "user" } }))
+  await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [] }))
+  await page.route("**/user/**", (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: deploymentNavigationFixture(records) })
+    if (url.pathname === "/user/deployments") {
+      const filtered = records.filter((item) => (!url.searchParams.has("repository_full_name") || item.repository_full_name === url.searchParams.get("repository_full_name")) && (!url.searchParams.has("ref") || item.ref === url.searchParams.get("ref")))
+      return route.fulfill({ json: deploymentStatusPageFixture(filtered, url.searchParams) })
+    }
+    if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: [], has_more: false } })
+    if (url.pathname.endsWith("/resources")) return route.fulfill({ json: {} })
+    const record = records.find((item) => url.pathname === `/user/deployments/${item.id}`)
+    return record ? route.fulfill({ json: record }) : route.fulfill({ status: 404, body: "fixture route not found" })
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/github/${repository}/deployments?branch=${branch}&status=stopped`, { waitUntil: "networkidle" })
+  const initialLoads = pageLoads()
+  const filters = page.getByTestId("deployment-status-filter")
+  const button = (label: string) => filters.getByRole("radio", { name: new RegExp(`^${label}`) })
+  const list = page.getByTestId("deployment-list")
+  await expect(button("Stopped")).toHaveAttribute("aria-checked", "true")
+  await expect(filters.getByRole("radio")).toHaveCount(4)
+  for (const [label, count] of [["Running", 1], ["Processing", 4], ["Stopped", 103], ["Failed", 1]] as const) await expect(button(label)).toContainText(String(count))
+  await expect(list.locator("a")).toHaveCount(100)
+  await page.getByRole("button", { name: "Load more deployments", exact: true }).click()
+  await expect(list.locator("a")).toHaveCount(103)
+  await button("Running").click()
+  await expect(page).toHaveURL(new RegExp(`branch=${branch}$`))
+  await expect(button("Stopped")).toHaveAttribute("aria-checked", "false")
+  await expect(list.locator("a")).toHaveCount(1)
+  await button("Running").click()
+  await expect(button("Running")).toHaveAttribute("aria-checked", "true")
+  await expect(filters.locator('[aria-checked="true"]')).toHaveCount(1)
+  await expect(list.locator("a")).toHaveCount(1)
+  await expect(page.getByRole("button", { name: "Load more deployments", exact: true })).toHaveCount(0)
+  await page.getByTestId("deployment-layout").screenshot({ path: testInfo.outputPath("deployment-status-desktop.png") })
+  await list.locator("a").click()
+  await expect(filters).toHaveCount(0)
+  await expect(page.getByTestId("deployment-output").getByRole("tab", { name: "Deployment logs", exact: true })).toBeVisible()
+  await page.goBack()
+  await expect(button("Running")).toHaveAttribute("aria-checked", "true")
+  await button("Processing").click()
+  await expect(list.locator("a")).toHaveCount(4)
+  for (const label of ["Queued", "Planning", "Creating", "Stopping"]) await expect(list.getByText(label, { exact: true })).toBeVisible()
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(button("Processing")).toHaveAttribute("aria-checked", "true")
+  await expect(button("Running")).toHaveAttribute("aria-checked", "false")
+  await button("Failed").click()
+  await expect(list.locator("a")).toHaveCount(1)
+  await page.goBack()
+  await expect(button("Processing")).toHaveAttribute("aria-checked", "true")
+  await expect(button("Failed")).toHaveAttribute("aria-checked", "false")
+  await expect(list.locator("a")).toHaveCount(4)
+  await page.goForward()
+  await expect(button("Processing")).toHaveAttribute("aria-checked", "false")
+  await expect(button("Failed")).toHaveAttribute("aria-checked", "true")
+  records.find((item) => item.id === "failed-preview")!.status = "completed"
+  await page.getByRole("button", { name: "Refresh", exact: true }).click()
+  await expect(button("Failed")).toContainText("0")
+  await expect(page.getByRole("heading", { name: "No deployments match these filters", exact: true })).toBeVisible()
+  expect(pageLoads()).toEqual({ documents: initialLoads.documents + 1, sessions: initialLoads.sessions + 1 })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.evaluate(() => localStorage.setItem("runnerd:language", "zh"))
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(button("失败")).toHaveAttribute("aria-checked", "true")
+  await button("失败").focus()
+  await page.keyboard.press("Home")
+  await expect(button("运行中")).toBeFocused()
+  await page.keyboard.press("Space")
+  await expect(button("运行中")).toHaveAttribute("aria-checked", "true")
+  await expect(button("失败")).toHaveAttribute("aria-checked", "false")
+  await expect(list.locator("a")).toHaveCount(1)
+  await page.keyboard.press("End")
+  await expect(button("失败")).toBeFocused()
+  await page.keyboard.press("Space")
+  await expect(button("失败")).toHaveAttribute("aria-checked", "true")
+  await expect(button("运行中")).toHaveAttribute("aria-checked", "false")
+  await expect(filters.locator('[aria-checked="true"]')).toHaveCount(1)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath("deployment-status-narrow.png") })
+  await page.evaluate(() => localStorage.setItem("theme", "dark"))
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(page.locator("html")).toHaveClass(/dark/)
+  await page.screenshot({ path: testInfo.outputPath("deployment-status-narrow-dark.png") })
+  diagnostics.expectClean()
+})
+
+test("navigates repository workspaces independently of history and retains selected terminal deployments", async ({ page }, testInfo) => {
+  test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
+  const diagnostics = observeBrowserDiagnostics(page)
+  const pageLoads = observePageLoads(page)
+  const repository = "fixture/workspace"
+  const base = { repository_full_name: repository, source: "branch", ref: "refs/heads/feature/preview-with-a-long-name", commit_sha: "a".repeat(40), config_path: ".qiniu/deploy.yaml", revision_number: 1, created_at: "2026-10-13T00:00:00Z", expires_at: "2026-10-15T00:00:00Z" }
+  const running = { ...base, id: "active-one", status: "running" }
+  const queued = { ...base, id: "active-two", status: "queued" }
+  const historical = Array.from({ length: 101 }, (_, index) => ({ ...base, id: `past-${index}`, status: "completed" }))
+  const archived = Array.from({ length: 35 }, (_, index) => ({ ...base, repository_full_name: `fixture/retired-${index.toString().padStart(2, "0")}`, id: `retired-${index}`, status: "completed" }))
+  const longRepository = "fixture/a-repository-with-a-long-name-for-deployment-navigation"
+  const records = [...historical, running, queued, { ...base, repository_full_name: longRepository, id: "long-name-active", status: "creating" }, ...archived]
+  await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture", role: "user" } }))
+  await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [] }))
+  await page.route("**/user/**", (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: deploymentNavigationFixture(records) })
+    if (url.pathname === "/user/deployments") {
+      const filtered = url.searchParams.has("repository_full_name") ? records.filter((item) => item.repository_full_name === url.searchParams.get("repository_full_name")) : records
+      return route.fulfill({ json: deploymentStatusPageFixture(filtered, url.searchParams) })
+    }
+    if (url.pathname.endsWith("/resources")) return route.fulfill({ json: {} })
+    if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: [], has_more: false } })
+    const item = records.find((item) => url.pathname === `/user/deployments/${item.id}`)
+    if (item) return route.fulfill({ json: item })
+    return route.fulfill({ status: 404, body: "fixture route not found" })
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto("/deployments?status=stopped", { waitUntil: "networkidle" })
+  const initialLoads = pageLoads()
+  const selectStopped = () => page.getByTestId("deployment-status-filter").getByRole("radio", { name: /^Stopped/ }).click()
+  const navigation = page.getByTestId("deployment-navigation")
+  const content = page.getByTestId("deployment-layout").locator(":scope > section")
+  const repositorySummary = navigation.getByRole("link", { name: repository, exact: true }).locator("../..")
+  await expect(repositorySummary.locator('[data-slot="badge"]')).toHaveText("Active deployments")
+  const headingBounds = await repositorySummary.locator(":scope > div").boundingBox()
+  const countBounds = await repositorySummary.getByText("2 active", { exact: true }).boundingBox()
+  expect(countBounds!.y).toBeGreaterThanOrEqual(headingBounds!.y + headingBounds!.height)
+  const longRepositoryLink = navigation.getByRole("link", { name: longRepository, exact: true })
+  await expect(longRepositoryLink).toHaveAttribute("title", longRepository)
+  expect(await longRepositoryLink.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+  await expect(page.getByTestId("deployment-list").locator("a")).toHaveCount(100)
+  const toggle = navigation.getByRole("button", { name: `Toggle deployments for ${repository}`, exact: true })
+  await toggle.focus()
+  await page.keyboard.press("Enter")
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await expect(navigation.getByRole("link", { name: /active-one/ })).toBeVisible()
+  await expect(navigation.getByRole("link", { name: /active-two/ })).toBeVisible()
+  await expect(navigation.getByRole("link", { name: /past-/ })).toHaveCount(0)
+  expect(await navigation.locator("nav").evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+  await content.evaluate((element) => { element.scrollTop = 250 })
+  expect(await navigation.locator("nav").evaluate((element) => element.scrollTop)).toBe(0)
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true)
+  await page.getByTestId("deployment-layout").screenshot({ path: testInfo.outputPath("deployment-repository-list.png") })
+  await navigation.getByRole("link", { name: /active-one/ }).click()
+  await expect(page).toHaveURL(/deployments\/active-one\?branch=feature\/preview-with-a-long-name$/)
+  running.status = "completed"
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click()
+  await expect(repositorySummary.locator('[data-slot="badge"]')).toHaveText("Queued")
+  await expect(navigation.locator('a[aria-current="page"]')).toContainText("Stopped")
+  await expect(navigation.getByRole("link", { name: /active-two/ })).toBeVisible()
+  await page.getByTestId("deployment-layout").screenshot({ path: testInfo.outputPath("deployment-repository-detail.png") })
+  await navigation.getByRole("link", { name: repository, exact: true }).click()
+  await expect(page).toHaveURL(/github\/fixture\/workspace\/deployments$/)
+  await expect(navigation.getByRole("link", { name: /active-one/ })).toHaveCount(0)
+  await selectStopped()
+  await page.getByRole("button", { name: "Load more deployments", exact: true }).click()
+  await expect(page.getByTestId("deployment-list").locator("a")).toHaveCount(102)
+  await page.getByRole("button", { name: "Refresh", exact: true }).click()
+  await expect(page.getByTestId("deployment-list").locator("a")).toHaveCount(102)
+  await navigation.getByRole("link", { name: "fixture/retired-00", exact: true }).click()
+  await expect(page.getByRole("heading", { name: "fixture/retired-00", exact: true })).toBeVisible()
+  await expect(navigation.getByText("No active deployments", { exact: true })).toHaveCount(0)
+  await expect(page.getByTestId("deployment-list").locator("a")).toHaveCount(0)
+  await selectStopped()
+  await expect(page.getByTestId("deployment-list").locator("a")).toHaveCount(1)
+  const createLink = page.getByRole("link", { name: "Create deployment", exact: true })
+  expect(new URL(await createLink.getAttribute("href") ?? "", page.url()).searchParams.get("repository")).toBe("fixture/retired-00")
+  await page.goBack()
+  await expect(page).toHaveURL(/github\/fixture\/retired-00\/deployments$/)
+  await page.goForward()
+  await expect(page).toHaveURL(/github\/fixture\/retired-00\/deployments\?status=/)
+  expect(pageLoads()).toEqual(initialLoads)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await navigation.getByRole("link", { name: repository, exact: true }).click()
+  await page.evaluate(() => localStorage.setItem("runnerd:language", "zh"))
+  await page.reload({ waitUntil: "networkidle" })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await navigation.screenshot({ path: testInfo.outputPath("deployment-navigation-narrow.png") })
+  await page.screenshot({ path: testInfo.outputPath("deployment-repository-narrow.png"), fullPage: true })
+  await navigation.getByRole("link", { name: /active-two/ }).click()
+  await expect(page).toHaveURL(/deployments\/active-two/)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.getByTestId("deployment-layout").screenshot({ path: testInfo.outputPath("deployment-repository-detail-narrow.png") })
+  await page.reload({ waitUntil: "networkidle" })
+  await expect(navigation.locator('a[aria-current="page"]')).toContainText("active-two")
+  diagnostics.expectClean()
+})
+
 test("separates deployment list, creation, and refreshable detail pages", async ({ page }, testInfo) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
   const diagnostics = observeBrowserDiagnostics(page)
@@ -1028,7 +1252,8 @@ test("separates deployment list, creation, and refreshable detail pages", async 
       if (route.request().method() === "DELETE") terminalClosed = true
       return route.fulfill({ json: { status: "ok" } })
     }
-    if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: created ? [deployment, otherDeployment] : [] } })
+    if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: deploymentNavigationFixture(created ? [deployment, otherDeployment] : []) })
+    if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: created ? (url.searchParams.get("repository_full_name") === otherDeployment.repository_full_name ? [otherDeployment] : url.searchParams.has("repository_full_name") ? [deployment] : [deployment, otherDeployment]) : [], total: created ? 2 : 0 } })
     if (url.pathname === "/user/deployments/deployment-fixture") return route.fulfill({ json: { ...deployment, revisions: [{ ...revisions[0], status: deployment.status }, revisions[1]] } })
     if (url.pathname === "/user/deployments/other-fixture") return route.fulfill({ json: otherDeployment })
     if (url.pathname.endsWith("/resources")) return route.fulfill({ json: { template_id: deployment.template_id, template_name: "custom", template_cpu: 2, template_memory_mb: 1024, template_disk_mb: 23379, sandbox_region: "cn-yangzhou-1", sandbox_id: deployment.sandbox_id, expires_at: deployment.expires_at } })
@@ -1038,7 +1263,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await page.goto("/deployments", { waitUntil: "networkidle" })
   await expect(page.getByRole("heading", { name: "Deployments", exact: true })).toBeVisible()
   await expect(page.locator("form")).toHaveCount(0)
-  expect(requestedPaths).toEqual(["/user/deployments"])
+  expect(requestedPaths.sort()).toEqual(["/user/deployment-repositories", "/user/deployments"])
   const initialLoads = pageLoads()
   await page.getByRole("link", { name: "Create deployment", exact: true }).click()
   await expect(page).toHaveURL(/\/deployments\/new$/)
@@ -1100,7 +1325,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await expect(page.locator("#deployment-template")).toHaveCount(0)
   const navigation = page.getByTestId("deployment-navigation")
   await expect(navigation.getByRole("link", { name: /fixture-user\/other/ })).toBeVisible()
-  await expect(navigation.locator('a[aria-current="page"]')).toContainText("fixture-user/project")
+  await expect(navigation.locator('a[aria-current="page"]')).toContainText("deployment")
   await expect(page.getByTestId("deployment-history")).toBeHidden()
   expect(await page.getByTestId("deployment-output").getByRole("tab").allTextContents()).toEqual(["Deployment logs", "Terminal", "Deployment history"])
   await expect(page.getByTestId("deployment-output").locator('[data-slot="card-title"]')).toHaveCount(0)
@@ -1147,14 +1372,16 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await page.getByRole("tab", { name: "Deployment logs", exact: true }).click()
   await expect.poll(() => terminalClosed).toBe(true)
   const detailLoads = pageLoads()
-  await navigation.getByRole("link", { name: /fixture-user\/other/ }).click()
-  await expect(page).toHaveURL(/pull_requests\/7\/deployments\/other-fixture$/)
-  await expect(navigation.locator('a[aria-current="page"]')).toContainText("fixture-user/other")
-  await navigation.getByRole("link", { name: /fixture-user\/project/ }).click()
+  await navigation.getByRole("link", { name: "fixture-user/other", exact: true }).click()
+  await expect(page).toHaveURL(/github\/fixture-user\/other\/deployments$/)
+  await expect(page.getByTestId("deployment-list").locator("a")).toHaveCount(1)
+  await navigation.getByRole("link", { name: "fixture-user/project", exact: true }).click()
+  await expect(page).toHaveURL(/github\/fixture-user\/project\/deployments$/)
+  await navigation.getByRole("link", { name: /Tag v1.0/ }).click()
   await expect(page).toHaveURL(/deployment-fixture\?tag=v1.0$/)
   expect(pageLoads()).toEqual(detailLoads)
-  await page.getByRole("button", { name: "Back to deployments" }).click()
-  await expect(page).toHaveURL(/\/github\/fixture-user\/project\/deployments\?tag=v1.0$/)
+  await page.getByTestId("deployment-navigation").getByRole("link", { name: "fixture-user/project", exact: true }).click()
+  await expect(page).toHaveURL(/\/github\/fixture-user\/project\/deployments$/)
   await expect(page.locator("form")).toHaveCount(0)
   await expect(page.locator('[data-testid="deployment-list"]')).toContainText("fixture-user/project")
   await page.locator('[data-testid="deployment-list"] a').first().click()
@@ -1211,6 +1438,7 @@ test("creates a PR deployment and reloads its GitHub context", async ({ page }, 
       submitted = route.request().postDataJSON()
       return route.fulfill({ status: 201, json: deployment })
     }
+    if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: deploymentNavigationFixture([deployment]) })
     if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: [deployment] } })
     if (url.pathname === "/user/deployments/pr-deployment") return route.fulfill({ json: deployment })
     if (url.pathname.endsWith("/resources")) return route.fulfill({ json: {} })
@@ -1258,6 +1486,7 @@ test("keeps deployment path IDs and readable source filters through history", as
       const job = runners.find((item) => item.head_sha === url.pathname.split("/").at(-2))!
       return route.fulfill({ json: { key: `branch:${repository}:${job.head_branch}:${job.head_sha}`, group: "branch", repository, title: job.head_branch, head_branch: job.head_branch, head_sha: job.head_sha, jobs: [job], current_jobs: [job], previous_jobs: [], workflow_run_ids: [job.workflow_run_id] } })
     }
+    if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: deploymentNavigationFixture([deployment]) })
     if (url.pathname === "/user/deployments") {
       listQueries.push(url.search)
       return route.fulfill({ json: { items: [deployment] } })

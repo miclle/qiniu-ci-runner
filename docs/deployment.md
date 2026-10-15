@@ -172,6 +172,27 @@ ID is resolved server-side.
 - `GET /user/deployments` reads local history after filtering authorized exact
   installation-repository pairs, before count and pagination. Creator identity
   does not restrict visibility.
+  Optional `status` accepts a comma-separated union of `running`, `processing`,
+  `stopped` and `failed`, filtering current deployment state before pagination.
+  Omitted/empty/`all` means all for API clients. `processing` includes queued,
+  planning, creating and stopping; `stopped` includes completed and expired.
+  Unknown values, duplicate/empty CSV members, `all` mixed with other groups,
+  or repeated status parameters return 400. Responses include filtered `total`
+  and `status_counts` (`all`, `running`, `processing`, `stopped`, `failed`). Counts
+  cover all authorized repository/ref/commit/PR matches before status filtering
+  and pagination. Historical source matches still group by the deployment's
+  current state, independently of the selected historical revision's status.
+- `GET /user/deployment-repositories?limit=100&offset=0` returns local repository
+  summaries (`repository_full_name`, retained `total`, `active_count`, and
+  `active_deployments`) with `has_more`, `limit`, and `offset`. Default limit is
+  100 repositories (maximum 500); optional `repository_full_name` selects one
+  repository for direct detail navigation outside the loaded sidebar pages.
+  Authorization filters exact installation/repository pairs before grouping or
+  pagination. Active children include all matching active deployments for these
+  repositories, even beyond the history's first page; summaries expose only ID,
+  repository, qualified ref, commit, status and update time, never runtime or
+  credential fields. No Sandbox or GitHub catalog calls occur; authorization uses
+  Jobs' existing OAuth/App intersection cache. Reads use `Cache-Control: no-store`.
 - `GET /user/deployments/{id}`, saved events, revisions and lifecycle actions
   share Jobs' repository authorization cache: refresh after 20 seconds, hard
   expiry at 30 seconds, with coalesced refreshes. A cache miss may contact GitHub;
@@ -204,9 +225,36 @@ recorded as `failed` without claiming that remote cleanup succeeded.
 Successful compensation retains the original failure stage and reason in the
 deployment and revision, including recovery after an interruption during cleanup.
 
-`/deployments` shows only the deployment list and a Create deployment link to
-`/deployments/new`. It loads no GitHub App or form catalogs. `/deployments/new`
-shows only the creation form and loads no deployment list or logs.
+`/deployments` and deployment details share a Jobs-style repository sidebar.
+The all-deployments entry shows authorized history; repository links open
+`/github/{owner}/{repo}/deployments` without source filters. Each repository uses
+a compact two-line summary: its name and aggregate activity badge appear
+above a muted active count. Long names truncate with the full name in the title.
+Queued-only repositories show Queued; a single planning, creating or running
+state shows Deploying; mixed states and stopping show Active deployments.
+Repositories without active deployments have no activity badge. Expand a repository
+independently to show queued, planning, creating, running and stopping deployments,
+identified by Branch/Tag/PR and a short deployment ID. A selected terminal deployment
+stays in navigation while its detail is open; repositories with only terminal
+history remain visible. The current repository expands on navigation. Returning
+from detail opens the repository's deployment list with Running selected. Source-filtered Jobs links
+remain supported. Lists and repository navigation paginate independently and
+refresh without resetting loaded history. Desktop sidebar and content scroll
+independently; narrow screens stack them with bounded sidebar scrolling.
+
+List pages use shared single-select Toggle Group segments for Running / Processing /
+Stopped / Failed with server-supplied counts. Running is the default; clicking the
+selected segment keeps it selected. The shared control uses a compact muted
+container and a raised background for the selected segment. URLs omit `status`
+for Running and otherwise save the selected status, preserving Branch/Tag/PR/Commit
+filters on refresh and browser back/forward. API calls always include the selected
+status. Changing selection resets history pagination and discards stale page
+responses without filtering the sidebar. Empty results retain the filters.
+Deployment details keep their separate Logs / Terminal / Deployment history tabs.
+
+The Create deployment link opens `/deployments/new`, preselecting the repository
+when entered from its workspace. List/detail pages load no GitHub App or form
+catalogs. `/deployments/new` shows only the form, without deployment history or logs.
 
 Deployment links use in-app navigation, including list/create/detail transitions
 and deployment actions from Jobs. These transitions retain the current session

@@ -1,4 +1,5 @@
 import { readableQuery } from "@/url-query"
+import { type DeploymentListStatus } from "@/deployment-status"
 
 // Jobs and deployments share repository/source identity. Deployment IDs are path segments.
 export type GitHubContext = {
@@ -107,15 +108,21 @@ export function deploymentPath(deployment: DeploymentSource, revision?: Revision
   return githubContextPath(context, "deployments", { deployment: deployment.id, revision: number })
 }
 
-export function deploymentListAPIPath(context: GitHubContext | null): string {
-  if (!context) return "/user/deployments"
-  const query = new URLSearchParams({ repository_full_name: context.repository })
-  if (context.kind === "pulls") query.set("pull_request_number", context.reference)
-  else {
+export function deploymentListPath(context: GitHubContext | null, status: DeploymentListStatus = "running"): string {
+  const selection = status === "running" ? {} : { status }
+  return context ? githubContextPath(context, "deployments", selection) : `/deployments${status === "running" ? "" : `?${new URLSearchParams({ status })}`}`
+}
+
+export function deploymentListAPIPath(context: GitHubContext | null, status: DeploymentListStatus = "running"): string {
+  const query = new URLSearchParams()
+  if (context) query.set("repository_full_name", context.repository)
+  if (context?.kind === "pulls") query.set("pull_request_number", context.reference)
+  else if (context) {
     if (context.reference) query.set("commit_sha", context.reference)
     if (context.name) query.set("ref", `refs/${context.kind === "tags" ? "tags" : "heads"}/${context.name}`)
   }
-  return `/user/deployments?${query}`
+  query.set("status", status)
+  return `/user/deployments${query.size ? `?${query}` : ""}`
 }
 
 export type DeploymentPrefill = { repository: string; source: "branch" | "tag" | "pull_request"; ref: string; commitSHA: string }

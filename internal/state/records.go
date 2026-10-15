@@ -122,6 +122,7 @@ type deploymentRecord struct {
 	SourceRepositoryID       int64  `gorm:"column:source_repository_id"`
 	SourceRepositoryFullName string `gorm:"column:source_repository_full_name"`
 	SourceRef                string `gorm:"column:source_ref"`
+	PullRequestTitle         string `gorm:"column:pull_request_title"`
 }
 
 func (deploymentRecord) TableName() string { return "deployments" }
@@ -157,6 +158,7 @@ type deploymentRevisionRecord struct {
 	SourceRepositoryID       int64  `gorm:"column:source_repository_id"`
 	SourceRepositoryFullName string `gorm:"column:source_repository_full_name"`
 	SourceRef                string `gorm:"column:source_ref"`
+	PullRequestTitle         string `gorm:"column:pull_request_title"`
 }
 
 func (deploymentRevisionRecord) TableName() string { return "deployment_revisions" }

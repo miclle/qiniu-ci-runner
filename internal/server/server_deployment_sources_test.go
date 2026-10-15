@@ -34,7 +34,7 @@ func TestPullRequestDeploymentPinsSourceAndRejectsInvalidContext(t *testing.T) {
 			fmt.Fprint(w, `[{"number":7,"title":"Preview"}]`)
 		case "/repos/hubot/project/pulls/7":
 			pullReads++
-			fmt.Fprintf(w, `{"number":7,"base":{"repo":{"id":%d,"full_name":"hubot/project"}},"head":{"sha":%q,"ref":"feature/fork","repo":{"id":%d,"full_name":"contributor/fork"}}}`, baseID, currentHead, headID)
+			fmt.Fprintf(w, `{"number":7,"title":"Preview deployment","base":{"repo":{"id":%d,"full_name":"hubot/project"}},"head":{"sha":%q,"ref":"feature/fork","repo":{"id":%d,"full_name":"contributor/fork"}}}`, baseID, currentHead, headID)
 		case "/repos/hubot/project/commits/refs/pull/7/head":
 			fmt.Fprintf(w, `{"sha":%q}`, head)
 		case "/repos/hubot/project/pulls/7/commits":
@@ -96,11 +96,11 @@ func TestPullRequestDeploymentPinsSourceAndRejectsInvalidContext(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Source != "pull_request" || created.PullRequestNumber != 7 || created.CommitSHA != old || created.SourceRepositoryID != 43 || created.SourceRepositoryFullName != "contributor/fork" || created.SourceRef != "feature/fork" {
+	if created.Source != "pull_request" || created.PullRequestNumber != 7 || created.PullRequestTitle != "Preview deployment" || created.CommitSHA != old || created.SourceRepositoryID != 43 || created.SourceRepositoryFullName != "contributor/fork" || created.SourceRef != "feature/fork" {
 		t.Fatalf("missing trusted source: %#v", created)
 	}
 	first, err := store.GetDeploymentRevision(created.ID, 1)
-	if err != nil || first.SourceRepositoryID != 43 || first.CommitSHA != old {
+	if err != nil || first.SourceRepositoryID != 43 || first.PullRequestTitle != "Preview deployment" || first.CommitSHA != old {
 		t.Fatalf("revision %#v %v", first, err)
 	}
 	previousReads := pullReads

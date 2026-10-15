@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { githubContextMatchesJobGroup, deploymentCreatePath, deploymentPrefillFromSearch, jobDeploymentContext, deploymentContext, deploymentListAPIPath, deploymentPath, githubContextFromPath, githubContextPath } from "./github-context-routes"
+import { githubContextMatchesJobGroup, deploymentCreatePath, deploymentPrefillFromSearch, jobDeploymentContext, deploymentContext, deploymentListAPIPath, deploymentListPath, deploymentPath, githubContextFromPath, githubContextPath } from "./github-context-routes"
+import { deploymentListStatuses, deploymentListStatusFromSearch } from "./deployment-status"
 import { appRouteAccess, deploymentIDFromPath, signInURL, userDataResources } from "./app-load-policy"
 
 describe("GitHub source context routes", () => {
@@ -24,7 +25,7 @@ describe("GitHub source context routes", () => {
     const revision = { number: 1, ref: "refs/heads/example/vite", commit_sha: "a".repeat(40) }
     expect(deploymentPath(deployment, revision)).toBe("/github/qiniu/deployment/deployments/d1?branch=example/vite&revision=1")
     expect(deploymentPath({ ...deployment, source: undefined, ref: "legacy" })).toBe("/deployments/d1")
-    expect(deploymentListAPIPath(deploymentContext(deployment, revision))).toContain("ref=refs%2Fheads%2Fexample%2Fvite")
+    expect(deploymentListAPIPath(deploymentContext(deployment, revision))).toContain("ref=refs%2Fheads%2Fexample%2Fvite&status=running")
     expect(deploymentPath({ ...deployment, pull_request_number: 125 }, revision)).toBe("/github/qiniu/deployment/pull_requests/125/deployments/d1?revision=1")
   })
   test("rejects malformed source paths and keeps creation separate", () => {
@@ -37,11 +38,25 @@ describe("GitHub source context routes", () => {
 test("repository-first routes keep source history independent from immutable commit selection", () => {
   const context = githubContextFromPath("/github/qiniu/deployment/deployments", "?branch=example/vite")
   expect(context).toEqual({ kind: "branches", repository: "qiniu/deployment", name: "example/vite", reference: "" })
-  expect(deploymentListAPIPath(context)).toBe("/user/deployments?repository_full_name=qiniu%2Fdeployment&ref=refs%2Fheads%2Fexample%2Fvite")
+  expect(deploymentListAPIPath(context)).toBe("/user/deployments?repository_full_name=qiniu%2Fdeployment&ref=refs%2Fheads%2Fexample%2Fvite&status=running")
   expect(githubContextFromPath("/github/pulls/qiniu/deployment/7/jobs")).toEqual(githubContextFromPath("/github/qiniu/deployment/pr/7/jobs"))
   expect(githubContextFromPath("/github/qiniu/deployment/pr/0/jobs")).toBeNull()
   expect(githubContextFromPath("/github/qiniu/deployment/branch/%zz/jobs")).toBeNull()
   expect(githubContextFromPath("/github/qiniu/deployment/run/1/deployments")).toBeNull()
+})
+
+test("deployment status filters preserve source context and readable list URLs", () => {
+  for (const source of [null, { kind: "repository", repository: "qiniu/deployment", reference: "" }, { kind: "branches", repository: "qiniu/deployment", name: "feature/中文 #1", reference: "a".repeat(40) }, { kind: "tags", repository: "qiniu/deployment", name: "release/v1", reference: "" }, { kind: "pulls", repository: "qiniu/deployment", reference: "7" }]) {
+    for (const status of deploymentListStatuses) {
+      const url = new URL(deploymentListPath(source, status), "https://example.com")
+      expect(deploymentListStatusFromSearch(url.search)).toEqual(status)
+      expect(githubContextFromPath(url.pathname, url.search)).toEqual(source)
+      const api = new URL(deploymentListAPIPath(source, status), url)
+      expect(api.searchParams.get("status")).toBe(status)
+      expect(api.searchParams.get("repository_full_name")).toBe(source?.repository ?? null)
+    }
+  }
+  for (const search of ["?status=unknown", "?status=running&status=failed", "?status=processing,running", "?status=", ""]) expect(deploymentListStatusFromSearch(search)).toBe("running")
 })
 
 test("Job creation links pin the selected Job, including older PR commits", () => {
@@ -77,7 +92,7 @@ test("repository collections preserve readable branch/tag filters and repository
     expect(context).toEqual({ kind: "repository", repository: "qiniu/deployment", reference: "" })
     expect(githubContextPath(context, view)).toBe(`/github/qiniu/deployment/${view}`)
     expect(appRouteAccess(`/github/qiniu/deployment/${view}`)).toBe("user")
-    expect(deploymentListAPIPath(context)).toBe("/user/deployments?repository_full_name=qiniu%2Fdeployment")
+    expect(deploymentListAPIPath(context)).toBe("/user/deployments?repository_full_name=qiniu%2Fdeployment&status=running")
     const prefill = new URL(deploymentCreatePath(context), "https://example.com")
     expect(deploymentPrefillFromSearch(prefill.search)).toEqual({ repository: "qiniu/deployment", source: "branch", ref: "", commitSHA: "" })
   }

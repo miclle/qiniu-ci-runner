@@ -10,7 +10,7 @@ the current task.
 - Before implementing, inspect `ui/src/components/ui/` and an existing page
   with the same interaction. Identify the component and reference surface in
   the implementation or handoff description.
-- Use the shared `Button`, `Input`, `Label`, `Select`, `Switch`, `Tabs`,
+- Use the shared `Button`, `Input`, `Label`, `Select`, `Switch`, `ToggleGroup`, `Tabs`,
   `Dialog`, `Sheet`, `Tooltip`, `Card`, `Badge`, and `Table` where applicable.
   Compose existing primitives before introducing a new reusable component.
 - Form dropdowns must use `Select`, `SelectTrigger`, `SelectValue`,
@@ -50,9 +50,11 @@ the current task.
 | --- | --- |
 | Form dropdown | Sandbox service region selector (`sandbox-api-region`) in `ui/src/components/user-dashboard.tsx` |
 | Deployment creation dropdowns | `ui/src/components/user-deployment-create-section.tsx` |
+| Segmented list filters | Shared `ToggleGroup` / `ToggleGroupItem` in `ui/src/components/ui/toggle-group.tsx`; compact muted container with a raised selected segment, matching the Runner event filter. Deployment status uses `type="single"` and retains exactly one selection |
 | Underlined workspace tabs | Shared `TabsList` / `TabsTrigger` with `variant="line"` in `ui/src/components/ui/tabs.tsx`; used by Jobs and deployment details |
 | Inline detail fields | Shared `DetailField` in `ui/src/components/ui/detail-field.tsx`; used by Jobs and deployment resources, with a three-column desktop grid and single-column narrow layout |
 | Protected list/detail layout | Jobs in `ui/src/components/user-dashboard.tsx` and `ui/src/components/runner-job-detail.tsx` |
+| Deployment repository workspace | `ui/src/components/deployment-navigation.tsx`; use shared Collapsible/Button/AppLink, repository links separate from expand controls, and Jobs sidebar sizing/scroll ownership |
 | Runner event rows | `ui/src/components/runner-event-timeline.tsx`; deployment logs retain their existing font |
 
 Reference the current shared implementation, not a copied snapshot. User-approved

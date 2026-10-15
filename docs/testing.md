@@ -862,7 +862,7 @@ and rejection of missing/rejected OAuth access. Verify non-owner creation and
 public-only template choices, owner-only private catalogs/settings, revision actor
 persistence and worker revalidation, and per-user PTY isolation. Deployment
 content remains local; a cold authorization cache may contact GitHub.
-UI tests must prove that `/deployments` only loads history and links to
+UI tests must prove that `/deployments` loads only local history/navigation and links to
 `/deployments/new`, that creation only loads form dependencies, and that both
 routes reload directly. Deployment UI verification also covers Branch/Tag discovery, empty and error retry
 states, version pagination, delayed source/scope responses, template selection,
@@ -870,6 +870,14 @@ create-to-detail navigation, direct `/deployments/{id}` reload, and before/after
 log pagination with history retained on errors. Run the focused Bun deployment
 interaction tests and `task ui-production-smoke`; its deployment fixture checks
 the production bundle, while authenticated real Sandbox acceptance remains separate.
+Navigation tests also cover more than 100 history rows, terminal-only repositories, exact-pair filtering before repository counts/pages, active summaries without credentials, independent history/sidebar pagination, retained selected terminal entries, delayed responses after repository/account switches, in-app back/forward, and desktop/narrow independent scrolling. Fixture browser checks do not establish real Sandbox acceptance.
+Single-select status-filter coverage includes authorized/source-scoped counts beyond the first page,
+all eight lifecycle states, current-state grouping for historical source matches,
+invalid/repeated/empty API CSV members, each UI status, default Running,
+exclusive selection and repeated clicks retaining the current status, empty results, source-preserving URL selection and reload,
+back/forward, keyboard focus and Space toggling, narrow-screen overflow, pagination reset, and
+late page rejection after switching status. Run `go test ./internal/state -run
+TestDeploymentStatus -count=1` and the `filters deployment status` production fixture.
 API regressions cover qualified branch/tag resolution, same-name idempotency
 conflicts, source-prefix length limits, and unauthorized discovery before provider reads.
 
