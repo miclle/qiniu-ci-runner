@@ -3,6 +3,7 @@ import { ArrowLeft, CalendarDays, Copy, GitBranch, GitCommitHorizontal, External
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 
+import { formatTime as formatEventTime } from "@/admin-format"
 import { AppLink } from "@/components/app-link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -116,6 +117,7 @@ export function UserDeploymentsSection({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [action, setAction] = useState<string | null>(null)
+  const [navigationRefresh, setNavigationRefresh] = useState(0)
   const generation = useRef(0)
   const selectedDeployment = deployments.find((item) => item.id === selectedID) ?? null
   const [revisionSelection, setRevisionSelection] = useState<{ id: string; number?: number } | null>(null)
@@ -123,11 +125,12 @@ export function UserDeploymentsSection({
   const selectedRevisionNumber = requestedRevision ?? selectedDeployment?.revision_number
   const selectRevision = useCallback((number: number) => {
     if (!selectedID) return
-    setRevisionSelection({ id: selectedID, number })
+    setRevisionSelection({ id: selectedID, number: number === selectedDeployment?.revision_number ? undefined : number })
     const url = new URL(window.location.href)
-    url.searchParams.set("revision", String(number))
+    if (number === selectedDeployment?.revision_number) url.searchParams.delete("revision")
+    else url.searchParams.set("revision", String(number))
     window.history.pushState(null, "", url)
-  }, [selectedID])
+  }, [selectedID, selectedDeployment?.revision_number])
   useEffect(() => {
     const onHistory = () => setRevisionSelection({ id: selectedID ?? "", number: revisionNumberFromURL() })
     window.addEventListener("popstate", onHistory)
@@ -136,7 +139,7 @@ export function UserDeploymentsSection({
   const selectedRevision = selectedDeployment?.revisions?.find((item) => item.number === selectedRevisionNumber) ?? (selectedDeployment?.selected_revision && selectedDeployment.selected_revision.number === selectedRevisionNumber ? selectedDeployment.selected_revision : null)
   useEffect(() => {
     if (!selectedDeployment || (requestedRevision && !selectedRevision)) return
-    const canonical = deploymentPath(selectedDeployment, selectedRevision, requestedRevision)
+    const canonical = deploymentPath(selectedDeployment, requestedRevision ? selectedRevision : null, requestedRevision)
     if (window.location.pathname + window.location.search === canonical) return
     window.history.replaceState(null, "", canonical)
     window.dispatchEvent(new window.PopStateEvent("popstate"))
@@ -161,7 +164,7 @@ export function UserDeploymentsSection({
     let cancelled = false
     setDeploymentResources(null)
     setDeploymentResourcesLoading(true)
-    const revisionQuery = selectedRevisionNumber ? `?revision=${selectedRevisionNumber}` : ""
+    const revisionQuery = selectedDeployment?.revision_number ? `?revision=${selectedDeployment.revision_number}` : ""
     void request(`/user/deployments/${encodeURIComponent(selectedDeploymentID)}/resources${revisionQuery}`)
       .then((value) => {
         if (!cancelled) setDeploymentResources(value as DeploymentResources)
@@ -174,7 +177,7 @@ export function UserDeploymentsSection({
         if (!cancelled) setDeploymentResourcesLoading(false)
       })
     return () => { cancelled = true }
-  }, [request, selectedDeploymentID, selectedRevisionNumber])
+  }, [request, selectedDeploymentID, selectedDeployment?.revision_number])
 
   const formatTime = useCallback((value?: string) => {
     if (!value) return "—"
@@ -258,8 +261,8 @@ export function UserDeploymentsSection({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <section className="border-b bg-muted/35 px-4 py-4 lg:px-6">
+    <div className={cn("min-h-0 flex-1 overflow-y-auto", deploymentID && "flex flex-col xl:overflow-hidden")}>
+      <section className="shrink-0 border-b bg-muted/35 px-4 py-4 lg:px-6">
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             {deploymentID ? <Button type="button" variant="outline" size="icon" aria-label={t("user.deploymentBack")} onClick={backToDeployments}><ArrowLeft /></Button> : null}
@@ -270,7 +273,7 @@ export function UserDeploymentsSection({
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             {!deploymentID ? <Button asChild><AppLink href={deploymentCreatePath(context)}><Plus className="h-4 w-4" />{t("user.createDeployment")}</AppLink></Button> : null}
-            <Button type="button" variant="outline" onClick={() => void loadDeployments()} disabled={loading}>
+            <Button type="button" variant="outline" onClick={() => { void loadDeployments(); setNavigationRefresh((value) => value + 1) }} disabled={loading}>
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
               {t("common.refresh")}
             </Button>
@@ -278,7 +281,9 @@ export function UserDeploymentsSection({
         </div>
       </section>
 
-      <section className="w-full min-w-0 space-y-4 p-4 lg:p-6">
+      <div className={cn("min-h-0", deploymentID && "grid flex-1 xl:grid-cols-[320px_minmax(0,1fr)] xl:overflow-hidden")} data-testid="deployment-layout">
+        {deploymentID ? <DeploymentNavigation key={currentLogin} request={request} selected={selectedDeployment} selectedID={deploymentID} refreshVersion={navigationRefresh} formatTime={formatTime} /> : null}
+      <section className={cn("w-full min-w-0 space-y-4 p-4 lg:p-6", deploymentID && "min-h-0 xl:overflow-y-auto")}>
         <div className="min-w-0 space-y-4">
           {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">{error}</div> : null}
           {loading && deployments.length === 0 ? <div className="flex items-center gap-2 rounded-lg border p-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />{t("user.loadingDeployments")}</div> : deployments.length === 0 ? <div className="rounded-lg border border-dashed p-8 text-center"><h2 className="font-semibold">{t("user.noDeployments")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("user.noDeploymentsDescription")}</p></div> : (
@@ -296,13 +301,65 @@ export function UserDeploymentsSection({
                   </div>
                 </AppLink>)}
               </div> : null}
-              {selectedDeployment ? <DeploymentDetail request={request} selectedRevisionNumber={selectedRevisionNumber} deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
+              {selectedDeployment ? <DeploymentDetail key={selectedDeployment.id} request={request} selectedRevisionNumber={selectedRevisionNumber} deployment={selectedDeployment} selectedRevision={selectedRevision} resources={deploymentResources} resourcesLoading={deploymentResourcesLoading} onSelectRevision={selectRevision} onLoadOlderRevisions={loadOlderRevisions} eventState={deploymentEvents} formatTime={formatTime} action={action} onAction={runAction} /> : null}
             </div>
           )}
         </div>
       </section>
+      </div>
     </div>
   )
+}
+
+function DeploymentNavigation({ request, selected, selectedID, refreshVersion, formatTime }: {
+  request: Request
+  selected: Deployment | null
+  selectedID: string
+  refreshVersion: number
+  formatTime: (value?: string) => string
+}) {
+  const { t } = useTranslation()
+  const [items, setItems] = useState<Deployment[]>([])
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const [refreshRevision, setRefreshRevision] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      setFailed(false)
+      try {
+        const value = await request("/user/deployments") as { items?: Deployment[] }
+        if (!cancelled) setItems(Array.isArray(value.items) ? value.items : [])
+      } catch {
+        if (!cancelled) setFailed(true)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void load()
+    return () => { cancelled = true }
+  }, [request, selectedID, refreshRevision, refreshVersion])
+  const visible = selected
+    ? items.some((item) => item.id === selected.id) ? items.map((item) => item.id === selected.id ? selected : item) : [selected, ...items]
+    : items
+  return <aside className="flex min-h-0 min-w-0 flex-col border-b bg-muted/20 xl:border-b-0 xl:border-r" data-testid="deployment-navigation">
+    <div className="flex h-10 shrink-0 items-center justify-between border-b px-4 text-sm font-medium">
+      <span>{t("user.deployments")}</span>
+      <Button asChild variant="ghost" size="icon" className="size-7"><AppLink href={deploymentCreatePath(null)} aria-label={t("user.createDeployment")}><Plus className="size-4" /></AppLink></Button>
+    </div>
+    {failed ? <div className="flex flex-wrap items-center gap-2 border-b p-3 text-xs text-muted-foreground" role="alert"><span>{t("user.deploymentLoadFailed")}</span><Button type="button" variant="outline" size="sm" onClick={() => setRefreshRevision((value) => value + 1)}>{t("user.tryAgain")}</Button></div> : null}
+    <nav aria-label={t("user.deployments")} className="max-h-60 overflow-y-auto xl:min-h-0 xl:max-h-none xl:flex-1">
+      {visible.map((item) => <AppLink key={item.id} href={deploymentPath(item)} aria-current={item.id === selectedID ? "page" : undefined} className={cn("block border-b border-l-2 px-4 py-3 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", item.id === selectedID ? "border-l-primary bg-primary/5" : "border-l-transparent")}>
+        <div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-all text-sm font-semibold">{item.repository_full_name}</span><DeploymentStatus status={item.status} /></div>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="break-all">{item.pull_request_number ? t("user.deploymentPullRequestNumber", { number: item.pull_request_number }) : `${t(item.source === "tag" ? "user.deploymentTag" : "user.deploymentBranch")} ${displayRevisionRef(item.ref) || "—"}`}</span>
+          <time dateTime={item.updated_at || item.created_at}>{formatTime(item.updated_at || item.created_at)}</time>
+        </div>
+      </AppLink>)}
+      {loading && !visible.length ? <p className="flex items-center gap-2 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t("user.loadingDeployments")}</p> : null}
+    </nav>
+  </aside>
 }
 
 function DeploymentDetail({ request, selectedRevisionNumber, deployment, selectedRevision, resources, resourcesLoading, onSelectRevision, onLoadOlderRevisions, eventState, formatTime, action, onAction }: {
@@ -323,13 +380,16 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
   const { events, loading, error, hasOlder, refresh, loadOlder } = eventState
   const canStop = activeStatuses.has(deployment.status)
   const canRetry = ["failed", "completed", "expired"].includes(deployment.status)
-  const terminalAvailable = deployment.status === "running" && Boolean(deployment.sandbox_id) && selectedRevisionNumber === deployment.revision_number
+  const terminalAvailable = deployment.status === "running" && Boolean(deployment.sandbox_id)
+  const viewingHistory = Boolean(selectedRevisionNumber && selectedRevisionNumber !== deployment.revision_number)
+  const [activeTab, setActiveTab] = useState("logs")
+  const viewRevision = (number: number) => { onSelectRevision(number); setActiveTab("logs") }
   const revisions = deployment.revisions ?? []
   const [redeployOpen, setRedeployOpen] = useState(false)
   const [redeployMode, setRedeployMode] = useState<"latest" | "revision">(deployment.source === "branch" || deployment.source === "pull_request" ? "latest" : "revision")
   const [redeployRevision, setRedeployRevision] = useState(selectedRevision?.number ?? deployment.revision_number ?? revisions[0]?.number ?? 1)
   const resourceSnapshot = {
-    ...(selectedRevision ?? deployment),
+    ...deployment,
     ...(resources?.template_id ? { template_id: resources.template_id } : {}),
     ...(resources?.template_name ? { template_name: resources.template_name } : {}),
     ...(resources?.template_cpu ? { template_cpu: resources.template_cpu } : {}),
@@ -339,14 +399,6 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
     ...(resources?.sandbox_region ? { sandbox_region: resources.sandbox_region } : {}),
     ...(resources?.expires_at ? { expires_at: resources.expires_at } : {}),
   }
-  const formatLogTime = (value: string) => {
-    const parsed = new Date(value)
-    if (Number.isNaN(parsed.getTime())) return value
-    const time = new Intl.DateTimeFormat(i18n.resolvedLanguage === "zh" ? "zh-CN" : "en", {
-      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
-    }).format(parsed)
-    return `${time}.${String(parsed.getMilliseconds()).padStart(3, "0")}`
-  }
   return <div className="space-y-4">
     <Card className="gap-4 rounded-none border-0 border-b bg-transparent pb-4 pt-0 shadow-none">
       <CardHeader className="px-0">
@@ -355,33 +407,33 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
             <CardTitle className="break-words text-2xl">{deployment.repository_full_name}</CardTitle>
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <DeploymentStatus status={deployment.status} />
-              <span>{deployment.pull_request_number ? `#${deployment.pull_request_number}` : displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</span>
+              <span>{t("user.deploymentCurrentRevision", { number: deployment.revision_number ?? 1 })}</span>
+              <span>{deployment.pull_request_number ? t("user.deploymentPullRequestNumber", { number: deployment.pull_request_number }) : displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</span>
               {deployment.source_repository_full_name ? <span>{deployment.source_repository_full_name}:{deployment.source_ref}</span> : null}
               <span aria-hidden="true">·</span><DeploymentCommit repository={deployment.source_repository_full_name || deployment.repository_full_name} sha={deployment.commit_sha} />
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
               <span>{t("user.deploymentCreatedAt")} {formatTime(deployment.created_at)}</span>
               {deployment.last_successful_revision_number ? <span>
-                {t("user.deploymentLastSuccessful")} <button type="button" className="text-primary hover:underline" onClick={() => onSelectRevision(deployment.last_successful_revision_number!)}>#{deployment.last_successful_revision_number}</button>
+                {t("user.deploymentLastSuccessful")} <button type="button" className="text-primary hover:underline" onClick={() => viewRevision(deployment.last_successful_revision_number!)}>{t("user.deploymentRevisionShortNumber", { number: deployment.last_successful_revision_number })}</button>
               </span> : null}
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" variant="outline" disabled={!canStop || Boolean(action)} onClick={() => onAction("stop")}><Square className="h-3.5 w-3.5" />{t("user.stopDeployment")}</Button>
-            <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode(deployment.source === "branch" || deployment.source === "pull_request" ? "latest" : "revision"); setRedeployRevision(selectedRevision?.number ?? deployment.revision_number ?? revisions[0]?.number ?? 1); setRedeployOpen(true) }}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
+            <Button type="button" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode(deployment.source === "branch" || deployment.source === "pull_request" ? "latest" : "revision"); setRedeployRevision(deployment.revision_number ?? revisions[0]?.number ?? 1); setRedeployOpen(true) }}><RotateCcw className="h-3.5 w-3.5" />{t("user.retryDeployment")}</Button>
             <Button type="button" size="sm" variant="outline" disabled={Boolean(action)} onClick={() => onAction("delete")}><Trash2 className="h-3.5 w-3.5" />{t("common.delete")}</Button>
           </div>
         </div>
       </CardHeader>
-      {deployment.endpoint ? <CardContent className="space-y-2 px-0">
-        <a className="inline-flex items-center gap-2 break-all text-sm font-medium text-primary hover:underline" href={deployment.endpoint} target="_blank" rel="noopener noreferrer">{deployment.endpoint}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></a>
-        {deployment.endpoint_access === "public" ? <p className="text-xs text-muted-foreground">{t("user.deploymentEndpointPublic")}</p> : null}
+      {deployment.endpoint ? <CardContent className="px-0">
+        <DeploymentEndpoint endpoint={deployment.endpoint} isPublic={deployment.endpoint_access === "public"} />
       </CardContent> : null}
     </Card>
     <Card className="gap-3 rounded-none border-0 border-b bg-transparent pb-4 pt-0 shadow-none">
       <CardHeader className="px-0"><div className="flex items-center gap-2"><CardTitle>{t("user.deploymentResources")}</CardTitle>{resourcesLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label={t("common.loading")} /> : null}</div><CardDescription>{t("user.deploymentResourcesDescription")}</CardDescription></CardHeader>
       <CardContent className="px-0">
-        <dl className="grid gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-7">
+        <dl className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-7">
           <Info label={t("user.deploymentTemplate")} value={resourceSnapshot.template_name || resourceSnapshot.template_id || "—"} mono={!resourceSnapshot.template_name} />
           <Info label={t("user.deploymentCPU")} value={resourceSnapshot.template_cpu ? `${resourceSnapshot.template_cpu} vCPU` : "—"} />
           <Info label={t("user.deploymentMemory")} value={resourceSnapshot.template_memory_mb ? `${resourceSnapshot.template_memory_mb} MB` : "—"} />
@@ -392,44 +444,29 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         </dl>
       </CardContent>
     </Card>
-    <div className="grid lg:grid-cols-[280px_minmax(0,1fr)]" data-testid="deployment-workspace">
-      <Card className="min-w-0 gap-0 rounded-none border-0 border-b bg-muted/20 py-0 shadow-none lg:border-b-0 lg:border-r" data-testid="deployment-history">
-        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-4" data-testid="deployment-history-header">
-          <CardTitle className="text-sm">{t("user.deploymentHistory")}</CardTitle><Badge variant="secondary">{revisions.length}</Badge>
-        </div>
-        <CardContent className="p-0">
-          <p className="px-4 py-3 text-xs text-muted-foreground">{t("user.deploymentHistoryDescription")}</p>
-          {revisions.map((revision) => <button key={revision.id} type="button" aria-pressed={revision.number === selectedRevision?.number} onClick={() => onSelectRevision(revision.number)} className={cn("flex w-full items-start gap-3 border-l-2 px-4 py-2.5 text-left transition-colors", revision.number === selectedRevision?.number ? "border-primary bg-primary/5" : "border-transparent hover:bg-accent")}>
-            <span aria-hidden="true" className={cn("mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full", revision.status === "failed" ? "bg-destructive" : revision.status === "running" ? "bg-primary" : "bg-muted-foreground/50")} />
-            <span className="min-w-0 flex-1 space-y-2">
-              <span className="flex flex-wrap items-center gap-2 text-sm"><strong>{t("user.deploymentRevisionNumber", { number: revision.number })}</strong><DeploymentStatus status={revision.status} /></span>
-              <span className="block text-xs text-muted-foreground">{formatTime(revision.created_at)}</span>
-            </span>
-            <code className="mt-1 text-xs text-muted-foreground">{revision.commit_sha.slice(0, 8)}</code>
-          </button>)}
-          {deployment.revisions_has_more ? <Button type="button" variant="ghost" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
-        </CardContent>
-      </Card>
-      <Tabs defaultValue="logs" className="min-w-0 gap-0 pt-3 lg:pt-0" data-testid="deployment-output">
-        <TabsList className="h-10 w-full shrink-0 justify-start gap-6 rounded-none border-b bg-transparent px-4 py-0 text-muted-foreground">
-          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="logs">{t("user.deploymentEvents")}</TabsTrigger>
-          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="terminal">{t("common.terminal")}</TabsTrigger>
+    <div className="min-w-0" data-testid="deployment-workspace">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 gap-0" data-testid="deployment-output">
+        <TabsList className="h-10 w-full shrink-0 justify-start gap-3 overflow-x-auto rounded-none border-b bg-transparent px-0 py-0 text-muted-foreground sm:gap-6 sm:px-4">
+          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-xs font-medium shadow-none hover:text-foreground sm:text-sm data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="logs">{t("user.deploymentEvents")}</TabsTrigger>
+          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-xs font-medium shadow-none hover:text-foreground sm:text-sm data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="terminal">{t("common.terminal")}</TabsTrigger>
+          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-xs font-medium shadow-none hover:text-foreground sm:text-sm data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="history">{t("user.deploymentHistory")}</TabsTrigger>
         </TabsList>
         <TabsContent value="logs" className="m-0">
+          {viewingHistory ? <div className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm" data-testid="deployment-historical-notice">
+            <span>{t("user.deploymentViewingHistory", { number: selectedRevisionNumber! })}</span>
+            <Button type="button" variant="outline" size="sm" onClick={() => viewRevision(deployment.revision_number!)}>{t("user.deploymentReturnCurrent")}</Button>
+          </div> : null}
       <Card className="min-w-0 gap-0 rounded-none border-0 bg-transparent py-0 shadow-none">
         <CardHeader className="px-4 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-2">
-              <CardTitle>{t("user.deploymentEvents")}</CardTitle>
-              {selectedRevision ? <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span>{t("user.deploymentRevisionNumber", { number: selectedRevision.number })}</span>
-                {selectedRevision.ref ? <><span aria-hidden="true">·</span><span>{t(selectedRevision.ref.startsWith("refs/pull/") ? "user.deploymentPullRequest" : selectedRevision.ref.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} <code>{displayRevisionRef(selectedRevision.ref)}</code></span></> : null}
-                <span aria-hidden="true">·</span><DeploymentCommit repository={selectedRevision.source_repository_full_name || deployment.repository_full_name} sha={selectedRevision.commit_sha} />
-              </CardDescription> : null}
-            </div>
-            <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+            {selectedRevision ? <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>{t("user.deploymentRevisionNumber", { number: selectedRevision.number })}</span>
+              {selectedRevision.ref ? <><span aria-hidden="true">·</span><span>{t(selectedRevision.ref.startsWith("refs/pull/") ? "user.deploymentPullRequest" : selectedRevision.ref.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} <code>{displayRevisionRef(selectedRevision.ref)}</code></span></> : null}
+              <span aria-hidden="true">·</span><DeploymentCommit repository={selectedRevision.source_repository_full_name || deployment.repository_full_name} sha={selectedRevision.commit_sha} />
+            </CardDescription> : null}
+            <div className="ml-auto flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
+              <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void refresh()}><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />{t("common.refresh")}</Button>
               <span>{t("user.deploymentLogLines", { count: events.length })}</span>
-              <Button type="button" variant="ghost" size="sm" disabled={loading} onClick={() => void refresh()}>{loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{t("common.refresh")}</Button>
             </div>
           </div>
         </CardHeader>
@@ -437,20 +474,50 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           {selectedRevision?.failure_reason ? <p className="mx-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{selectedRevision.failure_stage || t("user.deploymentFailure")}: {selectedRevision.failure_reason}</p> : null}
           {error ? <p role="alert" className="px-4 text-sm text-destructive">{t("user.deploymentEventsFailed")}: {error}</p> : null}
           {hasOlder ? <Button type="button" variant="outline" size="sm" className="ml-4" disabled={loading} onClick={() => void loadOlder()}>{t("user.deploymentEventsOlder")}</Button> : null}
-          {events.length === 0 ? <p className="px-4 text-sm text-muted-foreground">{t("user.deploymentNoEvents")}</p> : <div data-testid="deployment-logs" className="deployment-console overflow-x-auto font-mono text-xs leading-5 sm:text-sm">
-            {events.map((event, index) => <div data-testid="deployment-log-line" key={event.id} className={cn("grid grid-cols-[1.5rem_6rem_minmax(0,1fr)] gap-2 px-3 py-1 transition-colors sm:grid-cols-[2rem_7.5rem_minmax(0,1fr)] sm:px-4", event.event_type === "failure" ? "bg-destructive/5 text-destructive hover:bg-destructive/10" : event.stream === "stderr" ? "bg-amber-500/5 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400" : "hover:bg-muted/50") }>
-              <span aria-hidden="true" className="select-none text-right text-muted-foreground/60">{index + 1}</span>
-              <time dateTime={event.created_at} title={`${formatTime(event.created_at)} · ${event.stage || event.event_type}${event.stream ? ` · ${event.stream}` : ""}`} className="whitespace-nowrap text-muted-foreground">{formatLogTime(event.created_at)}</time>
-              <pre className="min-w-0 whitespace-pre-wrap break-words">{event.message}</pre>
-            </div>)}
-          </div>}
+          <div data-testid="deployment-logs" className="deployment-console mx-4 rounded-lg border bg-muted/20 px-4 py-2" aria-busy={loading}>
+            {events.length ? events.map((event) => <div data-testid="deployment-log-line" key={event.id} className="relative grid gap-1 border-l py-0.5 pl-5 transition-colors hover:bg-muted/50 sm:grid-cols-[190px_90px_minmax(0,1fr)] sm:gap-3">
+              <span aria-hidden="true" className={cn("absolute -left-1 top-2 size-2 rounded-full ring-4 ring-background", event.event_type === "failure" ? "bg-destructive" : event.stream === "stderr" ? "bg-amber-500" : event.stream === "stdout" ? "bg-slate-400" : "bg-sky-500")} />
+              <time dateTime={event.created_at} className="font-mono text-[11px] text-muted-foreground">{formatEventTime(event.created_at, i18n.resolvedLanguage, { fractionalSecondDigits: 3 })}</time>
+              <span className="font-mono text-[11px] text-muted-foreground">{event.stream || event.event_type}{event.stage ? ` · ${event.stage}` : ""}</span>
+              <pre className={cn("min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-normal", event.event_type === "failure" && "text-destructive")}>{event.message.trimEnd()}</pre>
+            </div>)
+            : <p className="py-8 text-center text-sm text-muted-foreground">{loading ? t("common.loading") : t("user.deploymentNoEvents")}</p>}
+          </div>
         </CardContent>
       </Card>
         </TabsContent>
         <TabsContent value="terminal" className="m-0">
+          <p className="px-4 py-3 text-xs text-muted-foreground">{t("user.deploymentCurrentRevision", { number: deployment.revision_number ?? 1 })}</p>
           {terminalAvailable ? <Suspense fallback={<p className="p-5 text-sm text-muted-foreground">{t("common.loading")}</p>}>
-            <DeploymentTerminal key={`${deployment.id}:${deployment.revision_number}:${deployment.sandbox_id}`} endpoint={`/user/deployments/${encodeURIComponent(deployment.id)}/revisions/${deployment.revision_number}`} request={request} />
+            <DeploymentTerminal key={`${deployment.id}:${deployment.revision_number}:${deployment.sandbox_id}:${selectedRevisionNumber}`} endpoint={`/user/deployments/${encodeURIComponent(deployment.id)}/revisions/${deployment.revision_number}`} request={request} />
           </Suspense> : <div className="bg-muted/20 px-4 py-12 text-center text-sm text-muted-foreground">{t("user.deploymentTerminalUnavailable")}</div>}
+        </TabsContent>
+        <TabsContent value="history" className="m-0" data-testid="deployment-history">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-muted-foreground">
+            <p>{t("user.deploymentHistoryDescription")}</p>
+            <span>{t("user.deploymentHistoryCount", { count: revisions.length })}</span>
+          </div>
+          <div className="divide-y border-y">
+            {revisions.map((revision) => <div key={revision.id} className={cn("flex flex-wrap items-center justify-between gap-3 border-l-2 px-4 py-3", revision.number === deployment.revision_number ? "border-primary bg-primary/5" : "border-transparent")}>
+              <div className="min-w-0 space-y-2">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <strong>{t("user.deploymentRevisionNumber", { number: revision.number })}</strong>
+                  <DeploymentStatus status={revision.status} />
+                  {revision.number === deployment.revision_number ? <Badge variant="secondary">{t("user.deploymentCurrent")}</Badge> : null}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <span>{displayRevisionRef(revision.ref)}</span>
+                  <DeploymentCommit repository={revision.source_repository_full_name || deployment.repository_full_name} sha={revision.commit_sha} />
+                  <span>{formatTime(revision.created_at)}</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => viewRevision(revision.number)}>{t("user.deploymentViewRevisionLogs", { number: revision.number })}</Button>
+                <Button type="button" variant="ghost" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode("revision"); setRedeployRevision(revision.number); setRedeployOpen(true) }}>{t("user.deploymentRedeployRevision")}</Button>
+              </div>
+            </div>)}
+          </div>
+          {deployment.revisions_has_more ? <Button type="button" variant="outline" size="sm" className="m-4" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
         </TabsContent>
       </Tabs>
     </div>
@@ -465,7 +532,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
             <Badge variant="secondary">{displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)}</Badge>
           </RedeployOption> : null}
           <RedeployOption selected={redeployMode === "revision"} onSelect={() => setRedeployMode("revision")} title={t("user.redeployRevisionTitle")} description={t("user.redeployRevisionDescription")}>
-            <Badge variant="secondary">#{redeployRevision} · {revisions.find((revision) => revision.number === redeployRevision)?.commit_sha.slice(0, 8) ?? deployment.commit_sha.slice(0, 8)}</Badge>
+            <Badge variant="secondary">{t("user.deploymentRevisionShortNumber", { number: redeployRevision })} · {revisions.find((revision) => revision.number === redeployRevision)?.commit_sha.slice(0, 8) ?? deployment.commit_sha.slice(0, 8)}</Badge>
           </RedeployOption>
         </div>
         <DialogFooter>
@@ -474,6 +541,27 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  </div>
+}
+
+function DeploymentEndpoint({ endpoint, isPublic }: { endpoint: string; isPublic: boolean }) {
+  const { t } = useTranslation()
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(endpoint)
+      toast.success(t("user.deploymentEndpointCopied"))
+    } catch {
+      toast.error(t("user.deploymentEndpointCopyFailed"))
+    }
+  }
+  return <div className="space-y-1.5">
+    <div className="text-xs text-muted-foreground">{t("user.deploymentEndpoint")}</div>
+    <div className="flex min-w-0 items-start gap-1 rounded-md border border-border bg-muted/30 px-3 py-2">
+      <a className="min-w-0 break-all text-sm font-medium text-primary hover:underline" href={endpoint} target="_blank" rel="noopener noreferrer">{endpoint}</a>
+      <Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label={t("user.deploymentCopyEndpoint")} title={t("user.deploymentCopyEndpoint")} onClick={() => void copy()}><Copy className="size-3.5" /></Button>
+      <Button asChild variant="ghost" size="icon" className="size-6 shrink-0"><a href={endpoint} target="_blank" rel="noopener noreferrer" aria-label={t("user.deploymentOpenEndpoint")} title={t("user.deploymentOpenEndpoint")}><ExternalLink className="size-3.5" /></a></Button>
+    </div>
+    {isPublic ? <p className="text-xs text-muted-foreground">{t("user.deploymentEndpointPublic")}</p> : null}
   </div>
 }
 

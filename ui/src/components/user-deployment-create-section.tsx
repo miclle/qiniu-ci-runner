@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { Deployment } from "@/components/user-deployments-section"
 import type { RequestError } from "@/user-auth-errors"
 import { toast } from "sonner"
@@ -226,27 +227,42 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
               <form className="space-y-4" onSubmit={submit}>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-installation">{t("user.deploymentScope")}</Label>
-                  <select id="deployment-installation" value={installationID} onChange={(event) => changeSourceSelection(() => { setInstallationID(event.target.value); setRepository("") })} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                    {availableInstallations.map((installation) => <option key={installation.id} value={installation.id}>{installation.account_login || installation.account_name || installation.installation_id}</option>)}
-                  </select>
+                  <Select name="deployment-installation" value={installationID} onValueChange={(value) => { if (value) changeSourceSelection(() => { setInstallationID(value); setRepository("") }) }} disabled={availableInstallations.length === 0}>
+                    <SelectTrigger id="deployment-installation" className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {availableInstallations.map((installation) => <SelectItem key={installation.id} value={String(installation.id)}>{installation.account_login || installation.account_name || installation.installation_id}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-repository">{t("common.repository")}</Label>
-                  <select id="deployment-repository" value={repository} onChange={(event) => changeSourceSelection(() => setRepository(event.target.value))} disabled={loadingRepositories || repositories.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                    <option value="">{loadingRepositories ? t("repositories.loadingRepositories") : repositories.length === 0 ? t("user.noDeploymentRepositories") : t("user.deploymentSelectRepository")}</option>
-                    {repositories.map((item) => <option key={item} value={item}>{item}</option>)}
-                  </select>
+                  <Select name="deployment-repository" value={repository} onValueChange={(value) => { if (value) changeSourceSelection(() => setRepository(value)) }} disabled={loadingRepositories || repositories.length === 0}>
+                    <SelectTrigger id="deployment-repository" className="w-full"><SelectValue placeholder={loadingRepositories ? t("repositories.loadingRepositories") : repositories.length === 0 ? t("user.noDeploymentRepositories") : t("user.deploymentSelectRepository")} /></SelectTrigger>
+                    <SelectContent>
+                      {repositories.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-source">{t("user.deploymentVersionSource")}</Label>
-                  <select id="deployment-source" value={source} onChange={(event) => changeSourceSelection(() => setSource(event.target.value as "branch" | "tag" | "pull_request"))} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"><option value="branch">{t("user.deploymentBranch")}</option><option value="tag">{t("user.deploymentTag")}</option><option value="pull_request">{t("user.deploymentPullRequest")}</option></select>
+                  <Select name="deployment-source" value={source} onValueChange={(value) => { if (value) changeSourceSelection(() => setSource(value as "branch" | "tag" | "pull_request")) }}>
+                    <SelectTrigger id="deployment-source" className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="branch">{t("user.deploymentBranch")}</SelectItem>
+                      <SelectItem value="tag">{t("user.deploymentTag")}</SelectItem>
+                      <SelectItem value="pull_request">{t("user.deploymentPullRequest")}</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 {source === "pull_request" ? <p className="text-sm text-muted-foreground">{t("user.deploymentPullRequestHint")}</p> : null}
                 <div className="space-y-2">
                   <Label htmlFor="deployment-ref">{t(source === "pull_request" ? "user.deploymentSelectPullRequest" : source === "branch" ? "user.deploymentSelectBranch" : "user.deploymentSelectTag")}</Label>
-                  <select id="deployment-ref" value={selectedRef} onChange={(event) => changeSourceSelection(() => setRef(event.target.value))} disabled={loadingReferences || references.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                    {references.length === 0 ? <option value="">{loadingReferences ? t("user.deploymentReferencesLoading") : t("user.deploymentReferencesEmpty")}</option> : references.map((name) => <option key={name} value={name}>{source === "pull_request" ? `#${name}` : name}</option>)}
-                  </select>
+                  <Select name="deployment-ref" value={selectedRef} onValueChange={(value) => { if (value) changeSourceSelection(() => setRef(value)) }} disabled={loadingReferences || references.length === 0}>
+                    <SelectTrigger id="deployment-ref" className="w-full"><SelectValue placeholder={loadingReferences ? t("user.deploymentReferencesLoading") : t("user.deploymentReferencesEmpty")} /></SelectTrigger>
+                    <SelectContent>
+                      {references.map((name) => <SelectItem key={name} value={name}>{source === "pull_request" ? `#${name}` : name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                   {referenceError ? <p role="alert" className="text-sm text-destructive">{referenceError}</p> : null}
                   <div className="flex gap-2"><Button type="button" variant="ghost" size="sm" disabled={loadingReferences} onClick={() => setReferenceReload((value) => value + 1)}><RefreshCw className="h-3.5 w-3.5" />{t("user.deploymentReferencesRefresh")}</Button>{referenceCatalog?.key === referenceKey && referenceCatalog.hasMore ? <Button type="button" variant="ghost" size="sm" disabled={loadingReferences} onClick={() => void loadMoreReferences()}>{t("user.deploymentReferencesMore")}</Button> : null}</div>
                 </div>
@@ -255,9 +271,12 @@ export function UserDeploymentCreateSection({ githubApp, currentLogin, loadingGi
                 <div className="space-y-2"><Label htmlFor="deployment-ttl">{t("user.deploymentTTL")}</Label><Input id="deployment-ttl" type="number" min={300} max={86400} step={60} value={ttlSeconds} onChange={(event) => setTTLSeconds(event.target.value)} /></div>
                 <div className="space-y-2">
                   <Label htmlFor="deployment-template">{t("user.deploymentTemplate")}</Label>
-                  <select id="deployment-template" value={selectedTemplate?.template_id ?? ""} onChange={(event) => setTemplateID(event.target.value)} disabled={loadingTemplates || templates.length === 0} className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-                    {templates.length === 0 ? <option value="">{loadingTemplates ? t("user.deploymentTemplatesLoading") : t("user.deploymentTemplatesEmpty")}</option> : templates.map((item) => <option key={item.template_id} value={item.template_id}>{templateName(item)} · {item.template_id}</option>)}
-                  </select>
+                  <Select name="deployment-template" value={selectedTemplate?.template_id ?? ""} onValueChange={(value) => { if (value) setTemplateID(value) }} disabled={loadingTemplates || templates.length === 0}>
+                    <SelectTrigger id="deployment-template" className="w-full"><SelectValue placeholder={loadingTemplates ? t("user.deploymentTemplatesLoading") : t("user.deploymentTemplatesEmpty")} /></SelectTrigger>
+                    <SelectContent>
+                      {templates.map((item) => <SelectItem key={item.template_id} value={item.template_id}>{templateName(item)} · {item.template_id}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                   {templateCatalog?.key === templateKey && templateCatalog.region ? <p className="text-xs text-muted-foreground">{templateCatalog.region}</p> : null}
                   {templateError ? <div role="alert" className="space-y-1 text-sm"><p className="text-destructive">{templateError}</p>{selectedInstallation?.manageable !== false ? <AppLink className="text-primary underline" href={selectedInstallation?.account_type?.toLowerCase() === "organization" ? `/organizations/${encodeURIComponent(selectedInstallation.account_login ?? "")}/preferences` : "/account/preferences"}>{t("user.deploymentPreferences")}</AppLink> : null}</div> : null}
                   <Button type="button" variant="ghost" size="sm" disabled={loadingTemplates} onClick={() => setTemplateReload((value) => value + 1)}><RefreshCw className="h-3.5 w-3.5" />{t("user.deploymentTemplatesRefresh")}</Button>

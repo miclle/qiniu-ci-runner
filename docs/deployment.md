@@ -250,13 +250,19 @@ The local detail response includes `revision_number`, the newest 100 `revisions`
 `/events` endpoint reads the current revision. These reads authorize the exact repository through Jobs' cache, set `Cache-Control: no-store`, and perform no provider I/O.
 Encrypted plans and service credentials are never included in these responses.
 
-The detail layout puts saved target configuration above a revision history and
-log viewer. Each row contains a line number, a millisecond timestamp and the
-raw retained message; stderr and failures have separate emphasis. Switching a
-revision resets its cursors and rejects responses from the previous revision.
-`/deployments/{id}?revision=N` preserves selection through refresh and history.
-A selected old revision outside the newest page is loaded directly. No live
-Sandbox probe is needed to render the page.
+The detail layout uses a deployment navigation sidebar beside the current
+status, source, access URL and target configuration. On desktop, navigation and
+detail content scroll independently; narrow screens stack them. The sidebar loads the local
+list independently and cannot delay rendering the detail. Deployment logs are
+the default tab, followed by Terminal and Deployment history. History rows offer
+revision logs and redeploy from the saved revision, subject to lifecycle rules.
+Logs use the Runner timeline layout with millisecond timestamps, stream/stage,
+retained messages and the deployment's JetBrains Mono font. Switching a revision
+resets cursors and rejects responses from the previous revision. Historical logs
+show an explicit notice and a return-to-current action; the overview and resources
+continue to describe the current deployment. `revision=N` preserves log selection
+through refresh and browser history, including an old revision outside the newest
+page. No live Sandbox probe is needed to render the page.
 
 Existing databases are upgraded additively with revision columns and indexes,
 and missing revisions are backfilled as #1 without changing existing source,
@@ -404,7 +410,9 @@ revocation, private Contents permissions and a second user's access remain separ
 
 ## Deployment Web terminal
 
-The detail page has Deployment logs and Terminal tabs. Only the current running,
+The detail page has Deployment logs, Terminal and Deployment history tabs.
+The Terminal tab always labels and connects the current deployment, even when
+the URL selects historical logs. Only the current running,
 unexpired revision with a Sandbox ID can open a terminal. Connection is manual;
 switching tabs/revisions, leaving the detail page or stopping the deployment
 closes the interactive shell. The shell can inspect processes and application

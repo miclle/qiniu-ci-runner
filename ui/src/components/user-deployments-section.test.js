@@ -37,7 +37,7 @@ describe("UserDeploymentCreateSection", () => {
     const html = renderPage()
 
     expect(html).toContain("Create deployment")
-    expect(html).toContain("miclle/demo")
+    expect(html.match(/role="combobox"/g)).toHaveLength(5)
     expect(html).toContain(".qiniu/deploy.yaml")
     expect(html).toContain("Version source")
     expect(html).toContain("Select branch")
@@ -89,7 +89,7 @@ async function mountPage(props, { chooseRepository = true, page = "create" } = {
   const base = { githubApp: { installations: [installation(12)] }, currentLogin: "miclle", loadingGitHubApp: false, onOpenDeployment: () => {}, ...props }
   await act(async () => root.render(createElement(page === "create" ? UserDeploymentCreateSection : UserDeploymentsSection, base)))
   await settle()
-  const repository = container.querySelector("#deployment-repository")
+  const repository = container.querySelector('select[name="deployment-repository"]')
   if (chooseRepository && repository) {
     await selectOption(container, "#deployment-repository", [...repository.options].find((option) => option.value)?.value ?? "")
     await settle()
@@ -97,9 +97,19 @@ async function mountPage(props, { chooseRepository = true, page = "create" } = {
   return { root, container, props: base }
 }
 function button(container, name) { return [...container.querySelectorAll("button")].find((item) => item.textContent.trim() === name) }
+async function selectRevisionURL(number) {
+  await act(async () => {
+    const url = new URL(window.location.href)
+    url.searchParams.set("revision", String(number))
+    window.history.pushState(null, "", url)
+    window.dispatchEvent(new window.PopStateEvent("popstate"))
+  })
+  await settle()
+}
 async function selectOption(container, id, value) {
   await act(async () => {
-    const select = container.querySelector(id)
+    // Exercise Radix's native form bridge here; production smoke covers the popup.
+    const select = container.querySelector(`select[name="${id.slice(1)}"]`)
     select.value = value
     select.dispatchEvent(new Event("change", { bubbles: true }))
   })
@@ -109,7 +119,8 @@ describe("deployment interaction", () => {
   test("uses saved revision commits for links and copying without putting them in the URL", async () => {
     const sha = "b".repeat(40)
     const revision = { ...deployment("d1-r1", "completed"), number: 1, ref: "refs/heads/example/vite", commit_sha: sha, source_repository_full_name: "contributor/fork" }
-    const saved = { ...deployment("d1", "completed"), source: "branch", ref: "example/vite", revision_number: 2, revisions: [revision], selected_revision: revision }
+    const endpoint = "https://deployment-preview.example.test"
+    const saved = { ...deployment("d1", "completed"), endpoint, endpoint_access: "public", source: "branch", ref: "example/vite", revision_number: 2, revisions: [revision], selected_revision: revision }
     window.history.replaceState(null, "", `/github/miclle/demo/deployments/d1?branch=example/vite&commit=${"c".repeat(40)}&revision=1`)
     const request = async (url) => url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : saved
     let copied
@@ -124,6 +135,13 @@ describe("deployment interaction", () => {
       expect(link.title).toBe(sha)
       await act(async () => container.querySelectorAll('button[aria-label="Copy full commit SHA"]').item(1).click())
       expect(copied).toBe(sha)
+      await act(async () => container.querySelector('button[aria-label="Copy access URL"]').click())
+      expect(copied).toBe(endpoint)
+      const openEndpoint = container.querySelector('a[aria-label="Open access URL in a new window"]')
+      expect(openEndpoint.href).toBe(`${endpoint}/`)
+      expect(openEndpoint.target).toBe("_blank")
+      expect(openEndpoint.rel).toBe("noopener noreferrer")
+      expect(container.textContent).toContain("This address is public. Protect sensitive data in your application.")
     } finally {
       if (previous) Object.defineProperty(navigator, "clipboard", previous)
       else Reflect.deleteProperty(navigator, "clipboard")
@@ -143,18 +161,63 @@ describe("deployment interaction", () => {
 		}
 		const { container } = await mountPage({ request, deploymentID: "versioned" }, { page: "deployments" })
 		expect(requests.filter((url) => url.endsWith("/events"))).toEqual(["/user/deployments/versioned/revisions/2/events"])
-		await act(async () => [...container.querySelectorAll("button")].find((item) => item.textContent.includes("Revision #1")).click())
+		await selectRevisionURL(1)
 		expect(new URLSearchParams(window.location.search).get("revision")).toBe("1")
 		expect(container.textContent).toContain("first version retained")
 		await act(async () => finishLatest({ events: [event(10, "delayed second version")], has_more: false }))
 		expect(container.textContent).not.toContain("delayed second version")
 		expect(container.querySelector('[data-testid="deployment-logs"]').querySelector("time").textContent).toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}/)
 		await act(async () => button(container, "Refresh").click())
-		expect(container.querySelector('button[aria-pressed="true"]')?.textContent).toContain("Revision #1")
+		expect(container.querySelector('[data-testid="deployment-historical-notice"]')?.textContent).toContain("Viewing historical revision #1")
 		const restored = await mountPage({ request, deploymentID: "versioned" }, { page: "deployments" })
 		expect(restored.container.textContent).toContain("first version retained")
 		expect(restored.container.textContent).not.toContain("delayed second version")
 	})
+  test("keeps the current overview and resources while browsing history, and returns to current logs", async () => {
+    const revisions = [2, 1].map((number) => ({ ...deployment(`history-r${number}`, number === 2 ? "running" : "completed"), number, ref: "refs/heads/main", template_name: number === 2 ? "base" : "old-template" }))
+    const current = { ...deployment("history", "completed"), source: "branch", ref: "main", revision_number: 2, sandbox_id: "current-sandbox", revisions }
+    const calls = []
+    const request = async (url) => {
+      calls.push(url)
+      if (url === "/user/deployments") return { items: [current, { ...deployment("other", "failed"), source: "pull_request", pull_request_number: 7 }] }
+      if (url.includes("/events")) return { events: [event(url.includes("/revisions/1/") ? 1 : 2, url.includes("/revisions/1/") ? "historical log" : "current log")], has_more: false }
+      if (url.includes("/resources")) return { template_name: "current-template", sandbox_id: "current-sandbox" }
+      return current
+    }
+    const { container } = await mountPage({ request, deploymentID: "history" }, { page: "deployments" })
+    const navigation = container.querySelector('[data-testid="deployment-navigation"]')
+    expect(navigation.querySelector('a[aria-current="page"]').href).toContain("/deployments/history?branch=main")
+    expect(navigation.textContent).toContain("PR #7")
+    expect(container.querySelector('[data-testid="deployment-history"]').hidden).toBe(true)
+    expect([...container.querySelectorAll('[role="tab"]')].map((item) => item.textContent)).toEqual(["Deployment logs", "Terminal", "Deployment history"])
+    await selectRevisionURL(1)
+    expect(container.textContent).toContain("Viewing historical revision #1")
+    expect(container.textContent).toContain("historical log")
+    expect(container.textContent).toContain("current-template")
+    expect(container.textContent).not.toContain("old-template")
+    expect(calls.filter((url) => url.includes("/resources"))).toEqual(["/user/deployments/history/resources?revision=2"])
+    expect(container.textContent).toContain("Current deployment · Revision #2")
+    await act(async () => button(container, "Return to current revision").click())
+    expect(new URLSearchParams(window.location.search).has("revision")).toBe(false)
+    expect(container.querySelector('[data-testid="deployment-historical-notice"]')).toBeNull()
+    expect(container.textContent).toContain("current log")
+  })
+
+  test("renders a direct detail before sidebar loading finishes and discards a previous account's delayed list", async () => {
+    let finishList
+    const delayedList = new Promise((resolve) => { finishList = resolve })
+    const request = async (url) => url === "/user/deployments" ? delayedList : url.includes("/events") ? { events: [event(1, "ready log")], has_more: false } : url.includes("/resources") ? {} : deployment("direct", "completed")
+    const mounted = await mountPage({ request, deploymentID: "direct" }, { page: "deployments" })
+    expect(mounted.container.textContent).toContain("ready log")
+    expect(mounted.container.querySelector('a[aria-current="page"]')).not.toBeNull()
+    const nextRequest = async (url) => url === "/user/deployments" ? { items: [] } : url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : { ...deployment("direct", "completed"), repository_full_name: "next/demo" }
+    await act(async () => mounted.root.render(createElement(UserDeploymentsSection, { ...mounted.props, currentLogin: "next", request: nextRequest })))
+    await settle()
+    await act(async () => finishList({ items: [{ ...deployment("private"), repository_full_name: "previous/private" }] }))
+    expect(mounted.container.querySelector('[data-testid="deployment-navigation"]').textContent).not.toContain("previous/private")
+    expect(mounted.container.querySelector('[data-testid="deployment-navigation"]').textContent).toContain("next/demo")
+  })
+
   test("shows only the list and a creation link without loading form catalogs", async () => {
     const requested = []
     const request = async (url) => {
@@ -222,11 +285,11 @@ describe("deployment interaction", () => {
       return { items: [] }
     }
     const { container } = await mountPage({ request }, { chooseRepository: false })
-    expect(container.querySelector("#deployment-repository").value).toBe("")
+    expect(container.querySelector("#deployment-repository").hasAttribute("data-placeholder")).toBe(true)
     expect(requests.some((url) => url.includes("deployment-refs"))).toBe(false)
     expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
     await selectOption(container, "#deployment-repository", "miclle/demo")
-    expect(container.querySelector("#deployment-ref").value).toBe("main")
+    expect(container.querySelector('select[name="deployment-ref"]').value).toBe("main")
     expect(container.querySelector('button[type="submit"]').disabled).toBe(false)
   })
 
@@ -253,7 +316,7 @@ describe("deployment interaction", () => {
       return { items: [] }
     }
     const { container } = await mountPage({ request, onOpenDeployment: (id) => { opened = id } })
-    const select = container.querySelector("#deployment-template")
+    const select = container.querySelector('select[name="deployment-template"]')
     expect(select.value).toBe("public-base")
     await act(async () => { select.value = "custom"; select.dispatchEvent(new Event("change", { bubbles: true })) })
     await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
@@ -276,13 +339,13 @@ describe("deployment interaction", () => {
     }
     const { container } = await mountPage({ request, githubApp: { installations: [installation(12), installation(13, "other")] } })
     expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
-    const scope = container.querySelector("#deployment-installation")
+    const scope = container.querySelector('select[name="deployment-installation"]')
     await act(async () => { scope.value = "13"; scope.dispatchEvent(new Event("change", { bubbles: true })) })
     await settle()
     await selectOption(container, "#deployment-repository", "other/demo")
     await settle()
     await act(async () => resolveFirst({ templates: [{ template_id: "stale-private", names: ["old"] }] }))
-    expect(container.querySelector("#deployment-template").value).toBe("scope-13")
+    expect(container.querySelector('select[name="deployment-template"]').value).toBe("scope-13")
     expect(container.textContent).not.toContain("stale-private")
   })
 
@@ -298,7 +361,7 @@ describe("deployment interaction", () => {
       return { items: [] }
     }
     const { container } = await mountPage({ request, githubApp: { installations: [{ ...installation(12, "acme"), account_type: "Organization", manageable: false }] } })
-    expect(container.querySelector("#deployment-installation").value).toBe("12")
+    expect(container.querySelector('select[name="deployment-installation"]').value).toBe("12")
     expect(requests.some((url) => url.includes("deployment-templates?") && url.includes("repository_full_name=acme%2Fdemo"))).toBe(true)
     expect(container.querySelector('button[type="submit"]').disabled).toBe(false)
     await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
@@ -319,7 +382,7 @@ describe("deployment interaction", () => {
     await selectOption(container, "#deployment-repository", "miclle/other")
     await settle()
     await act(async () => resolveFirst({ templates: [{ template_id: "stale-private" }] }))
-    expect(container.querySelector("#deployment-template").value).toBe("current-public")
+    expect(container.querySelector('select[name="deployment-template"]').value).toBe("current-public")
     expect(container.textContent).not.toContain("stale-private")
   })
 
@@ -338,9 +401,9 @@ describe("deployment interaction", () => {
     await selectOption(container, "#deployment-source", "tag")
     await settle()
     expect(container.querySelector('label[for="deployment-ref"]').textContent).toBe("Select Tag")
-    expect(container.querySelector("#deployment-ref").value).toBe("v1.0")
+    expect(container.querySelector('select[name="deployment-ref"]').value).toBe("v1.0")
     await act(async () => resolveBranches({ refs: ["main", "stale-branch"], has_more: false }))
-    expect(container.querySelector("#deployment-ref").value).toBe("v1.0")
+    expect(container.querySelector('select[name="deployment-ref"]').value).toBe("v1.0")
     expect(container.textContent).not.toContain("stale-branch")
     await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
     expect(submitted.source).toBe("tag")
@@ -361,7 +424,7 @@ describe("deployment interaction", () => {
     await selectOption(container, "#deployment-source", "pull_request")
     await settle()
     expect(container.querySelector('label[for="deployment-ref"]').textContent).toBe("Select PR")
-    expect(container.querySelector("#deployment-ref").selectedOptions[0].textContent).toBe("#7")
+    expect(container.querySelector('select[name="deployment-ref"]').selectedOptions[0].textContent).toBe("#7")
     await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
     expect(submitted.source).toBe("pull_request")
     expect(submitted.ref).toBe("7")
@@ -395,7 +458,7 @@ describe("deployment interaction", () => {
     expect(container.textContent).toContain("GitHub temporarily unavailable")
     expect(container.querySelector('button[type="submit"]').disabled).toBe(true)
     await act(async () => button(container, "Refresh versions").click())
-    expect(container.querySelector("#deployment-ref").value).toBe("v2.0")
+    expect(container.querySelector('select[name="deployment-ref"]').value).toBe("v2.0")
     expect(container.querySelector('button[type="submit"]').disabled).toBe(false)
     expect(container.textContent).not.toContain("GitHub temporarily unavailable")
   })
@@ -410,7 +473,7 @@ describe("deployment interaction", () => {
     const { container } = await mountPage({ request })
     await selectOption(container, "#deployment-ref", "feature/first")
     await act(async () => button(container, "Load more versions").click())
-    const select = container.querySelector("#deployment-ref")
+    const select = container.querySelector('select[name="deployment-ref"]')
     expect(select.value).toBe("feature/first")
     expect([...select.options].map((option) => option.value)).toEqual(["main", "feature/first", "example/vite"])
     expect(button(container, "Load more versions")).toBeUndefined()
@@ -421,6 +484,7 @@ describe("deployment interaction", () => {
     const requested = []
     const request = async (url) => {
       requested.push(url)
+      if (url === "/user/deployments") return { items: [] }
       if (url === "/user/deployments/deep-link") return deployment("deep-link", "completed")
       if (url.endsWith("?before_id=205")) return { events: [event(203, "earlier install output"), event(204, "older output")], has_more: false }
       if (url.endsWith("?after_id=206")) {
@@ -433,7 +497,7 @@ describe("deployment interaction", () => {
     }
     const { container } = await mountPage({ request, deploymentID: "deep-link" }, { page: "deployments" })
     expect(requested).toContain("/user/deployments/deep-link")
-    expect(requested).not.toContain("/user/deployments")
+    expect(requested).toContain("/user/deployments")
     expect(container.textContent).toContain("base")
     expect(container.textContent).toContain("4 vCPU")
     expect(container.textContent).toContain("8192 MB")
@@ -466,10 +530,10 @@ describe("Job deployment prefill", () => {
     const mounted = await mountPage({ request, locationSearch, githubApp: null, loadingGitHubApp: true }, { chooseRepository: false })
     await act(async () => mounted.root.render(createElement(UserDeploymentCreateSection, { ...mounted.props, githubApp: { installations: [installation(12), installation(22, "team")] }, loadingGitHubApp: false })))
     await settle()
-    expect(mounted.container.querySelector("#deployment-installation").value).toBe("22")
-    expect(mounted.container.querySelector("#deployment-repository").value).toBe("team/demo")
-    expect(mounted.container.querySelector("#deployment-source").value).toBe("pull_request")
-    expect(mounted.container.querySelector("#deployment-ref").value).toBe("7")
+    expect(mounted.container.querySelector('select[name="deployment-installation"]').value).toBe("22")
+    expect(mounted.container.querySelector('select[name="deployment-repository"]').value).toBe("team/demo")
+    expect(mounted.container.querySelector('select[name="deployment-source"]').value).toBe("pull_request")
+    expect(mounted.container.querySelector('select[name="deployment-ref"]').value).toBe("7")
     await act(async () => mounted.container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
     expect(submitted).toMatchObject({ installation_id: 22, repository_full_name: "team/demo", source: "pull_request", ref: "7", commit_sha: sha })
     await act(async () => button(mounted.container, "Use latest source commit").click())
@@ -493,7 +557,7 @@ describe("Job deployment prefill", () => {
     await selectOption(container, "#deployment-source", "branch")
     await settle()
     await act(async () => finishRefs({ refs: ["7", "8"] }))
-    expect(container.querySelector("#deployment-ref").value).toBe("main")
+    expect(container.querySelector('select[name="deployment-ref"]').value).toBe("main")
     expect(container.textContent).not.toContain("Pinned commit")
     await act(async () => container.querySelector("form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
     expect(submitted).toMatchObject({ source: "branch", ref: "main" })
