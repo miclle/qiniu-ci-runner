@@ -51,6 +51,7 @@ the current task.
 | Form dropdown | Sandbox service region selector (`sandbox-api-region`) in `ui/src/components/user-dashboard.tsx` |
 | Deployment creation dropdowns | `ui/src/components/user-deployment-create-section.tsx` |
 | Underlined workspace tabs | Shared `TabsList` / `TabsTrigger` with `variant="line"` in `ui/src/components/ui/tabs.tsx`; used by Jobs and deployment details |
+| Inline detail fields | Shared `DetailField` in `ui/src/components/ui/detail-field.tsx`; used by Jobs and deployment resources, with a three-column desktop grid and single-column narrow layout |
 | Protected list/detail layout | Jobs in `ui/src/components/user-dashboard.tsx` and `ui/src/components/runner-job-detail.tsx` |
 | Runner event rows | `ui/src/components/runner-event-timeline.tsx`; deployment logs retain their existing font |
 

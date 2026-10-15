@@ -5,8 +5,10 @@ import { useTranslation } from "react-i18next"
 
 import { formatTime as formatEventTime } from "@/admin-format"
 import { AppLink } from "@/components/app-link"
+import { useSandboxRegions } from "@/components/sandbox-catalog-utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DetailField } from "@/components/ui/detail-field"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -377,6 +379,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
   onAction: (kind: "stop" | "delete" | "retry", retryOptions?: { mode: "latest" | "revision"; revision_number?: number }) => void
 }) {
   const { t, i18n } = useTranslation()
+  const sandboxRegions = useSandboxRegions()
   const { events, loading, error, hasOlder, refresh, loadOlder } = eventState
   const canStop = activeStatuses.has(deployment.status)
   const canRetry = ["failed", "completed", "expired"].includes(deployment.status)
@@ -414,6 +417,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
               <span>{t("user.deploymentCreatedAt")} {formatTime(deployment.created_at)}</span>
+              <span>{t("user.deploymentExpires")} {formatTime(resourceSnapshot.expires_at)}</span>
               {deployment.last_successful_revision_number ? <span>
                 {t("user.deploymentLastSuccessful")} <button type="button" className="text-primary hover:underline" onClick={() => viewRevision(deployment.last_successful_revision_number!)}>{t("user.deploymentRevisionShortNumber", { number: deployment.last_successful_revision_number })}</button>
               </span> : null}
@@ -430,20 +434,17 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         <DeploymentEndpoint endpoint={deployment.endpoint} isPublic={deployment.endpoint_access === "public"} />
       </CardContent> : null}
     </Card>
-    <Card className="gap-3 rounded-none border-0 border-b bg-transparent pb-4 pt-0 shadow-none">
-      <CardHeader className="px-0"><div className="flex items-center gap-2"><CardTitle>{t("user.deploymentResources")}</CardTitle>{resourcesLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label={t("common.loading")} /> : null}</div><CardDescription>{t("user.deploymentResourcesDescription")}</CardDescription></CardHeader>
-      <CardContent className="px-0">
-        <dl className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-7">
-          <Info label={t("user.deploymentTemplate")} value={resourceSnapshot.template_name || resourceSnapshot.template_id || "—"} mono={!resourceSnapshot.template_name} />
-          <Info label={t("user.deploymentCPU")} value={resourceSnapshot.template_cpu ? `${resourceSnapshot.template_cpu} vCPU` : "—"} />
-          <Info label={t("user.deploymentMemory")} value={resourceSnapshot.template_memory_mb ? `${resourceSnapshot.template_memory_mb} MB` : "—"} />
-          <Info label={t("user.deploymentDisk")} value={resourceSnapshot.template_disk_mb ? `${resourceSnapshot.template_disk_mb} MB` : "—"} />
-          <Info label={t("user.deploymentSandboxRegion")} value={resourceSnapshot.sandbox_region || "—"} />
-          <Info label={t("user.deploymentSandbox")} value={resourceSnapshot.sandbox_id || "—"} mono />
-          <Info label={t("user.deploymentExpires")} value={formatTime(resourceSnapshot.expires_at)} />
-        </dl>
-      </CardContent>
-    </Card>
+    <section aria-label={t("user.deploymentResources")} aria-busy={resourcesLoading} className="border-b pb-4 text-sm">
+      {resourcesLoading ? <div role="status" className="mb-2"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label={t("common.loading")} /></div> : null}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <DetailField label={t("user.deploymentTemplate")} value={resourceSnapshot.template_name || resourceSnapshot.template_id || "—"} mono={!resourceSnapshot.template_name} />
+        <DetailField label={t("user.deploymentSandboxRegion")} value={sandboxRegions.find((region) => region.id === resourceSnapshot.sandbox_region)?.label || resourceSnapshot.sandbox_region || "—"} />
+        <DetailField label={t("user.deploymentSandbox")} value={resourceSnapshot.sandbox_id || "—"} mono />
+        <DetailField label={t("user.deploymentCPU")} value={resourceSnapshot.template_cpu ? `${resourceSnapshot.template_cpu} vCPU` : "—"} />
+        <DetailField label={t("user.deploymentMemory")} value={resourceSnapshot.template_memory_mb ? `${resourceSnapshot.template_memory_mb} MB` : "—"} />
+        <DetailField label={t("user.deploymentDisk")} value={resourceSnapshot.template_disk_mb ? `${resourceSnapshot.template_disk_mb} MB` : "—"} />
+      </div>
+    </section>
     <div className="min-w-0" data-testid="deployment-workspace">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 gap-0" data-testid="deployment-output">
         <TabsList variant="line">
@@ -458,7 +459,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           </div> : null}
       <Card className="min-w-0 gap-0 rounded-none border-0 bg-transparent py-0 shadow-none">
         <CardHeader className="px-0 pb-2 pt-0">
-          <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             {selectedRevision ? <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span>{t("user.deploymentRevisionNumber", { number: selectedRevision.number })}</span>
               {selectedRevision.ref ? <><span aria-hidden="true">·</span><span>{t(selectedRevision.ref.startsWith("refs/pull/") ? "user.deploymentPullRequest" : selectedRevision.ref.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} <code>{displayRevisionRef(selectedRevision.ref)}</code></span></> : null}
@@ -474,14 +475,14 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
           {selectedRevision?.failure_reason ? <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{selectedRevision.failure_stage || t("user.deploymentFailure")}: {selectedRevision.failure_reason}</p> : null}
           {error ? <p role="alert" className="text-sm text-destructive">{t("user.deploymentEventsFailed")}: {error}</p> : null}
           {hasOlder ? <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{t("user.deploymentEventsOlder")}</Button> : null}
-          <div data-testid="deployment-logs" className="deployment-console rounded-lg border bg-muted/20 px-4 py-2" aria-busy={loading}>
-            {events.length ? events.map((event) => <div data-testid="deployment-log-line" key={event.id} className="relative grid gap-1 border-l py-0.5 pl-5 transition-colors hover:bg-muted/50 sm:grid-cols-[190px_90px_minmax(0,1fr)] sm:gap-3">
+          <div data-testid="deployment-logs" className="deployment-console grid rounded-lg border bg-muted/20 px-4 py-2 sm:grid-cols-[max-content_max-content_minmax(0,1fr)] sm:gap-x-3" aria-busy={loading}>
+            {events.length ? events.map((event) => <div data-testid="deployment-log-line" key={event.id} className="relative grid gap-1 border-l py-0.5 pl-5 transition-colors hover:bg-muted/50 sm:col-span-full sm:grid-cols-subgrid sm:gap-3">
               <span aria-hidden="true" className={cn("absolute -left-1 top-2 size-2 rounded-full ring-4 ring-background", event.event_type === "failure" ? "bg-destructive" : event.stream === "stderr" ? "bg-amber-500" : event.stream === "stdout" ? "bg-slate-400" : "bg-sky-500")} />
-              <time dateTime={event.created_at} className="font-mono text-[11px] text-muted-foreground">{formatEventTime(event.created_at, i18n.resolvedLanguage, { fractionalSecondDigits: 3 })}</time>
-              <span className="font-mono text-[11px] text-muted-foreground">{event.stream || event.event_type}{event.stage ? ` · ${event.stage}` : ""}</span>
+              <time dateTime={event.created_at} className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">{formatEventTime(event.created_at, i18n.resolvedLanguage, { fractionalSecondDigits: 3 })}</time>
+              <span className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">{event.stream || event.event_type}{event.stage ? ` · ${event.stage}` : ""}</span>
               <pre className={cn("min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-normal", event.event_type === "failure" && "text-destructive")}>{event.message.trimEnd()}</pre>
             </div>)
-            : <p className="py-8 text-center text-sm text-muted-foreground">{loading ? t("common.loading") : t("user.deploymentNoEvents")}</p>}
+            : <p className="col-span-full py-8 text-center text-sm text-muted-foreground">{loading ? t("common.loading") : t("user.deploymentNoEvents")}</p>}
           </div>
         </CardContent>
       </Card>
@@ -513,7 +514,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => viewRevision(revision.number)}>{t("user.deploymentViewRevisionLogs", { number: revision.number })}</Button>
-                <Button type="button" variant="ghost" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode("revision"); setRedeployRevision(revision.number); setRedeployOpen(true) }}>{t("user.deploymentRedeployRevision")}</Button>
+                <Button type="button" variant="outline" size="sm" disabled={!canRetry || Boolean(action)} onClick={() => { setRedeployMode("revision"); setRedeployRevision(revision.number); setRedeployOpen(true) }}>{t("user.deploymentRedeployRevision")}</Button>
               </div>
             </div>)}
           </div>
@@ -555,9 +556,9 @@ function DeploymentEndpoint({ endpoint, isPublic }: { endpoint: string; isPublic
     }
   }
   return <div className="space-y-1.5">
-    <div className="text-xs text-muted-foreground">{t("user.deploymentEndpoint")}</div>
-    <div className="flex min-w-0 items-start gap-1 rounded-md border border-border bg-muted/30 px-3 py-2">
-      <a className="min-w-0 break-all text-sm font-medium text-primary hover:underline" href={endpoint} target="_blank" rel="noopener noreferrer">{endpoint}</a>
+    <div className="flex min-w-0 items-start gap-3 rounded-md border border-border bg-muted/30 px-3 py-2">
+      <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">{t("user.deploymentEndpoint")}</span>
+      <a className="min-w-0 flex-1 break-all text-sm font-medium text-primary hover:underline" href={endpoint} target="_blank" rel="noopener noreferrer">{endpoint}</a>
       <Button type="button" variant="ghost" size="icon" className="size-6 shrink-0" aria-label={t("user.deploymentCopyEndpoint")} title={t("user.deploymentCopyEndpoint")} onClick={() => void copy()}><Copy className="size-3.5" /></Button>
       <Button asChild variant="ghost" size="icon" className="size-6 shrink-0"><a href={endpoint} target="_blank" rel="noopener noreferrer" aria-label={t("user.deploymentOpenEndpoint")} title={t("user.deploymentOpenEndpoint")}><ExternalLink className="size-3.5" /></a></Button>
     </div>
@@ -586,10 +587,6 @@ function RedeployOption({ selected, onSelect, title, description, children }: { 
     <span aria-hidden="true" className={cn("h-5 w-5 shrink-0 rounded-full border-2 p-1", selected ? "border-primary" : "border-muted-foreground/40")}><span className={cn("block h-full w-full rounded-full", selected ? "bg-primary" : "bg-transparent")} /></span>
     <span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2 font-semibold">{title}{children}</span><span className="mt-1 block text-sm text-muted-foreground">{description}</span></span>
   </button>
-}
-
-function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div><dt className="text-xs text-muted-foreground">{label}</dt><dd className={cn("mt-1 break-all text-sm", mono && "font-mono")}>{value}</dd></div>
 }
 
 function DeploymentStatus({ status }: { status: string }) {

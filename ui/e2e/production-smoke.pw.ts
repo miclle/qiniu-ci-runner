@@ -1006,6 +1006,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
     { ...deployment, id: "fixture-r1", number: 1, ref: "refs/tags/v0.9", commit_sha: "b".repeat(40), status: "completed", template_id: "old-template" },
   ]
   const otherDeployment = { ...deployment, id: "other-fixture", repository_full_name: "fixture-user/other", status: "completed", source: "pull_request", ref: "7", pull_request_number: 7 }
+  await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [{ id: "cn-yangzhou-1", label: "China · Yangzhou 1", api_url: "https://cn-yangzhou-1-sandbox.qiniuapi.com" }] }))
   await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
   await page.route("**/user/**", async (route) => {
     const url = new URL(route.request().url())
@@ -1030,8 +1031,8 @@ test("separates deployment list, creation, and refreshable detail pages", async 
     if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: created ? [deployment, otherDeployment] : [] } })
     if (url.pathname === "/user/deployments/deployment-fixture") return route.fulfill({ json: { ...deployment, revisions: [{ ...revisions[0], status: deployment.status }, revisions[1]] } })
     if (url.pathname === "/user/deployments/other-fixture") return route.fulfill({ json: otherDeployment })
-    if (url.pathname.endsWith("/resources")) return route.fulfill({ json: { template_id: deployment.template_id, expires_at: deployment.expires_at } })
-    if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: url.searchParams.has("after_id") ? [] : Array.from({ length: 35 }, (_, index) => ({ id: index + 1, event_type: "output", stage: "installing", stream: "stdout", message: url.pathname.includes("/revisions/1/") ? "Historical Vite output" : "Vite build completed", created_at: "2026-10-13T00:00:00Z" })), has_more: false } })
+    if (url.pathname.endsWith("/resources")) return route.fulfill({ json: { template_id: deployment.template_id, template_name: "custom", template_cpu: 2, template_memory_mb: 1024, template_disk_mb: 23379, sandbox_region: "cn-yangzhou-1", sandbox_id: deployment.sandbox_id, expires_at: deployment.expires_at } })
+    if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: url.searchParams.has("after_id") ? [] : Array.from({ length: 35 }, (_, index) => ({ id: index + 1, event_type: index < 2 ? "lifecycle" : "output", stage: index === 0 ? "queued" : "installing", stream: index < 2 ? "" : "stdout", message: url.pathname.includes("/revisions/1/") ? "Historical Vite output" : "Vite build completed", created_at: "2026-10-13T00:00:00Z" })), has_more: false } })
     return route.fulfill({ status: 404, body: "fixture route not found" })
   })
   await page.goto("/deployments", { waitUntil: "networkidle" })
@@ -1090,6 +1091,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   expect(submittedSource).toBe("tag")
   expect(submittedRef).toBe("v1.0")
   await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
+  await expect(page.getByRole("region", { name: "Resource configuration", exact: true })).toContainText("China · Yangzhou 1")
   await expect(page.locator('[data-testid="deployment-logs"]')).toContainText("Vite build completed")
   expect(pageLoads()).toEqual(formLoads)
   await page.reload({ waitUntil: "networkidle" })
@@ -1176,12 +1178,15 @@ test("separates deployment list, creation, and refreshable detail pages", async 
   await page.getByRole("button", { name: "Redeploy from this revision", exact: true }).last().click()
   await expect(page.getByRole("dialog")).toContainText("Revision #1 · bbbbbbbb")
   await page.getByRole("button", { name: "Cancel", exact: true }).click()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await page.getByTestId("deployment-layout").screenshot({ path: testInfo.outputPath("deployment-history-actions.png") })
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole("tab", { name: "Deployment logs", exact: true }).click()
   await expect(page.locator('[data-testid="deployment-logs"]')).toBeVisible()
   await page.getByTestId("deployment-layout").screenshot({ path: testInfo.outputPath("deployment-narrow-navigation.png") })
   await page.getByRole("tab", { name: "Deployment history", exact: true }).click()
   await expect(page.getByRole("button", { name: "View logs for revision #1", exact: true })).toBeVisible()
+  await page.getByTestId("deployment-layout").screenshot({ path: testInfo.outputPath("deployment-history-narrow.png") })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.getByRole("button", { name: "Back to deployments" }).click()

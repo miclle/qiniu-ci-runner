@@ -16,7 +16,7 @@ import {
   Workflow,
   X,
 } from "lucide-react"
-import { type FormEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { type FormEvent, type MouseEvent, useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import type { AuthSession, GitHubAppConfig, ProductTourOnboarding, RunnerJobGroup, RunnerState, UserPreferences } from "@/admin-types"
@@ -38,6 +38,7 @@ import {
 } from "@/repository-readiness"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { DetailField } from "@/components/ui/detail-field"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -1381,16 +1382,16 @@ function PullRequestsPage({
                   <div className="mt-3 space-y-4 text-sm">
                     <section>
                       <div className="grid gap-3 sm:grid-cols-3">
-                        <JobField label={t("user.branch")} value={selectedJob?.head_branch || selectedJobGroup?.head_branch || selected.headBranch || selected.subtitle || t("common.unknown")} />
-                        <JobField label={t("user.commit")} value={shortSHA(selectedJob?.head_sha || selectedJobGroup?.head_sha || selected.headSHA) || t("common.unknown")} />
-                        <JobField label={t("user.lastUpdated")} value={formatTime(selectedJobGroup?.updated_at || selected.updatedAt, i18n.resolvedLanguage)} />
+                        <DetailField label={t("user.branch")} value={selectedJob?.head_branch || selectedJobGroup?.head_branch || selected.headBranch || selected.subtitle || t("common.unknown")} />
+                        <DetailField label={t("user.commit")} value={shortSHA(selectedJob?.head_sha || selectedJobGroup?.head_sha || selected.headSHA) || t("common.unknown")} />
+                        <DetailField label={t("user.lastUpdated")} value={formatTime(selectedJobGroup?.updated_at || selected.updatedAt, i18n.resolvedLanguage)} />
                       </div>
                     </section>
                     <section>
                       <div className="grid gap-3 sm:grid-cols-3">
                         {selectedJob ? (
                           <>
-                            <JobField
+                            <DetailField
                               label={t("user.jobName")}
                               value={selectedJob.github_job_url ? (
                                 <a className={cn("inline-flex max-w-full min-w-0 items-center gap-1 hover:underline", jobStatusTextClass(selectedJob.status))} href={selectedJob.github_job_url} target="_blank" rel="noreferrer" title={t("user.openGitHubJob")}>
@@ -1401,7 +1402,7 @@ function PullRequestsPage({
                                 <span className={cn("block truncate", jobStatusTextClass(selectedJob.status))}>{runnerJobTitle(selectedJob)}</span>
                               )}
                             />
-                            <JobField
+                            <DetailField
                               label={t("user.workflow")}
                               value={workflowRunURL(selectedJob) ? (
                                 <a className="inline-flex max-w-full min-w-0 items-center gap-1 text-primary hover:underline" href={workflowRunURL(selectedJob)} target="_blank" rel="noreferrer" title={t("user.openGitHubRun")}>
@@ -1412,7 +1413,7 @@ function PullRequestsPage({
                                 <span className="block truncate">{selectedJob.workflow_name || t("user.workflow")}</span>
                               )}
                             />
-                            <JobField label={t("user.duration")} value={formatRunnerDuration(selectedJob) || "-"} />
+                            <DetailField label={t("user.duration")} value={formatRunnerDuration(selectedJob) || "-"} />
                           </>
                         ) : (
                           <div className="text-muted-foreground">{t("user.selectJob")}</div>
@@ -1475,21 +1476,6 @@ function PullRequestsPage({
         </section>
       </div>
     </>
-  )
-}
-
-function JobField({ label, value, onOpen }: { label: string; value: ReactNode; onOpen?: () => void }) {
-  return (
-    <div className="grid grid-cols-[88px_minmax(0,1fr)] items-baseline gap-2">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      {onOpen ? (
-        <button type="button" className="min-w-0 break-words text-left font-medium hover:text-primary hover:underline" onClick={onOpen}>
-          {value}
-        </button>
-      ) : (
-        <div className="min-w-0 break-words font-medium">{value}</div>
-      )}
-    </div>
   )
 }
 
@@ -1643,13 +1629,13 @@ function RunnerJobLogPanel({
         </TabsContent>
         <TabsContent value="details" className="m-0 py-5">
           <div className="grid gap-2 text-sm">
-            <JobField label={t("common.status")} value={runnerStatusLabel(job.status)} />
-            <JobField label={t("common.runnerSpec")} value={job.runner_spec_name || t("user.matchedByLabels")} />
-            <JobField label={t("user.workflowRun")} value={workflowRunValue(job, t)} />
-            <JobField label={t("user.queued")} value={formatTime(job.created_at, i18n.resolvedLanguage)} />
-            <JobField label={t("common.started")} value={job.running_at ? formatTime(job.running_at, i18n.resolvedLanguage) : "-"} />
-            <JobField label={t("user.finished")} value={job.completed_at || job.failed_at ? formatTime(job.completed_at || job.failed_at, i18n.resolvedLanguage) : "-"} />
-            <JobField label={t("user.commit")} value={job.head_sha || "-"} />
+            <DetailField label={t("common.status")} value={runnerStatusLabel(job.status)} />
+            <DetailField label={t("common.runnerSpec")} value={job.runner_spec_name || t("user.matchedByLabels")} />
+            <DetailField label={t("user.workflowRun")} value={workflowRunValue(job, t)} />
+            <DetailField label={t("user.queued")} value={formatTime(job.created_at, i18n.resolvedLanguage)} />
+            <DetailField label={t("common.started")} value={job.running_at ? formatTime(job.running_at, i18n.resolvedLanguage) : "-"} />
+            <DetailField label={t("user.finished")} value={job.completed_at || job.failed_at ? formatTime(job.completed_at || job.failed_at, i18n.resolvedLanguage) : "-"} />
+            <DetailField label={t("user.commit")} value={job.head_sha || "-"} />
           </div>
         </TabsContent>
       </Tabs>
