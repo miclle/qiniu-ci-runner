@@ -395,6 +395,10 @@ function App() {
           const sessionResponse = await fetch("/auth/session", { credentials: "same-origin" })
           if (sessionResponse.ok) {
             setAuthSession((await sessionResponse.json()) as AuthSession)
+          } else {
+            // Let the protected-route gate render SignInPage with the current
+            // deployment or Job URL as its return destination.
+            setAuthSession((current) => ({ ...current, authenticated: false, login: undefined, role: undefined, avatar_url: undefined, expires_at: undefined }))
           }
         } catch {
           setAuthSession((current) => ({ ...current, authenticated: false, login: undefined, role: undefined, avatar_url: undefined, expires_at: undefined }))
