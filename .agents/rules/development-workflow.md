@@ -4,6 +4,7 @@
 
 - Run `git status --short --branch` before editing and preserve user-owned changes.
 - Read the exact code, scripts, tests, or docs that back the requested behavior before changing documents.
+- Before changing UI components or pages, read [Frontend UI Consistency](frontend-ui-consistency.md), identify the shared primitives and an existing comparable page, and follow its mandatory implementation and acceptance rules.
 - Keep changes scoped. Do not edit generated UI assets in `internal/server/ui/` by hand; edit `ui/` and rebuild with `task build` or `task ui-build`.
 - Do not commit real secrets, local sqlite databases, `runnerd.local.yaml`, `.smee-url`, private keys, cookie jars, or deployment-local hostnames.
 

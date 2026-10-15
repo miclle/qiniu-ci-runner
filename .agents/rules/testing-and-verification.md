@@ -92,6 +92,7 @@ RUNNERD_MYSQL_TEST_DSN='<dedicated mysql test DSN>' \
 
 ## UI
 
+- Apply [Frontend UI Consistency](frontend-ui-consistency.md) as a required acceptance check. Verify shared component reuse and compare changed appearance/interactions with the existing reference surface at desktop and narrow widths, including open popups. Functional tests alone do not establish visual acceptance; report any browser verification gap explicitly.
 - Edit source under `ui/`, not generated files under `internal/server/ui/`.
 - For focused UI unit tests, run `cd ui && bun run test`.
 - For UI source changes, run `task ui-lint` or `task build` depending on scope.

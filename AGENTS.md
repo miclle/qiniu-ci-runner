@@ -170,6 +170,7 @@ When changing state records, GORM tags, indexes, migration helpers, or audited m
 - `.agents/rules/development-workflow.md`: detailed workflow, generated-file boundaries, and documentation sync rules.
 - `.agents/rules/project-architecture.md`: durable architecture and implementation boundaries for runnerd.
 - `.agents/rules/testing-and-verification.md`: verification matrix for docs, state schema, UI, dev startup, Docker, release, and deployment smoke work.
+- `.agents/rules/frontend-ui-consistency.md`: mandatory UI component, styling, interaction, and visual acceptance rules; read before changing any UI component or page.
 - `.agents/rules/frontend-internationalization.md`: i18n boundaries, language-switcher placement, stable identifier rules, and UI verification.
 - `.agents/skills/runnerd-state-schema/SKILL.md`: use for state records, GORM tags, indexes, and migration compatibility work.
 - `.agents/skills/runnerd-dev-smoke/SKILL.md`: use for `task dev`, Vite proxy, smee forwarding, and local startup verification.
@@ -179,6 +180,7 @@ When changing state records, GORM tags, indexes, migration helpers, or audited m
 - Do not commit real secrets, local sqlite databases, or local config files.
 - Do not commit `.smee-url`; it is per-developer local webhook state.
 - Do not hand-edit generated files in `internal/server/ui/`; edit `ui/` and rebuild.
+- UI changes must follow `.agents/rules/frontend-ui-consistency.md`. Reuse `ui/src/components/ui/` primitives and existing page patterns; form dropdowns must use the shared `Select`, never a new native `<select>` or page-specific imitation. Visual inconsistencies in the changed surface must be resolved before delivery; passing functional tests alone is insufficient.
 - Keep `README.md` and `README.zh.md`, `docs/testing.md` and `docs/zh/testing.md`, and `TODO.md` aligned when changing config, build, development, public APIs, authentication/authorization, state semantics, or deployment workflows.
 - Keep `docs/README.md` and `docs/zh/README.md`, plus `docs/deployment-smoke.md` and `docs/zh/deployment-smoke.md`, aligned when adding or removing docs or deployment verification steps.
 - Keep `.agents/rules/` and `.agents/skills/` aligned when a change creates durable agent rules or repeatable project workflows.
