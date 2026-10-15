@@ -89,9 +89,6 @@ type AccountSettingsRoute = {
   tab: AccountSettingsTab
 }
 
-const jobLogTabsListClassName = "h-auto w-full justify-start gap-6 rounded-none border-b bg-transparent p-0 text-muted-foreground"
-const jobLogTabsTriggerClassName = "h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-sm font-medium shadow-none hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent"
-
 export function UserDashboard({
   authSession,
   githubApp,
@@ -1603,10 +1600,10 @@ function RunnerJobLogPanel({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col gap-0">
-        <TabsList className={jobLogTabsListClassName}>
-          <TabsTrigger className={jobLogTabsTriggerClassName} value="runner-logs">{t("user.runnerLogs")}</TabsTrigger>
-          <TabsTrigger className={jobLogTabsTriggerClassName} value="web-console">{t("user.webConsole")}</TabsTrigger>
-          <TabsTrigger className={jobLogTabsTriggerClassName} value="details">{t("user.details")}</TabsTrigger>
+        <TabsList variant="line">
+          <TabsTrigger variant="line" value="runner-logs">{t("user.runnerLogs")}</TabsTrigger>
+          <TabsTrigger variant="line" value="web-console">{t("user.webConsole")}</TabsTrigger>
+          <TabsTrigger variant="line" value="details">{t("user.details")}</TabsTrigger>
         </TabsList>
         <TabsContent value="runner-logs" className="m-0 pt-2">
           <RunnerEventTimeline endpoint={`${endpoint}/events`} request={request} autoRefresh={activeStatuses.has(job.status)} />

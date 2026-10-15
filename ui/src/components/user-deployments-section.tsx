@@ -446,18 +446,18 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
     </Card>
     <div className="min-w-0" data-testid="deployment-workspace">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 gap-0" data-testid="deployment-output">
-        <TabsList className="h-10 w-full shrink-0 justify-start gap-3 overflow-x-auto rounded-none border-b bg-transparent px-0 py-0 text-muted-foreground sm:gap-6 sm:px-4">
-          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-xs font-medium shadow-none hover:text-foreground sm:text-sm data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="logs">{t("user.deploymentEvents")}</TabsTrigger>
-          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-xs font-medium shadow-none hover:text-foreground sm:text-sm data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="terminal">{t("common.terminal")}</TabsTrigger>
-          <TabsTrigger className="h-10 flex-none rounded-none border-x-0 border-t-0 border-b-2 border-transparent bg-transparent px-0 py-2 text-xs font-medium shadow-none hover:text-foreground sm:text-sm data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent" value="history">{t("user.deploymentHistory")}</TabsTrigger>
+        <TabsList variant="line">
+          <TabsTrigger variant="line" value="logs">{t("user.deploymentEvents")}</TabsTrigger>
+          <TabsTrigger variant="line" value="terminal">{t("common.terminal")}</TabsTrigger>
+          <TabsTrigger variant="line" value="history">{t("user.deploymentHistory")}</TabsTrigger>
         </TabsList>
-        <TabsContent value="logs" className="m-0">
-          {viewingHistory ? <div className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm" data-testid="deployment-historical-notice">
+        <TabsContent value="logs" className="m-0 space-y-2 pt-2">
+          {viewingHistory ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm" data-testid="deployment-historical-notice">
             <span>{t("user.deploymentViewingHistory", { number: selectedRevisionNumber! })}</span>
             <Button type="button" variant="outline" size="sm" onClick={() => viewRevision(deployment.revision_number!)}>{t("user.deploymentReturnCurrent")}</Button>
           </div> : null}
       <Card className="min-w-0 gap-0 rounded-none border-0 bg-transparent py-0 shadow-none">
-        <CardHeader className="px-4 py-3">
+        <CardHeader className="px-0 pb-2 pt-0">
           <div className="flex flex-wrap items-start justify-between gap-3">
             {selectedRevision ? <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span>{t("user.deploymentRevisionNumber", { number: selectedRevision.number })}</span>
@@ -470,11 +470,11 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
             </div>
           </div>
         </CardHeader>
-        <CardContent className="space-y-3 px-0">
-          {selectedRevision?.failure_reason ? <p className="mx-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{selectedRevision.failure_stage || t("user.deploymentFailure")}: {selectedRevision.failure_reason}</p> : null}
-          {error ? <p role="alert" className="px-4 text-sm text-destructive">{t("user.deploymentEventsFailed")}: {error}</p> : null}
-          {hasOlder ? <Button type="button" variant="outline" size="sm" className="ml-4" disabled={loading} onClick={() => void loadOlder()}>{t("user.deploymentEventsOlder")}</Button> : null}
-          <div data-testid="deployment-logs" className="deployment-console mx-4 rounded-lg border bg-muted/20 px-4 py-2" aria-busy={loading}>
+        <CardContent className="space-y-2 px-0">
+          {selectedRevision?.failure_reason ? <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{selectedRevision.failure_stage || t("user.deploymentFailure")}: {selectedRevision.failure_reason}</p> : null}
+          {error ? <p role="alert" className="text-sm text-destructive">{t("user.deploymentEventsFailed")}: {error}</p> : null}
+          {hasOlder ? <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{t("user.deploymentEventsOlder")}</Button> : null}
+          <div data-testid="deployment-logs" className="deployment-console rounded-lg border bg-muted/20 px-4 py-2" aria-busy={loading}>
             {events.length ? events.map((event) => <div data-testid="deployment-log-line" key={event.id} className="relative grid gap-1 border-l py-0.5 pl-5 transition-colors hover:bg-muted/50 sm:grid-cols-[190px_90px_minmax(0,1fr)] sm:gap-3">
               <span aria-hidden="true" className={cn("absolute -left-1 top-2 size-2 rounded-full ring-4 ring-background", event.event_type === "failure" ? "bg-destructive" : event.stream === "stderr" ? "bg-amber-500" : event.stream === "stdout" ? "bg-slate-400" : "bg-sky-500")} />
               <time dateTime={event.created_at} className="font-mono text-[11px] text-muted-foreground">{formatEventTime(event.created_at, i18n.resolvedLanguage, { fractionalSecondDigits: 3 })}</time>
@@ -486,14 +486,14 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
         </CardContent>
       </Card>
         </TabsContent>
-        <TabsContent value="terminal" className="m-0">
-          <p className="px-4 py-3 text-xs text-muted-foreground">{t("user.deploymentCurrentRevision", { number: deployment.revision_number ?? 1 })}</p>
+        <TabsContent value="terminal" className="m-0 space-y-2 pt-2">
+          <p className="text-xs text-muted-foreground">{t("user.deploymentCurrentRevision", { number: deployment.revision_number ?? 1 })}</p>
           {terminalAvailable ? <Suspense fallback={<p className="p-5 text-sm text-muted-foreground">{t("common.loading")}</p>}>
             <DeploymentTerminal key={`${deployment.id}:${deployment.revision_number}:${deployment.sandbox_id}:${selectedRevisionNumber}`} endpoint={`/user/deployments/${encodeURIComponent(deployment.id)}/revisions/${deployment.revision_number}`} request={request} />
           </Suspense> : <div className="bg-muted/20 px-4 py-12 text-center text-sm text-muted-foreground">{t("user.deploymentTerminalUnavailable")}</div>}
         </TabsContent>
-        <TabsContent value="history" className="m-0" data-testid="deployment-history">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-muted-foreground">
+        <TabsContent value="history" className="m-0 space-y-2 py-5" data-testid="deployment-history">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <p>{t("user.deploymentHistoryDescription")}</p>
             <span>{t("user.deploymentHistoryCount", { count: revisions.length })}</span>
           </div>
@@ -517,7 +517,7 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
               </div>
             </div>)}
           </div>
-          {deployment.revisions_has_more ? <Button type="button" variant="outline" size="sm" className="m-4" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
+          {deployment.revisions_has_more ? <Button type="button" variant="outline" size="sm" onClick={onLoadOlderRevisions}>{t("user.deploymentHistoryOlder")}</Button> : null}
         </TabsContent>
       </Tabs>
     </div>

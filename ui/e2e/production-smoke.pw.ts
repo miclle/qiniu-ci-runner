@@ -87,7 +87,7 @@ test("serves the custom template guide from the production bundle", async ({ pag
   diagnostics.expectClean()
 })
 
-test("keeps the Jobs list independently scrollable beside the Web Console", async ({ page }) => {
+test("keeps the Jobs list independently scrollable beside the Web Console", async ({ page }, testInfo) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
 
   const diagnostics = observeBrowserDiagnostics(page)
@@ -169,12 +169,14 @@ test("keeps the Jobs list independently scrollable beside the Web Console", asyn
   const webConsoleTab = page.getByRole("tab", { name: /Web Console|Web 控制台/ })
   await expect(jobList).toBeVisible()
   await expect(webConsoleTab).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath("jobs-tabs-logs.png"), animations: "disabled" })
   await webConsoleTab.click()
 
   const webConsole = page.getByRole("tabpanel", { name: /Web Console|Web 控制台/ })
   await expect(webConsole).toBeVisible()
   const consoleBefore = await webConsole.boundingBox()
   expect(consoleBefore).not.toBeNull()
+  await page.screenshot({ path: testInfo.outputPath("jobs-tabs-terminal.png"), animations: "disabled" })
 
   const layoutBefore = await page.evaluate(() => ({
     documentHeight: document.documentElement.scrollHeight,
