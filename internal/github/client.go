@@ -151,13 +151,14 @@ type Runner struct {
 }
 
 type Installation struct {
-	ID            int64    `json:"id"`
-	AccountID     int64    `json:"account_id,omitempty"`
-	AccountType   string   `json:"account_type,omitempty"`
-	AccountLogin  string   `json:"account_login,omitempty"`
-	AccountName   string   `json:"account_name,omitempty"`
-	AccountAvatar string   `json:"account_avatar,omitempty"`
-	Repositories  []string `json:"repositories"`
+	ID            int64      `json:"id"`
+	AccountID     int64      `json:"account_id,omitempty"`
+	AccountType   string     `json:"account_type,omitempty"`
+	AccountLogin  string     `json:"account_login,omitempty"`
+	AccountName   string     `json:"account_name,omitempty"`
+	AccountAvatar string     `json:"account_avatar,omitempty"`
+	Repositories  []string   `json:"repositories"`
+	SuspendedAt   *time.Time `json:"suspended_at,omitempty"`
 }
 
 type Account struct {
@@ -402,6 +403,22 @@ func (c *Client) ListUserInstallationRepositoryDetails(ctx context.Context, toke
 	if installationID <= 0 {
 		return nil, fmt.Errorf("installation id is required")
 	}
+	// GitHub may return repository membership even while its installation is
+	// suspended. Check current installation metadata before granting access.
+	installations, err := c.ListUserInstallations(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	active := false
+	for _, installation := range installations {
+		if installation.ID == installationID && installation.SuspendedAt == nil {
+			active = true
+			break
+		}
+	}
+	if !active {
+		return nil, &apiError{Operation: "github user installation", StatusCode: http.StatusNotFound, Body: "installation is unavailable"}
+	}
 	nextURL := fmt.Sprintf("%s/user/installations/%d/repositories?per_page=100", c.baseURL, installationID)
 	var repositories []Repository
 	for nextURL != "" {
@@ -475,8 +492,9 @@ func (c *Client) ListUserInstallations(ctx context.Context, token string) ([]Ins
 		}
 		var out struct {
 			Installations []struct {
-				ID      int64 `json:"id"`
-				Account struct {
+				ID          int64      `json:"id"`
+				SuspendedAt *time.Time `json:"suspended_at"`
+				Account     struct {
 					ID        int64  `json:"id"`
 					Type      string `json:"type"`
 					Login     string `json:"login"`
@@ -494,6 +512,7 @@ func (c *Client) ListUserInstallations(ctx context.Context, token string) ([]Ins
 			}
 			installations = append(installations, Installation{
 				ID:            item.ID,
+				SuspendedAt:   item.SuspendedAt,
 				AccountID:     item.Account.ID,
 				AccountType:   normalizeGitHubAccountType(item.Account.Type),
 				AccountLogin:  item.Account.Login,

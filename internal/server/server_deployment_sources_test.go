@@ -23,6 +23,10 @@ func TestPullRequestDeploymentPinsSourceAndRejectsInvalidContext(t *testing.T) {
 	pullReads, contentsReads := 0, 0
 	allowAccess := true
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		switch r.URL.Path {
 		case "/user/installations/987/repositories":
 			if !allowAccess {

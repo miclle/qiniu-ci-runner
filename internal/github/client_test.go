@@ -851,6 +851,55 @@ func TestListUserInstallationsUsesOAuthToken(t *testing.T) {
 	}
 }
 
+func TestUserInstallationRepositoryAccessRequiresActiveInstallation(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		metadata         string
+		metadataStatus   int
+		wantStatus       int
+		wantRepositories bool
+	}{
+		{"active", `{"installations":[{"id":987,"suspended_at":null}]}`, 200, 0, true},
+		{"suspended", `{"installations":[{"id":987,"suspended_at":"2026-10-16T07:10:00Z"}]}`, 200, 404, false},
+		{"unavailable", `{"installations":[{"id":988,"suspended_at":null}]}`, 200, 404, false},
+		{"rejected_token", `{"message":"Bad credentials"}`, 401, 401, false},
+		{"rate_limit", `{"message":"rate limit"}`, 429, 429, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var repositoryCalls int
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer user-token" {
+					t.Error("authorization must use the user token")
+				}
+				switch r.URL.Path {
+				case "/user/installations":
+					w.WriteHeader(tc.metadataStatus)
+					fmt.Fprint(w, tc.metadata)
+				case "/user/installations/987/repositories":
+					repositoryCalls++
+					// GitHub still returns repositories while the installation is suspended.
+					fmt.Fprint(w, `{"repositories":[{"id":42,"full_name":"acme/project"}]}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer api.Close()
+			client := NewClient(api.URL, api.Client())
+			repositories, err := client.ListUserInstallationRepositoryDetails(t.Context(), "user-token", 987)
+			if tc.wantRepositories {
+				if err != nil || len(repositories) != 1 || repositories[0].ID != 42 || repositoryCalls != 1 {
+					t.Fatalf("active access: repositories=%v err=%v calls=%d", repositories, err, repositoryCalls)
+				}
+			} else {
+				status, ok := ErrorStatus(err)
+				if !ok || status != tc.wantStatus || len(repositories) != 0 || repositoryCalls != 0 {
+					t.Fatalf("denied access: status=%d err=%v repositories=%v calls=%d", status, err, repositories, repositoryCalls)
+				}
+			}
+		})
+	}
+}
+
 func TestListUserInstallationsReturnsStructuredAPIError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/user/installations" {
@@ -902,6 +951,10 @@ func TestListUserOrganizationMembershipsUsesOAuthToken(t *testing.T) {
 
 func TestListUserInstallationRepositoriesUsesOAuthToken(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		if r.Method != http.MethodGet || r.URL.Path != "/user/installations/987/repositories" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -928,6 +981,10 @@ func TestListUserInstallationRepositoriesUsesOAuthToken(t *testing.T) {
 
 func TestListUserInstallationRepositoryDetailsPreservesSourceMetadata(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		if r.Method != http.MethodGet || r.URL.Path != "/user/installations/987/repositories" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -995,6 +1052,10 @@ func TestReadRepositoryFileDecodesAndBoundsContentsResponse(t *testing.T) {
 
 func TestListUserInstallationRepositoriesClassifiesRateLimitResponse(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		if r.Method != http.MethodGet || r.URL.Path != "/user/installations/987/repositories" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -1036,6 +1097,10 @@ func TestRateLimitHelpersHandleWrappedAPIError(t *testing.T) {
 func TestListUserInstallationRepositoriesFollowsPagination(t *testing.T) {
 	var ts *httptest.Server
 	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		if r.Method != http.MethodGet || r.URL.Path != "/user/installations/987/repositories" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -1063,6 +1128,18 @@ func TestListUserInstallationRepositoriesFollowsPagination(t *testing.T) {
 	if len(repositories) != 2 || repositories[0] != "o/first" || repositories[1] != "o/second" {
 		t.Fatalf("unexpected repositories: %#v", repositories)
 	}
+}
+
+func serveActiveInstallationFixture(w http.ResponseWriter, r *http.Request, ids ...int64) bool {
+	if r.URL.Path != "/user/installations" {
+		return false
+	}
+	items := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, map[string]any{"id": id, "suspended_at": nil})
+	}
+	json.NewEncoder(w).Encode(map[string]any{"installations": items})
+	return true
 }
 
 func testPrivateKeyFile(t *testing.T) string {

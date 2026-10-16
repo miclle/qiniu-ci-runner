@@ -23,10 +23,106 @@ func deploymentAuthCall(s *Server, method, path, body string) *httptest.Response
 	return w
 }
 
+func TestSuspendedInstallationDeniesJobsAndDeploymentAccess(t *testing.T) {
+	var suspended atomic.Bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/installations" {
+			if suspended.Load() {
+				fmt.Fprint(w, `{"installations":[{"id":987,"suspended_at":"2026-10-16T07:10:00Z"}]}`)
+			} else {
+				serveActiveInstallationFixture(w, r, 987)
+			}
+			return
+		}
+		if r.URL.Path == "/user/installations/987/repositories" {
+			// Real GitHub continues returning this list during suspension.
+			fmt.Fprint(w, `{"repositories":[{"id":42,"full_name":"acme/project"}]}`)
+			return
+		}
+		t.Errorf("unexpected upstream call: %s", r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, api.URL, &fakeSandbox{})
+	srv.Close()
+	srv.loopCtx = context.Background()
+	account, _, err := store.GetAccountByOAuthIdentity("github", "hubot-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveTestGitHubOAuthToken(t, store, account.ID, srv.cfg.AuthEncryptionKey.Value(), "user-token")
+	installation, err := store.UpsertGitHubInstallation(state.GitHubInstallation{AccountID: account.ID, InstallationID: 987, AccountType: "organization", AccountLogin: "acme", GitHubAccountID: 600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := store.CreateDeployment(state.Deployment{ID: "suspension-deploy", AccountID: account.ID, ScopeType: state.AccountScopeTypeGitHubInstall, ScopeID: 987, GitHubInstallationID: 987, RepositoryID: 42, RepositoryFullName: "acme/project", Ref: "refs/heads/main", CommitSHA: strings.Repeat("a", 40), ConfigPath: ".qiniu/deploy.yaml", SnapshotVersion: 1, SpecHash: "hash", SpecJSONEncrypted: "encrypted", Status: state.DeploymentStatusCompleted, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendDeploymentEvent(state.DeploymentEvent{DeploymentID: d.ID, EventType: "output", Message: "retained-private-output"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.CreateRequest(state.RunnerRequest{ID: "suspension-job", Source: "test", GitHubInstallationID: 987, RepositoryFullName: "acme/project", Labels: []string{"self-hosted"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rec := deploymentAuthCall(srv, "GET", "/user/deployments/"+d.ID, ""); rec.Code != 200 {
+		t.Fatalf("baseline: %d %s", rec.Code, rec.Body.String())
+	}
+	suspended.Store(true)
+	// Advance only this authorization entry past its real hard-expiry boundary.
+	srv.userRepositoryAccessMu.Lock()
+	entry := srv.userRepositoryAccessCache[account.ID]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	srv.userRepositoryAccessCache[account.ID] = entry
+	srv.userRepositoryAccessMu.Unlock()
+	for _, path := range []string{"/user/deployments", "/user/runner_requests"} {
+		rec := deploymentAuthCall(srv, "GET", path, "")
+		if rec.Code != 200 || (path == "/user/deployments" && !strings.Contains(rec.Body.String(), `"total":0`)) || (path == "/user/runner_requests" && strings.TrimSpace(rec.Body.String()) != "[]") {
+			t.Fatalf("suspended list: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	for _, path := range []string{"/user/deployments/" + d.ID, "/user/deployments/" + d.ID + "/events", "/user/deployments/" + d.ID + "/revisions", "/user/deployments/" + d.ID + "/resources", "/user/runner_requests/suspension-job", "/user/runner_requests/suspension-job/events"} {
+		rec := deploymentAuthCall(srv, "GET", path, "")
+		if rec.Code != 404 || strings.Contains(rec.Body.String(), "retained-private-output") {
+			t.Fatalf("suspended read: %s %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	for _, action := range []struct{ method, path string }{{"POST", "/user/deployments/" + d.ID + "/stop"}, {"POST", "/user/deployments/" + d.ID + "/retry"}, {"DELETE", "/user/deployments/" + d.ID}, {"POST", "/user/deployments/" + d.ID + "/revisions/1/terminal"}} {
+		if rec := deploymentAuthCall(srv, action.method, action.path, "{}"); rec.Code != 404 {
+			t.Fatalf("suspended mutation: %s %d %s", action.path, rec.Code, rec.Body.String())
+		}
+	}
+	input := fmt.Sprintf(`{"installation_id":%d,"repository_full_name":"acme/project","ref":"main","source":"branch"}`, installation.ID)
+	if rec := deploymentAuthCall(srv, "POST", "/user/deployments", input); rec.Code != 404 || !strings.Contains(rec.Body.String(), "github installation is not accessible") {
+		t.Fatalf("suspended admission: %d %s", rec.Code, rec.Body.String())
+	}
+	refsPath := fmt.Sprintf("/user/deployment-refs?installation_id=%d&repository_full_name=acme/project&source=branch", installation.ID)
+	if rec := deploymentAuthCall(srv, "GET", refsPath, ""); rec.Code != 404 || !strings.Contains(rec.Body.String(), "github installation is not accessible") {
+		t.Fatalf("suspended discovery: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := srv.deploymentSource(t.Context(), d); err == nil {
+		t.Fatal("suspended installation reached checkout")
+	}
+	suspended.Store(false)
+	srv.invalidateUserRepositoryAccess(account.ID)
+	if rec := deploymentAuthCall(srv, "GET", "/user/deployments/"+d.ID, ""); rec.Code != 200 {
+		t.Fatalf("restored: %d %s", rec.Code, rec.Body.String())
+	}
+	retained, err := store.GetDeployment(d.ID)
+	if err != nil || retained.Status != d.Status || retained.Version != d.Version {
+		t.Fatal("authorization checks changed deployment lifecycle")
+	}
+}
+
 func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 	var calls atomic.Int32
 	var revoked atomic.Bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		calls.Add(1)
 		if r.URL.Path != "/user/installations/987/repositories" {
 			t.Errorf("unexpected GitHub call: %s", r.URL.Path)
@@ -176,6 +272,10 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 
 func TestRepositoryMemberCanDeployWithoutPrivateCatalogAccess(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		switch r.URL.Path {
 		case "/user/memberships/orgs":
 			fmt.Fprint(w, `[{"state":"active","role":"member","organization":{"id":600,"login":"acme"}}]`)

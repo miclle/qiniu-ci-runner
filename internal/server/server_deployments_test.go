@@ -54,6 +54,10 @@ func TestUserCreateDeploymentPinsCommitAndAuditsPlan(t *testing.T) {
 func testUserCreateDeploymentPinsCommitAndAuditsPlan(t *testing.T, source string) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		switch {
 		case r.URL.Path == "/user/installations/987/repositories":
 			if r.Header.Get("Authorization") != "Bearer user-token" {
@@ -321,6 +325,10 @@ func deploymentTemplateTestClient() *http.Client {
 
 func TestUserDeploymentRefsRejectUnavailableAuthorization(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		if r.URL.Path != "/user/installations/987/repositories" {
 			t.Errorf("ref discovery must not run after rejected OAuth: %s", r.URL.Path)
 		}
@@ -393,6 +401,10 @@ func TestDeploymentReadsAndMutationsRejectRevokedRepositoryAccess(t *testing.T) 
 	for _, scenario := range []string{"different account", "repository revoked", "organization member"} {
 		t.Run(scenario, func(t *testing.T) {
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveActiveInstallationFixture(w, r, 987) {
+					return
+				}
+
 				switch r.URL.Path {
 				case "/user/memberships/orgs":
 					fmt.Fprint(w, `[{"state":"active","role":"member","organization":{"id":600,"login":"acme"}}]`)

@@ -17,6 +17,10 @@ import (
 func TestDeploymentTerminalLifecycleAndAuthorization(t *testing.T) {
 	var revoked atomic.Bool
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveActiveInstallationFixture(w, r, 987) {
+			return
+		}
+
 		if r.URL.Path == "/user/installations/987/repositories" {
 			if revoked.Load() {
 				fmt.Fprint(w, `{"repositories":[]}`)
