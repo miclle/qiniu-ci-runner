@@ -1,6 +1,6 @@
 import { deploymentCreatePath, deploymentListAPIPath, deploymentListPath, deploymentPath, githubContextFromPath, githubContextPath } from "@/github-context-routes"
 import { ArrowLeft, CalendarDays, Copy, GitBranch, GitCommitHorizontal, ExternalLink, Loader2, Plus, RefreshCw, Square, Trash2, RotateCcw } from "lucide-react"
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 
 import { formatTime as formatEventTime } from "@/admin-format"
@@ -175,6 +175,25 @@ export function UserDeploymentsSection({
   }
   const deploymentEvents = useDeploymentEvents(request, selectedDeployment ? selectedID : null, selectedRevisionNumber, selectedRevision?.status ?? selectedDeployment?.status, currentLogin)
   const selectedDeploymentID = selectedDeployment?.id
+  const selectedPullRequest = selectedDeployment?.pull_request_number || Number(selectedDeployment?.ref?.match(/^refs\/pull\/(\d+)\/head$/)?.[1]) || undefined
+  const selectedPullRequestTitle = selectedDeployment?.pull_request_title
+  useEffect(() => {
+    if (!selectedDeploymentID || !selectedPullRequest || selectedPullRequestTitle?.trim()) return
+    let cancelled = false
+    void request(`/user/deployments/${encodeURIComponent(selectedDeploymentID)}/pull-request`)
+      .then((value) => {
+        const result = value as { pull_request_number?: number; pull_request_title?: string }
+        if (cancelled || result.pull_request_number !== selectedPullRequest || !result.pull_request_title?.trim()) return
+        const title = result.pull_request_title.trim()
+        setDeployments((current) => current.map((item) => item.id === selectedDeploymentID
+          ? { ...item, pull_request_title: item.pull_request_title || title }
+          : item))
+      })
+      .catch(() => {
+        // Optional GitHub metadata must not hide persisted details or logs.
+      })
+    return () => { cancelled = true }
+  }, [request, selectedDeploymentID, selectedPullRequest, selectedPullRequestTitle, currentLogin, navigationRefresh])
   const [deploymentResources, setDeploymentResources] = useState<DeploymentResources | null>(null)
   const [deploymentResourcesLoading, setDeploymentResourcesLoading] = useState(false)
 
@@ -228,10 +247,15 @@ export function UserDeploymentsSection({
       if (!deploymentID) setStatusCounts(pages[0].status_counts ?? null)
       setDeployments((current) => next.map((item) => {
         const previous = current.find((old) => old.id === item.id)
-        if (!previous?.revisions?.length || !item.revisions?.length) return item
+        // A detail response started before metadata was saved may still be
+        // missing the title. Retain it only for the same immutable source/version.
+        const snapshot = !item.pull_request_title && previous?.ref === item.ref && previous?.revision_number === item.revision_number && previous?.pull_request_title
+          ? { ...item, pull_request_title: previous.pull_request_title }
+          : item
+        if (!previous?.revisions?.length || !item.revisions?.length) return snapshot
         const merged = new Map(previous.revisions.map((revision) => [revision.number, revision]))
         item.revisions.forEach((revision) => merged.set(revision.number, revision))
-        return { ...item, revisions: [...merged.values()].sort((a, b) => b.number - a.number), revisions_has_more: previous.revisions.length > item.revisions.length ? previous.revisions_has_more : item.revisions_has_more }
+        return { ...snapshot, revisions: [...merged.values()].sort((a, b) => b.number - a.number), revisions_has_more: previous.revisions.length > item.revisions.length ? previous.revisions_has_more : item.revisions_has_more }
       }))
     } catch (cause) {
       if (requestGeneration !== generation.current) return
@@ -430,16 +454,16 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
     ? t("user.deploymentPullRequest")
     : t(deployment.source === "tag" || deployment.ref?.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")
   const sourceValue = sourcePullRequest ? `#${sourcePullRequest}` : displayRevisionRef(deployment.ref) || deployment.commit_sha.slice(0, 8)
-  const sourcePullRequestTitle = selectedRevision?.pull_request_title?.trim() || deployment.pull_request_title?.trim()
+  const sourcePullRequestTitle = deployment.pull_request_title?.trim()
   const sourceTitle = sourcePullRequest && sourcePullRequestTitle ? ` · ${sourcePullRequestTitle}` : ""
   return <div className="space-y-4">
     <Card className="gap-4 rounded-none border-0 border-b bg-transparent pb-4 pt-0 shadow-none">
       <CardHeader className="space-y-2 px-0">
         <CardDescription className="break-words text-sm font-medium text-foreground">{deployment.repository_full_name}</CardDescription>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <CardTitle className="min-w-0 break-words text-2xl">{sourceLabel} {sourceValue}{sourceTitle}</CardTitle>
-            <DeploymentStatus status={deployment.status} />
+          <div className="w-full min-w-0 sm:w-auto sm:flex-1">
+            <CardTitle className="inline break-words text-2xl leading-snug"><DeploymentSourceLink deployment={deployment}>{sourceLabel} {sourceValue}{sourceTitle}</DeploymentSourceLink></CardTitle>
+            <span className="ml-2 inline-flex align-middle"><DeploymentStatus status={deployment.status} /></span>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <Button type="button" size="sm" variant="outline" disabled={!canStop || Boolean(action)} onClick={() => onAction("stop")}><Square className="h-3.5 w-3.5" />{t("user.stopDeployment")}</Button>
@@ -571,6 +595,22 @@ function DeploymentDetail({ request, selectedRevisionNumber, deployment, selecte
       </DialogContent>
     </Dialog>
   </div>
+}
+
+function deploymentSourceHref(deployment: Pick<Deployment, "repository_full_name" | "ref" | "source" | "pull_request_number">, pullRequest?: number) {
+  const number = pullRequest || deployment.pull_request_number || Number(deployment.ref?.match(/^refs\/pull\/(\d+)\/head$/)?.[1])
+  if (number) return `https://github.com/${deployment.repository_full_name}/pull/${number}`
+  const value = displayRevisionRef(deployment.ref)
+  if (!value) return ""
+  const encoded = encodeURIComponent(value).replace(/%2F/gi, "/")
+  const tag = deployment.source === "tag" || deployment.ref?.startsWith("refs/tags/")
+  return `https://github.com/${deployment.repository_full_name}/${tag ? "tree/refs/tags" : "tree"}/${encoded}`
+}
+
+function DeploymentSourceLink({ deployment, href, children }: { deployment: Pick<Deployment, "repository_full_name" | "ref" | "source" | "pull_request_number">; href?: string; children: ReactNode }) {
+  const target = href || deploymentSourceHref(deployment)
+  if (!target) return <span>{children}</span>
+  return <a href={target} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline" aria-label={typeof children === "string" ? children : undefined}>{children}</a>
 }
 
 function DeploymentEndpoint({ endpoint, isPublic }: { endpoint: string; isPublic: boolean }) {

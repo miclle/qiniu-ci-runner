@@ -28,6 +28,10 @@ func TestDeploymentRepositoryNavigationIgnoresHistoryPageAndFiltersExactAccess(t
 		if i == 7 {
 			d.RepositoryFullName = "owner/hidden"
 		}
+		if i == 0 {
+			d.Ref = "refs/pull/8/head"
+			d.PullRequestTitle = "Preview deployment"
+		}
 		if i == 8 {
 			d.RepositoryFullName = "OWNER/PROJECT"
 		}
@@ -47,6 +51,15 @@ func TestDeploymentRepositoryNavigationIgnoresHistoryPageAndFiltersExactAccess(t
 		if d.ID > "nav-004" {
 			t.Fatalf("nonactive or unauthorized row: %#v", d)
 		}
+	}
+	var foundTitle bool
+	for _, d := range r.ActiveDeployments {
+		if d.ID == "nav-000" && d.PullRequestTitle == "Preview deployment" {
+			foundTitle = true
+		}
+	}
+	if !foundTitle {
+		t.Fatalf("navigation did not retain pull request title: %#v", r.ActiveDeployments)
 	}
 	repos, more, err = store.ListDeploymentRepositories(access, "", 1, 1)
 	if err != nil || more || len(repos) != 1 || repos[0].RepositoryFullName != "owner/retired" || repos[0].ActiveCount != 0 || repos[0].Total != 1 || len(repos[0].ActiveDeployments) != 0 {

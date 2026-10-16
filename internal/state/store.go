@@ -165,6 +165,7 @@ type DeploymentNavigationItem struct {
 	ID                 string    `json:"id"`
 	RepositoryFullName string    `json:"repository_full_name"`
 	Ref                string    `json:"ref"`
+	PullRequestTitle   string    `json:"pull_request_title,omitempty"`
 	CommitSHA          string    `json:"commit_sha"`
 	Status             string    `json:"status"`
 	UpdatedAt          time.Time `json:"updated_at"`
@@ -665,6 +666,7 @@ type DeploymentStore interface {
 	CountAuthorizedDeploymentsByStatus(access []GitHubInstallationRepositoryAccess, options DeploymentListOptions) (DeploymentStatusCounts, error)
 	ListDeploymentRepositories(access []GitHubInstallationRepositoryAccess, repository string, limit, offset int) ([]DeploymentRepository, bool, error)
 	ListActiveDeployments() ([]Deployment, error)
+	FillDeploymentPullRequestTitle(id, ref, title string) error
 	UpdateDeployment(deployment Deployment) error
 	RetryDeployment(deployment Deployment, expiresAt time.Time) error
 	RetryDeploymentWithScopeLimit(deployment Deployment, expiresAt time.Time, maxConcurrent int) error

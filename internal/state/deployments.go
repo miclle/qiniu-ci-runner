@@ -20,7 +20,10 @@ const (
 	maxDeploymentEventBytes   = 8 << 20
 )
 
-var deploymentRepositoryPattern = regexp.MustCompile(`^[^/\s]+/[^/\s]+$`)
+var (
+	deploymentRepositoryPattern = regexp.MustCompile(`^[^/\s]+/[^/\s]+$`)
+	deploymentPullRefPattern    = regexp.MustCompile(`^refs/pull/[1-9][0-9]*/head$`)
+)
 
 func (s *DBStore) CreateDeployment(deployment Deployment) (Deployment, error) {
 	db, err := s.dbOrEnsure()
@@ -177,6 +180,25 @@ func (s *DBStore) GetDeployment(id string) (Deployment, error) {
 	return deploymentFromRecord(record), nil
 }
 
+// FillDeploymentPullRequestTitle fills legacy display metadata for one exact
+// source without replacing saved titles or changing lifecycle timestamps.
+func (s *DBStore) FillDeploymentPullRequestTitle(id, ref, title string) error {
+	db, err := s.dbOrEnsure()
+	if err != nil {
+		return err
+	}
+	id, ref, title = strings.TrimSpace(id), strings.TrimSpace(ref), strings.TrimSpace(title)
+	if id == "" || !deploymentPullRefPattern.MatchString(ref) || title == "" || len(title) > 1024 || strings.IndexFunc(title, unicode.IsControl) >= 0 {
+		return fmt.Errorf("deployment pull request title is invalid")
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&deploymentRecord{}).Where("id = ? AND ref = ? AND (pull_request_title IS NULL OR pull_request_title = '')", id, ref).UpdateColumn("pull_request_title", title).Error; err != nil {
+			return err
+		}
+		return tx.Model(&deploymentRevisionRecord{}).Where("deployment_id = ? AND ref = ? AND (pull_request_title IS NULL OR pull_request_title = '')", id, ref).UpdateColumn("pull_request_title", title).Error
+	})
+}
+
 func (s *DBStore) ListDeploymentsForAccount(accountID int64, options DeploymentListOptions) ([]Deployment, int64, error) {
 	return s.listDeploymentsForAccount(accountID, nil, false, options)
 }
@@ -224,7 +246,7 @@ func (s *DBStore) ListDeploymentRepositories(access []GitHubInstallationReposito
 		repositories[i].ActiveDeployments = []DeploymentNavigationItem{}
 	}
 	var deployments []DeploymentNavigationItem
-	err = db.Model(&deploymentRecord{}).Select("id, repository_full_name, ref, commit_sha, status, updated_at").
+	err = db.Model(&deploymentRecord{}).Select("id, repository_full_name, ref, pull_request_title, commit_sha, status, updated_at").
 		Where(authorizedDeploymentRepositories(db, access)).Where("LOWER(repository_full_name) IN ? AND status IN ?", names, active).
 		Order("created_at DESC, id DESC").Scan(&deployments).Error
 	if err != nil {

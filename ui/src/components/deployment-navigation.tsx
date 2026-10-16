@@ -12,7 +12,7 @@ import type { Deployment } from "@/components/user-deployments-section"
 import { DeploymentStatus } from "@/components/deployment-status"
 import { activeDeploymentStatuses } from "@/deployment-status"
 
-type NavigationItem = Pick<Deployment, "id" | "repository_full_name" | "ref" | "commit_sha" | "status" | "updated_at" | "source" | "pull_request_number">
+type NavigationItem = Pick<Deployment, "id" | "repository_full_name" | "ref" | "commit_sha" | "status" | "updated_at" | "source" | "pull_request_number" | "pull_request_title">
 type Repository = { repository_full_name: string; total?: number; active_count?: number; active_deployments: NavigationItem[] }
 type RepositoryPage = { items?: Repository[]; has_more?: boolean }
 type Request = (url: string, options?: RequestInit) => Promise<unknown>
@@ -108,9 +108,11 @@ export function DeploymentNavigation({ request, selected, selectedID, repository
           <CollapsibleContent className="border-t border-border/40 bg-background/70 py-1">
             {children.length ? children.map((deployment) => {
               const pull = deployment.pull_request_number || Number(deployment.ref?.match(/^refs\/pull\/(\d+)\/head$/)?.[1])
-              const reference = pull ? t("user.deploymentPullRequestNumber", { number: pull }) : `${t(deployment.source === "tag" || deployment.ref?.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} ${deployment.ref?.replace(/^refs\/(heads|tags)\//, "") || "—"}`
+              const reference = pull
+                ? `${t("user.deploymentPullRequestNumber", { number: pull })}${deployment.pull_request_title?.trim() ? ` · ${deployment.pull_request_title.trim()}` : ""}`
+                : `${t(deployment.source === "tag" || deployment.ref?.startsWith("refs/tags/") ? "user.deploymentTag" : "user.deploymentBranch")} ${deployment.ref?.replace(/^refs\/(heads|tags)\//, "") || "—"}`
               return <AppLink key={deployment.id} href={deploymentPath({ ...deployment, pull_request_number: pull || undefined })} aria-current={deployment.id === selectedID ? "page" : undefined} className={cn("block min-w-0 border-l-2 py-2 pl-10 pr-4 transition-colors hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", deployment.id === selectedID ? "border-l-primary bg-primary/5" : "border-l-transparent")}>
-                <div className="flex items-center justify-between gap-2"><span className="min-w-0 break-all text-sm">{reference}</span><DeploymentStatus status={deployment.status} /></div>
+                <div className="flex items-center justify-between gap-2"><span className="min-w-0 line-clamp-2 break-words text-sm" title={reference}>{reference}</span><DeploymentStatus status={deployment.status} /></div>
                 <code className="mt-1 block truncate text-xs text-muted-foreground" title={deployment.id}>{deployment.id.slice(0, 10)}</code>
               </AppLink>
             }) : null}

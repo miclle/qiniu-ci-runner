@@ -111,6 +111,33 @@ func TestPullRequestDeploymentPinsSourceAndRejectsInvalidContext(t *testing.T) {
 	if replay := call("POST", "/user/deployments", payload, "pr-create"); replay.Code != 200 || pullReads != previousReads {
 		t.Fatalf("moving PR replay: %d", replay.Code)
 	}
+	// Old deployments render local details immediately, then fill missing titles
+	// through the separately authorized metadata endpoint.
+	legacy, err := store.GetDeployment(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.ID, legacy.PullRequestTitle = "legacy-pr-title", ""
+	if _, err := store.CreateDeployment(legacy); err != nil {
+		t.Fatal(err)
+	}
+	previousReads = pullReads
+	if detail := call("GET", "/user/deployments/legacy-pr-title", "", ""); detail.Code != 200 || pullReads != previousReads {
+		t.Fatalf("local detail fetched GitHub: %d %s", detail.Code, detail.Body.String())
+	}
+	for range 2 {
+		meta := call("GET", "/user/deployments/legacy-pr-title/pull-request", "", "")
+		if meta.Code != 200 || !strings.Contains(meta.Body.String(), `"pull_request_title":"Preview deployment"`) || meta.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("legacy title: %d %s", meta.Code, meta.Body.String())
+		}
+	}
+	if pullReads != previousReads+1 {
+		t.Fatalf("metadata repeated GitHub reads: before=%d after=%d", previousReads, pullReads)
+	}
+	legacyRevision, err := store.GetDeploymentRevision(legacy.ID, 1)
+	if err != nil || legacyRevision.PullRequestTitle != "Preview deployment" {
+		t.Fatalf("missing repaired revision title: %#v %v", legacyRevision, err)
+	}
 	for _, scenario := range []string{"base mismatch", "deleted fork", "moved head", "unrelated commit", "revoked"} {
 		body := payload
 		switch scenario {

@@ -482,6 +482,33 @@ func (s *Server) handleUserGetDeployment(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, response)
 }
 
+// Legacy title enrichment is separate so detail and log reads stay local.
+func (s *Server) handleUserGetDeploymentPullRequest(w http.ResponseWriter, r *http.Request) {
+	_, _, deployment, ok := s.loadAuthorizedDeployment(w, r)
+	if !ok {
+		return
+	}
+	number := deploymentPullRequestNumber(deployment.Ref)
+	if number == 0 {
+		writeError(w, http.StatusNotFound, "deployment is not a pull request")
+		return
+	}
+	title := deployment.PullRequestTitle
+	if strings.TrimSpace(title) == "" {
+		group := userRunnerJobGroupResponse{Group: "pull_request", Repository: deployment.RepositoryFullName, PullRequestNumber: number}
+		s.enrichUserRunnerJobGroup(r.Context(), &group)
+		title = strings.TrimSpace(group.PullRequestTitle)
+		if title != "" {
+			if err := s.store.FillDeploymentPullRequestTitle(deployment.ID, deployment.Ref, title); err != nil {
+				writeError(w, http.StatusInternalServerError, "save deployment pull request title")
+				return
+			}
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"pull_request_number": number, "pull_request_title": title})
+}
+
 func (s *Server) handleUserGetDeploymentResources(w http.ResponseWriter, r *http.Request) {
 	_, _, deployment, ok := s.loadAuthorizedDeployment(w, r)
 	if !ok {

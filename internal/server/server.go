@@ -452,6 +452,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /user/deployment-repositories", s.handleUserDeploymentRepositories)
 	s.mux.HandleFunc("GET /user/deployments", s.handleUserListDeployments)
 	s.mux.HandleFunc("GET /user/deployments/{id}", s.handleUserGetDeployment)
+	s.mux.HandleFunc("GET /user/deployments/{id}/pull-request", s.handleUserGetDeploymentPullRequest)
 	s.mux.HandleFunc("GET /user/deployments/{id}/resources", s.handleUserGetDeploymentResources)
 	s.mux.HandleFunc("GET /user/deployments/{id}/events", s.handleUserListDeploymentEvents)
 	s.mux.HandleFunc("GET /user/deployments/{id}/revisions", s.handleUserListDeploymentRevisions)

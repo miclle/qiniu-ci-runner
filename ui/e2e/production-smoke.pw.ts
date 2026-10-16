@@ -412,9 +412,13 @@ test("reloads Jobs after returning from another page while an older list request
 test("deploys a historical PR Job through the repository context", async ({ page }) => {
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
 
+  await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [] }))
   const diagnostics = observeBrowserDiagnostics(page)
   const pageLoads = observePageLoads(page)
   let submitted: Record<string, unknown> = {}
+  let titleReads = 0
+  let releaseTitle!: () => void
+  const titleReady = new Promise<void>((resolve) => { releaseTitle = resolve })
   const runners = fixtureRunners(100)
   const selected = { ...runners[0], pull_request_number: 42 }
   runners[0] = selected
@@ -431,7 +435,7 @@ test("deploys a historical PR Job through the repository context", async ({ page
     completed_at: "2026-08-11T00:00:00Z",
   }
 
-  const deployment = { id: "historical-pr", repository_full_name: selected.repository_full_name, source: "pull_request", ref: "42", pull_request_number: 42, commit_sha: previous.head_sha, revision_number: 1, status: "queued", created_at: previous.created_at, expires_at: previous.created_at }
+  const deployment = { id: "historical-pr", repository_full_name: selected.repository_full_name, source: "pull_request", ref: "42", pull_request_number: 42, pull_request_title: "", commit_sha: previous.head_sha, revision_number: 1, status: "queued", created_at: previous.created_at, expires_at: previous.created_at }
   await page.route("**/auth/session", (route) => route.fulfill({
     json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" },
   }))
@@ -466,6 +470,12 @@ test("deploys a historical PR Job through the repository context", async ({ page
       await route.fulfill({ status: 201, json: deployment })
     } else if (url.pathname === "/user/deployments") {
       await route.fulfill({ json: { items: [deployment] } })
+    } else if (url.pathname === "/user/deployments/historical-pr/pull-request") {
+      titleReads++
+      await titleReady
+      if (titleReads === 1) return route.fulfill({ json: { pull_request_number: 42, pull_request_title: "" } })
+      deployment.pull_request_title = "Preview historical fork commit"
+      await route.fulfill({ json: { pull_request_number: 42, pull_request_title: deployment.pull_request_title } })
     } else if (url.pathname === "/user/deployments/historical-pr") {
       await route.fulfill({ json: deployment })
     } else if (url.pathname.endsWith("/resources")) {
@@ -496,6 +506,14 @@ test("deploys a historical PR Job through the repository context", async ({ page
   await page.locator('button[type="submit"]').click()
   expect(submitted).toMatchObject({ repository_full_name: selected.repository_full_name, source: "pull_request", ref: "42", commit_sha: previous.head_sha })
   await expect(page).toHaveURL(/\/github\/fixture\/repository-0\/pull_requests\/42\/deployments\/historical-pr$/)
+  await expect(page.locator('[data-slot="card-title"]')).toHaveText("Pull request #42")
+  await expect(page.getByTestId("deployment-logs")).toBeVisible()
+  const firstTitleResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/historical-pr/pull-request"))
+  releaseTitle()
+  await firstTitleResponse
+  await page.getByRole("button", { name: "Refresh", exact: true }).first().click()
+  await expect(page.locator('[data-slot="card-title"] a')).toHaveText("Pull request #42 · Preview historical fork commit")
+  expect(titleReads).toBe(2)
   await page.reload({ waitUntil: "networkidle" })
   await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
   diagnostics.expectClean()
@@ -1229,7 +1247,7 @@ test("separates deployment list, creation, and refreshable detail pages", async 
     { ...deployment, id: "fixture-r2", number: 2, ref: "refs/tags/v1.0" },
     { ...deployment, id: "fixture-r1", number: 1, ref: "refs/tags/v0.9", commit_sha: "b".repeat(40), status: "completed", template_id: "old-template" },
   ]
-  const otherDeployment = { ...deployment, id: "other-fixture", repository_full_name: "fixture-user/other", status: "completed", source: "pull_request", ref: "7", pull_request_number: 7 }
+  const otherDeployment = { ...deployment, id: "other-fixture", repository_full_name: "fixture-user/other", status: "completed", source: "pull_request", ref: "7", pull_request_number: 7, pull_request_title: "Preview deployment" }
   await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [{ id: "cn-yangzhou-1", label: "China · Yangzhou 1", api_url: "https://cn-yangzhou-1-sandbox.qiniuapi.com" }] }))
   await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
   await page.route("**/user/**", async (route) => {
@@ -1426,7 +1444,7 @@ test("creates a PR deployment and reloads its GitHub context", async ({ page }, 
   test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
   const diagnostics = observeBrowserDiagnostics(page)
   let submitted: Record<string, unknown> = {}
-  const deployment = { id: "pr-deployment", repository_full_name: "fixture-user/project", source: "pull_request", ref: "7", pull_request_number: 7, source_repository_full_name: "contributor/fork", source_ref: "feature/preview", commit_sha: "a".repeat(40), status: "queued", revision_number: 1, endpoint: "https://deployment-preview-with-a-long-sandbox-domain.example.test", endpoint_access: "public", created_at: "2026-10-14T00:00:00Z", expires_at: "2026-10-14T01:00:00Z" }
+  const deployment = { id: "pr-deployment", repository_full_name: "fixture-user/project", source: "pull_request", ref: "7", pull_request_number: 7, pull_request_title: "Add preview deployment for feature branches and fork pull requests with a long descriptive GitHub title", source_repository_full_name: "contributor/fork", source_ref: "feature/preview", commit_sha: "a".repeat(40), status: "queued", revision_number: 1, endpoint: "https://deployment-preview-with-a-long-sandbox-domain.example.test", endpoint_access: "public", created_at: "2026-10-14T00:00:00Z", expires_at: "2026-10-14T01:00:00Z" }
   await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
   await page.route("**/user/**", (route) => {
     const url = new URL(route.request().url())
@@ -1458,7 +1476,17 @@ test("creates a PR deployment and reloads its GitHub context", async ({ page }, 
   await expect(page.getByRole("heading", { name: "Deployment", exact: true })).toBeVisible()
   await expect(page.getByRole("button", { name: "Copy access URL", exact: true })).toBeVisible()
   await expect(page.getByRole("link", { name: "Open access URL in a new window", exact: true })).toHaveAttribute("href", deployment.endpoint)
+  await expect(page.locator('[data-slot="card-title"] a')).toHaveText(`Pull request #7 · ${deployment.pull_request_title}`)
+  await expect(page.locator('[data-slot="card-title"] a')).toHaveAttribute("href", "https://github.com/fixture-user/project/pull/7")
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.screenshot({ path: testInfo.outputPath("deployment-pr-title-desktop.png"), fullPage: true })
+  await page.locator('[data-slot="card-title"] a').focus()
+  await expect(page.locator('[data-slot="card-title"] a')).toBeFocused()
   await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.locator('[data-slot="card-title"]').evaluate((node) => {
+    const bounds = node.getBoundingClientRect()
+    return bounds.width > 250 && bounds.height < 400
+  })).toBe(true)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.screenshot({ path: testInfo.outputPath("deployment-access-url.png"), fullPage: true })
   diagnostics.expectClean()

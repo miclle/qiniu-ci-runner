@@ -152,6 +152,7 @@ describe("deployment interaction", () => {
       expect(openEndpoint.target).toBe("_blank")
       expect(openEndpoint.rel).toBe("noopener noreferrer")
       expect(container.textContent).toContain("This address is public. Protect sensitive data in your application.")
+      expect(container.querySelector('[data-slot="card-title"] a')?.getAttribute("href")).toBe("https://github.com/miclle/demo/tree/example/vite")
     } finally {
       if (previous) Object.defineProperty(navigator, "clipboard", previous)
       else Reflect.deleteProperty(navigator, "clipboard")
@@ -166,6 +167,86 @@ describe("deployment interaction", () => {
     const title = container.querySelector('[data-slot="card-title"]')
     expect(title?.textContent).toContain("Pull request #7 · Preview deployment")
     expect(title?.nextElementSibling?.textContent).toBe("Running")
+    expect(title?.querySelector("a")?.getAttribute("href")).toBe("https://github.com/miclle/demo/pull/7")
+  })
+
+  test("renders legacy PR details and logs before optional GitHub title metadata", async () => {
+    let finishTitle
+    const pendingTitle = new Promise((resolve) => { finishTitle = resolve })
+    const saved = { ...deployment("legacy-pr", "completed"), source: "pull_request", ref: "7", pull_request_number: 7, revision_number: 2, revisions: [{ ...deployment("legacy-pr-r1", "completed"), ref: "refs/pull/7/head", number: 1, pull_request_title: "Historical title" }] }
+    const request = async (url) => url.endsWith("/pull-request") ? pendingTitle : url.includes("/events") ? { events: [event(1, "local saved logs")], has_more: false } : url.includes("/resources") ? {} : saved
+    const { container } = await mountPage({ request, deploymentID: saved.id }, { page: "deployments" })
+    expect(container.textContent).toContain("local saved logs")
+    const title = () => container.querySelector('[data-slot="card-title"]')
+    expect(title().textContent).toBe("Pull request #7")
+    await act(async () => finishTitle({ pull_request_number: 7, pull_request_title: "Add real GitHub title" }))
+    expect(title().textContent).toBe("Pull request #7 · Add real GitHub title")
+    saved.pull_request_title = "Add real GitHub title"
+    await selectRevisionURL(1)
+    expect(title().textContent).not.toContain("Historical title")
+  })
+
+  test.each(["unavailable", "empty"])("retries %s PR title metadata on explicit page refresh", async (failure) => {
+    const saved = { ...deployment("retry-pr-title", "completed"), source: "pull_request", ref: "7", pull_request_number: 7, revision_number: 1 }
+    let titleReads = 0
+    const request = async (url) => {
+      if (url.startsWith("/user/deployment-repositories")) return navigationPage([saved])
+      if (url.endsWith("/pull-request")) {
+        titleReads++
+        if (titleReads === 1) {
+          if (failure === "unavailable") throw new Error("temporary metadata outage")
+          return { pull_request_number: 7, pull_request_title: "" }
+        }
+        saved.pull_request_title = "Recovered PR title"
+        return { pull_request_number: 7, pull_request_title: saved.pull_request_title }
+      }
+      if (url.includes("/events")) return { events: [event(1, "local logs stay visible")], has_more: false }
+      if (url.includes("/resources")) return {}
+      return { ...saved }
+    }
+    const { container } = await mountPage({ request, deploymentID: saved.id }, { page: "deployments" })
+    expect(titleReads).toBe(1)
+    expect(container.textContent).toContain("local logs stay visible")
+    await act(async () => button(container, "Refresh").click())
+    await settle()
+    expect(titleReads).toBe(2)
+    expect(container.querySelector('[data-slot="card-title"]').textContent).toBe("Pull request #7 · Recovered PR title")
+    expect(container.textContent).toContain("local logs stay visible")
+  })
+
+  test("does not carry a recovered PR title into a later revision", async () => {
+    let revision = 1
+    let finishTitle
+    const pendingTitle = new Promise((resolve) => { finishTitle = resolve })
+    const request = async (url) => {
+      if (url.startsWith("/user/deployment-repositories")) return { items: [] }
+      if (url.endsWith("/pull-request")) return pendingTitle
+      if (url.includes("/events")) return { events: [], has_more: false }
+      if (url.includes("/resources")) return {}
+      return { ...deployment("next-pr-title", "completed"), source: "pull_request", ref: "7", pull_request_number: 7, pull_request_title: revision === 1 ? "Old revision title" : undefined, revision_number: revision }
+    }
+    const { container } = await mountPage({ request, deploymentID: "next-pr-title" }, { page: "deployments" })
+    const title = () => container.querySelector('[data-slot="card-title"]').textContent
+    expect(title()).toContain("Old revision title")
+    revision = 2
+    await act(async () => button(container, "Refresh").click())
+    await settle()
+    expect(title()).toBe("Pull request #7")
+    await act(async () => finishTitle({ pull_request_number: 7, pull_request_title: "New revision title" }))
+    expect(title()).toBe("Pull request #7 · New revision title")
+  })
+
+  test.each([
+    ["branch", "feature/a#b?c", "https://github.com/miclle/demo/tree/feature/a%23b%3Fc"],
+    ["tag", "release/v1", "https://github.com/miclle/demo/tree/refs/tags/release/v1"],
+  ])("links the %s heading to the exact GitHub ref", async (source, ref, href) => {
+    const saved = { ...deployment("source-link", "completed"), source, ref }
+    const request = async (url) => url.includes("/events") ? { events: [], has_more: false } : url.includes("/resources") ? {} : saved
+    const { container } = await mountPage({ request, deploymentID: saved.id }, { page: "deployments" })
+    const link = container.querySelector('[data-slot="card-title"] a')
+    expect(link.getAttribute("href")).toBe(href)
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer")
+    expect(link.getAttribute("target")).toBe("_blank")
   })
 	 test("switches immutable revisions, rejects delayed logs, and restores the URL selection", async () => {
 		let finishLatest
@@ -285,7 +366,7 @@ describe("deployment interaction", () => {
     let status = "running"
     const old = { ...deployment("stopped-preview", "completed"), ref: "refs/heads/preview" }
     const running = { ...deployment("running-preview", "running"), ref: "refs/heads/preview" }
-    const other = { ...deployment("other-active", "creating"), repository_full_name: "another/project", ref: "refs/pull/17/head" }
+    const other = { ...deployment("other-active", "creating"), repository_full_name: "another/project", ref: "refs/pull/17/head", pull_request_title: "Add preview deployment" }
     const request = async (url) => {
       if (url.startsWith("/user/deployment-repositories")) return navigationPage([{ ...running, status }, old, other])
       if (url.includes("/events")) return { events: [], has_more: false }
@@ -302,6 +383,7 @@ describe("deployment interaction", () => {
     const toggle = [...navigation.querySelectorAll("button")].find((item) => item.getAttribute("aria-label")?.includes("another/project"))
     await act(async () => toggle.click())
     expect(navigation.textContent).toContain("PR #17")
+    expect(navigation.textContent).toContain("PR #17 · Add preview deployment")
     status = "completed"
     await act(async () => button(container, "Refresh").click())
     expect(navigation.querySelector('a[aria-current="page"]').textContent).toContain("Stopped")

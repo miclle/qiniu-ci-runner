@@ -82,7 +82,7 @@ func TestSuspendedInstallationDeniesJobsAndDeploymentAccess(t *testing.T) {
 			t.Fatalf("suspended list: %d %s", rec.Code, rec.Body.String())
 		}
 	}
-	for _, path := range []string{"/user/deployments/" + d.ID, "/user/deployments/" + d.ID + "/events", "/user/deployments/" + d.ID + "/revisions", "/user/deployments/" + d.ID + "/resources", "/user/runner_requests/suspension-job", "/user/runner_requests/suspension-job/events"} {
+	for _, path := range []string{"/user/deployments/" + d.ID, "/user/deployments/" + d.ID + "/events", "/user/deployments/" + d.ID + "/revisions", "/user/deployments/" + d.ID + "/resources", "/user/deployments/" + d.ID + "/pull-request", "/user/runner_requests/suspension-job", "/user/runner_requests/suspension-job/events"} {
 		rec := deploymentAuthCall(srv, "GET", path, "")
 		if rec.Code != 404 || strings.Contains(rec.Body.String(), "retained-private-output") {
 			t.Fatalf("suspended read: %s %d %s", path, rec.Code, rec.Body.String())
@@ -166,7 +166,7 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, path := range []string{"/user/deployment-repositories", "/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions"} {
+	for _, path := range []string{"/user/deployment-repositories", "/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions", "/user/deployments/shared-0/pull-request"} {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), "saved-output") {
@@ -228,8 +228,10 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"shared-2", "shared-3"} {
-		if rec := deploymentAuthCall(srv, "GET", "/user/deployments/"+id, ""); rec.Code != 404 {
-			t.Fatalf("wrong pair: %d", rec.Code)
+		for _, suffix := range []string{"", "/pull-request"} {
+			if rec := deploymentAuthCall(srv, "GET", "/user/deployments/"+id+suffix, ""); rec.Code != 404 {
+				t.Fatalf("wrong pair: %d", rec.Code)
+			}
 		}
 	}
 	if calls.Load() != 1 {
@@ -254,7 +256,7 @@ func TestDeploymentsShareJobsRepositoryAuthorization(t *testing.T) {
 		t.Fatal("worker accepted revoked repository access")
 	}
 	srv.invalidateUserRepositoryAccess(account.ID)
-	for _, path := range []string{"/user/deployment-repositories", "/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions"} {
+	for _, path := range []string{"/user/deployment-repositories", "/user/deployments", "/user/deployments/shared-0", "/user/deployments/shared-0/events", "/user/deployments/shared-0/revisions", "/user/deployments/shared-0/pull-request"} {
 		if rec := deploymentAuthCall(srv, "GET", path, ""); rec.Code != 403 || !strings.Contains(rec.Body.String(), "REAUTH_REQUIRED") {
 			t.Fatalf("revoked OAuth %d %s", rec.Code, rec.Body.String())
 		}
