@@ -171,6 +171,7 @@ go test ./internal/sandboxrunner -count=1
    - 点 `Install App`
    - 选择目标 owner
    - 选择要授权的仓库
+   - Deploy 需要批准新增的 `Contents: Read-only` 和 `Pull requests: Read-only`；批准后重试版本发现，已保存用户授权被拒绝时重新通过 GitHub 登录
    - 如果给已有 App 新增了 `Members: Read-only`，每个 installation owner 都必须先批准权限更新，组织 Settings 才会变为可管理
 7. 记录这些值：
    - App ID
@@ -848,3 +849,31 @@ PR 来源验证：执行 `go test ./internal/server ./internal/github -run 'Test
 路由迁移另覆盖可读斜杠查询、字面百分号转义与保留字符、仓库／分支 Jobs 筛选（包括空结果）、仓库级部署／创建入口、旧来源路径、OAuth 返回、刷新、前进后退与历史资源选择。在 `ui/` 运行 `bun test src/url-query.test.js src/github-context-routes.test.js src/components/auth-pages.test.js`，并运行 `task ui-production-smoke`。
 
 部署 URL 检查还覆盖不携带 SHA 的 Branch／Tag／PR 详情、未隐式限定 Commit 的来源历史、显式 Commit 列表筛选、Job 固定提交创建，以及所选不可变版本的 GitHub 链接和完整 SHA 复制。
+
+PR 标题／链接回归：`TestFillDeploymentPullRequestTitlePreservesSnapshotsAndLifecycle`
+与 `TestPullRequestDeploymentPinsSourceAndRejectsInvalidContext` 验证按精确 ref
+仅回填空标题、保留时间戳、仓库授权，以及详情先读取本地数据、独立补充 GitHub
+元数据。部署 UI 测试覆盖延迟返回的旧记录标题、当前与历史标题的区分，以及
+Branch／PR／Tag 链接；PR 生产构建夹具验证长标题、焦点和窄屏布局。
+
+部署认证夹具覆盖列表、详情、日志、Web 终端和创建表单返回的 GitHub
+`REAUTH_REQUIRED`，以及 runnerd 会话过期后会话检查成功／失败、普通权限拒绝与限流。
+验证 OAuth 仅跳转一次并保留完整来源、资源和 revision 返回地址；普通错误不误触发
+重新登录，离开部署页面后也不受之前请求的延迟登录错误影响。
+
+验证运行中本地 API 的已有 PR 部署，且不创建或停止 Sandbox，可使用：
+
+```bash
+RUNNERD_DEPLOY_LIVE_METADATA=1 \
+RUNNERD_DEPLOY_LIVE_BASE_URL=http://127.0.0.1:25500 \
+RUNNERD_DEPLOY_LIVE_CONFIG="$PWD/runnerd.local.yaml" \
+RUNNERD_DEPLOY_LIVE_ACCOUNT_ID="<configured-account-id>" \
+RUNNERD_DEPLOY_LIVE_DETAIL_ID="<existing-pr-deployment-id>" \
+RUNNERD_DEPLOY_LIVE_EVIDENCE=/tmp/deployment-metadata-evidence.json \
+go test ./internal/server -run '^TestDeploymentLivePullRequestMetadata$' -count=1 -v -timeout 2m
+```
+
+测试使用指定本地配置，在内存中签发短期会话，检查匿名拒绝、认证详情、PR 标题接口、
+保留版本、标题持久化以及生命周期字段不变。旧记录的空标题可通过正常元数据接口补齐。
+证据明确记录本轮是否触发回填，并分别记录初次和后续请求耗时。本测试不验证浏览器
+OAuth、布局、私有 Contents 权限、第二账号授权或真实资源释放。

@@ -134,6 +134,13 @@ organization settings still requires **Members: Read-only** and active owner
 membership (`role: admin`). Deploy never inherits CI Secrets, Cache S3
 credentials, or fork sponsorship permissions.
 
+Protected deployment requests handle the same login failures as Jobs. HTTP 401
+rechecks the runnerd session and returns expired sessions to the sign-in page.
+Structured `REAUTH_REQUIRED` errors redirect to GitHub OAuth once, retaining the
+current source/deployment/revision URL in `return_to`. Concurrent failures share
+one redirect gate; responses from a previous account or page cannot trigger it.
+Other forbidden, rate-limit and provider errors remain ordinary errors.
+
 ## First control-plane slice
 
 The authenticated API currently exposes the persisted plan boundary. The
@@ -197,10 +204,24 @@ ID is resolved server-side.
   share Jobs' repository authorization cache: refresh after 20 seconds, hard
   expiry at 30 seconds, with coalesced refreshes. A cache miss may contact GitHub;
   deployment content never requires Sandbox I/O. Missing/rejected OAuth access
-  fails closed, including for the original creator.
+  fails closed, including for the original creator. Repository access also
+  requires current user Installation metadata with no `suspended_at`; GitHub's
+  repository-list endpoint may still return repositories during suspension.
   Create/retry records the execution account for each revision; the worker
   revalidates that actor before source checkout. Historical zero actor fields
   use the original creator, whose identity and idempotency key remain stable.
+- `GET /user/deployments/{id}/pull-request` is optional GitHub title metadata for
+  legacy PR deployments. It requires the same exact repository authorization,
+  reuses Jobs' cached/coalesced PR lookup, and fills only empty titles for the
+  matching PR ref. Existing revision titles and lifecycle timestamps stay intact.
+  The UI requests it independently when the local title is missing; details and
+  logs render immediately even if GitHub is slow or unavailable. Explicit page
+  Refresh retries missing metadata through the same cache. A delayed detail
+  response cannot erase a recovered title for the same source/revision; a new
+  revision resolves its own title. New PR admission
+  and latest redeploy already snapshot `pull_request_title`. Detail headings link
+  to the base repository PR, branch tree, or tag tree (including tags without a
+  GitHub Release); fork commit links still use the saved source repository.
 - `GET /user/deployments/{id}/events` returns bounded lifecycle/output events with
   exclusive `before_id` and `after_id` cursors (mutually exclusive). Initial pages
   contain the newest events in chronological order; `after_id` returns the next
@@ -322,6 +343,31 @@ atomically while retaining audit events.
 
 ## Iteration plan
 
+Current closeout audit (2026-10-16) keeps implementation, browser fixtures and
+live acceptance separate. The evidence below does not yet justify closing Issue #125.
+Repository-member deployment access is the agreed authorization model; owner-only
+management still applies to Sandbox settings and private catalogs.
+
+Final commit preparation passed `task lint` and 16 deployment production-browser
+fixtures, including PR titles/source links, repository navigation, reloadable
+details, five OAuth-expiry surfaces and stale-response isolation. Independently
+staged snapshots passed the GitHub/server race suites, the state suite and 37
+deployment UI interaction tests. These complement the recorded 332-test UI and Go
+race/coverage `task test` run; browser fixtures remain separate from live provider
+and OAuth evidence.
+
+| Issue acceptance item | Evidence and remaining boundary |
+| --- | --- |
+| Authorized source, pinned Commit, startup and HTTP access | Public base/fork/older-PR and designated private-source Contents, pinned checkout, build and HTTP access passed. |
+| CI cleanup independence and no Deploy Runner registration | Recorded same-Commit CI overlap, Runner release, surviving HTTP 200 and Runner inventory checks passed. |
+| Detail fields, logs, failures, expiry and reload | Recorded real history/reload, authenticated title API, real PR/Branch/Tag source pages, lost-session sign-in/return and real OAuth-token revocation with in-app browser recovery passed. |
+| Repository and scope authorization | Exact-pair rejection and shared-member automated tests pass; real anonymous read returns 401. Live Installation suspension and OAuth-token revocation deny access after cache expiry and recovery restores it. Second-account sharing and individual repository removal remain separate gates. |
+| Confirmed stop/delete/expiry/failure cleanup | Public API/worker and private-source failure/stop runs include provider-confirmed absence; local records retain terminal history with cleared Sandbox references. |
+| Duplicate requests, unknown create outcomes, restart and attempt fencing | Recorded real API duplicate admission, transport-fault recovery and full local process restart passed; worker tests cover stale-attempt fencing. |
+| Quota, bounded logs, Secrets isolation and CI regression | Recorded quota/re-admission and accelerated retention passed; state/server/worker tests enforce event budgets, redaction and isolation. |
+| Real project and complete cleanup evidence | Public Branch/PR/Tag, private-source browser/provider and live Installation suspension/recovery evidence is retained below. Shared-account and other revocation modes remain separate gates. |
+| Paired user/configuration/App permission docs | English/Chinese configuration, testing, smoke and README surfaces document Contents/Members authorization and the current boundary. |
+
 Public execution acceptance on 2026-10-13 used the public `base` template and
 `qiniu/deployment` commit `fe64a78977093d7c7fd7fb9a159975c5f73f8ff6`, with the
 repository configuration unchanged. The real worker returned HTTP 200, preserved
@@ -434,6 +480,103 @@ Both real API runs passed concurrent idempotency, scope quota/re-admission,
 terminal replay, DELETE and provider-confirmed release of all their test resources.
 This proves public fork and older PR Commit execution; live GitHub access
 revocation, private Contents permissions and a second user's access remain separate gates.
+
+Local API acceptance on 2026-10-16 verified retained deployment
+`4hvwtaxjssi5oxc4nqwgnx3hiq` for `qiniu/deployment#1`. The running service returned
+`test: verify fork deployment preview` in details and PR metadata, with two
+retained revision titles. Anonymous detail access returned 401; authenticated
+reads returned 200 and left status, version, attempt, Sandbox identity and
+lifecycle update time unchanged. The final probe measured 3,559 ms for the first
+detail (including a cold GitHub authorization lookup), then 0–1 ms for metadata,
+revisions and the repeated detail, using millisecond resolution. This is a single
+local observation, not a latency guarantee. The title was already persisted, so
+this run does not prove a new legacy backfill, browser OAuth, or rendered links.
+It uses a short-lived signed in-memory session and performs no Sandbox mutations.
+After the Mac became available, ordinary signed-in Chrome rendered that PR title
+in both the detail heading and sidebar. Clicking the heading opened the matching
+GitHub PR #1 and displayed its real title. An existing `example/vite` deployment
+also rendered a branch link to `https://github.com/qiniu/deployment/tree/example/vite`.
+After unlocking, Chrome successfully opened the `example/vite` branch page.
+At the user's request, final browser checks continued in the Codex in-app browser:
+the signed-out PR deep link offered GitHub sign-in and returned to the exact
+deployment after OAuth. Signing out in a second local tab, then refreshing the
+still-mounted deployment page, showed the sign-in page with the original
+destination preserved. Signing in again restored the same PR title and logs;
+no browser console errors were captured. The PR and branch heading URLs were
+also opened and verified as the matching GitHub source pages in the in-app browser.
+This exercises real session loss through logout, not clock-based expiry or
+GitHub-token revocation. No Sandbox was created, restarted, stopped or deleted.
+Tag acceptance then created `test/deploy-vite-20261016` in `qiniu/deployment`,
+pointing to `bd336bdc3e93d5aca8fd25a8aa2258d90e644123` from `example/vite`.
+The in-app browser discovered the Tag in the creation form and deployed it with
+`base`, `.qiniu/deploy.yaml` and a 600-second TTL. Deployment
+`2c3xxapu6j4filrefhx6aymzwi` reached `running`, served the real Vite demo with
+HTTP 200, and retained its Tag URL and logs after reload. The heading linked to
+`https://github.com/qiniu/deployment/tree/refs/tags/test/deploy-vite-20261016`,
+whose GitHub page identified the matching Tag. Manual stop reached `completed`
+and cleared the active Sandbox reference; a separate provider probe confirmed
+the saved Sandbox was absent while the exact Tag SHA, revision and event history
+remained. No browser console errors were captured. The test Tag and terminal
+deployment record remain for inspection; no Release was created.
+
+Private-source acceptance on 2026-10-16 used a user-designated repository whose
+anonymous GitHub API returned 404. After the installation owner approved
+`Contents: Read-only`, discovery, configuration reads and a pinned private checkout
+succeeded. A 1-GB `base` build failed with a Node.js heap error; the same source
+successfully built with Node.js 22.22.0 on the 8-GB Ubuntu 24.04 template. Its
+preview returned HTTP 200 and rendered in the in-app browser without captured
+console errors. Detail reload retained the source, SHA and logs; anonymous detail
+access returned 401. Both the failed build and manually stopped successful run
+retained their histories, and separate provider probes confirmed both Sandboxes
+were absent. Detailed repository identifiers and screenshots remain in local,
+untracked evidence. This does not verify second-user sharing or access revocation.
+The source fixture's typecheck and production build passed; its full UI suite
+reported 396 passed and 3 failed, with all three passing an isolated rerun. That
+suite is not recorded as an entirely green run or as runnerd regression coverage.
+
+Live authorization acceptance on 2026-10-16 temporarily suspended the local App's
+Organization Installation, whose selected scope contained only the public test
+repository. GitHub rejected an empty repository selection, so individual
+repository removal was not performed. The first suspension exposed a gap:
+`/user/installations/{id}/repositories` still returned HTTP 200 and the repository
+while `/user/installations` reported `suspended_at`. Repository reads now validate
+both sources through the shared Jobs/Deploy authorization boundary.
+After the 30-second authorization cache expired, the live retest returned an empty
+filtered deployment list and HTTP 404 for detail, logs, revisions, PR metadata,
+resources, stop, retry and terminal creation. The in-app
+browser no longer displayed the deployment. The Installation was unsuspended and,
+after cache expiry, API and browser access returned; saved lifecycle and revision
+history were unchanged. No Sandbox was started or deployment deleted. Retry denial
+was tested before payload handling with an invalid retry mode. The live suspension
+admission probe used the remote Installation ID where a local link ID was required,
+so its HTTP 404 is excluded from authorization acceptance. Automated coverage uses
+the persisted local link ID and asserts the specific inaccessible-Installation
+error for admission/discovery; it also rejects deletion and source checkout during
+suspension. The separate live OAuth-token gate below validates admission/discovery
+with the correct local link ID.
+This proves Installation suspension/recovery, not individual repository removal,
+OAuth-token revocation or second-account sharing.
+The suspension fix passed `task lint` and `task test` (332 UI tests and the Go
+race/coverage suite), including shared Jobs/Deploy suspension and recovery coverage.
+
+Live OAuth-token revocation acceptance on 2026-10-16 used GitHub's token ownership
+check to verify the current local App/account before deleting only that access
+token through `DELETE /applications/{client_id}/token` (HTTP 204). GitHub then
+rejected the old token with HTTP 401. After waiting 30 seconds, 15 local API
+checks returned HTTP 403 with `REAUTH_REQUIRED`: Jobs list/detail/events,
+deployment navigation/list/detail/events/revisions/PR metadata/resources,
+stop/retry/terminal creation, deployment admission and Branch discovery.
+Admission and discovery used the local installation-link ID, independently from
+GitHub's remote Installation ID. Entering the original deployment in the in-app
+browser completed the existing OAuth sign-in flow and returned to that exact
+deployment URL. The newly saved token passed GitHub's ownership check; all ten
+read checks returned HTTP 200, with the real PR title, revision #2 and retained
+logs visible. Saved deployment lifecycle evidence was unchanged; the database
+still contained 31 deployments and 36 revisions. No Sandbox was created or
+deployment deleted, and no credentials or cookies were retained in evidence.
+This verifies rejected GitHub credentials in addition to the separate lost-local-
+session and Installation-suspension cases; second-account sharing and individual
+repository removal remain unverified.
 
 1. **Preflight and plan (done):** strict repository configuration, immutable
    Commit resolution, exact OAuth/App repository intersection, encrypted Spec

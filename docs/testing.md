@@ -178,6 +178,7 @@ Suggested setup:
    - Click `Install App`
    - Choose the target owner
    - Choose the repositories to authorize
+   - For Deploy, approve newly requested `Contents: Read-only` and `Pull requests: Read-only`; retry source discovery after approval, and sign in with GitHub again if the stored user authorization is rejected
    - If `Members: Read-only` was added to an existing App, each installation owner must approve the permission update before organization Settings become manageable
 7. Record:
    - App ID
@@ -896,3 +897,38 @@ The production browser fixtures cover repository-first PR Jobs → historical Jo
 Route migration coverage additionally verifies readable slash queries, literal percent escapes and reserved characters, repository/branch Jobs filtering (including empty results), repository-only deployment/creation links, old named-source URLs, OAuth return, refresh, back/forward and historical resource selection. Run `bun test src/url-query.test.js src/github-context-routes.test.js src/components/auth-pages.test.js` in `ui/` and `task ui-production-smoke`.
 
 Deployment URL checks also cover SHA-free Branch/Tag/PR detail URLs, source history without an implicit commit filter, explicit list commit filters, pinned Job creation, and GitHub links/full-SHA copying for the selected immutable revision.
+
+PR title/link regressions: `TestFillDeploymentPullRequestTitlePreservesSnapshotsAndLifecycle`
+and `TestPullRequestDeploymentPinsSourceAndRejectsInvalidContext` prove empty-only,
+exact-ref title repair, timestamp preservation, repository authorization and local
+detail reads before optional GitHub metadata. Deployment UI tests cover delayed
+legacy title responses, current versus historical headings, and Branch/PR/Tag
+links. The PR production fixture checks long titles, focus and narrow layouts.
+
+Deployment authentication fixtures cover structured GitHub `REAUTH_REQUIRED`
+responses from the list, detail, logs, Web terminal and creation form; runnerd
+session expiry with a successful/failed session recheck; and ordinary forbidden
+or rate-limit errors. Assert a single OAuth redirect with the complete source,
+resource and revision destination, no false reauthentication for other errors,
+and no delayed redirect after leaving the deployment page.
+
+To verify an existing PR deployment against the running local API without creating
+or stopping Sandboxes, use:
+
+```bash
+RUNNERD_DEPLOY_LIVE_METADATA=1 \
+RUNNERD_DEPLOY_LIVE_BASE_URL=http://127.0.0.1:25500 \
+RUNNERD_DEPLOY_LIVE_CONFIG="$PWD/runnerd.local.yaml" \
+RUNNERD_DEPLOY_LIVE_ACCOUNT_ID="<configured-account-id>" \
+RUNNERD_DEPLOY_LIVE_DETAIL_ID="<existing-pr-deployment-id>" \
+RUNNERD_DEPLOY_LIVE_EVIDENCE=/tmp/deployment-metadata-evidence.json \
+go test ./internal/server -run '^TestDeploymentLivePullRequestMetadata$' -count=1 -v -timeout 2m
+```
+
+This probe signs a short-lived in-memory session using the specified local config.
+It checks anonymous rejection, authenticated details, the PR title endpoint,
+retained revisions, persisted titles and unchanged lifecycle fields. Missing
+legacy titles may be filled through the normal metadata endpoint. Evidence says
+whether that backfill was exercised and records initial/warm request latency
+separately. It does not test browser OAuth, layout, private Contents access,
+second-account authorization, or live resource release.

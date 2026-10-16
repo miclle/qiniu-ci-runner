@@ -398,6 +398,15 @@ acceptance record, never in repository files.
    pair cannot read or mutate deployments. A different authorized repository
    member must be able to read history/logs and create/redeploy/stop/delete.
    Missing/rejected OAuth fails closed; warmed reads reuse the Jobs cache.
+   With explicit owner approval, suspend and restore the test Installation:
+   after the 30-second cache expires, repository lists must exclude it and
+   details/logs/actions must deny access even if GitHub still lists its repositories.
+   Confirm access recovers after unsuspending. Record this separately from
+   individual repository removal and OAuth-token revocation.
+   Separately, with account approval, revoke only that local App's current OAuth
+   access token and wait for cache expiry. Jobs/Deploy reads and actions must
+   return `403 / REAUTH_REQUIRED`; normal browser OAuth must restore a valid
+   token and return to the original detail with saved history intact.
    Check public-only template choices for members, owner-only private catalogs
    and Sandbox settings, revision execution credentials, and per-user terminals. Create enough active deployments to
    receive `429 deployment_quota_exceeded`, then release one and verify admission
@@ -434,3 +443,11 @@ HTML-marker parameters of the live API gate in [Testing](testing.md#sandbox-depl
 Advance the PR head and deploy an older full SHA; confirm saved fork identity,
 old page content, and provider absence after DELETE. Record this separately from
 live GitHub permission revocation, private repository Contents, and second-user access.
+
+For an existing PR deployment, also verify its real title and Branch/PR/Tag GitHub
+links. The opt-in `TestDeploymentLivePullRequestMetadata` probe in
+[Testing](testing.md#sandbox-deploy-verification) checks authenticated metadata,
+anonymous rejection and lifecycle preservation without creating or stopping a
+Sandbox. It may fill missing legacy titles. Record API evidence separately from
+signed-in Chrome rendering and OAuth expiry/return checks; synthetic session
+signing does not verify browser sign-in.

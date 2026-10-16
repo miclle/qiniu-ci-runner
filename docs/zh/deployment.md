@@ -99,6 +99,12 @@ Sandbox Preferences 与私有模板目录仍由 owner 管理；管理组织设�
 **Members: Read-only** 和 active owner membership（`role: admin`）。
 Deploy 不会继承 CI Secrets、Cache S3 凭证或 Fork sponsorship 权限。
 
+部署请求与 Jobs 使用相同的登录失效处理。HTTP 401 会重新检查 runnerd 会话，
+过期时展示登录页；结构化的 `REAUTH_REQUIRED` 错误会触发一次 GitHub OAuth
+跳转，并在 `return_to` 保留当前来源、部署和 revision。并发错误共用单次跳转控制，
+之前账号或页面的延迟响应不会触发跳转。普通权限拒绝、限流和 provider 错误仍按
+原错误展示。
+
 ## 首个控制面切片
 
 当前已提供用于持久化部署计划的登录 API。`installation_id` 是现有 Repositories
@@ -136,8 +142,18 @@ Installation ID 由服务端解析：
 - `GET /user/deployments/{id}`、已保存事件、版本与生命周期操作复用 Jobs 的仓库授权缓存：
   20 秒后刷新，30 秒硬过期，并合并并发刷新。缓存未命中时可能访问 GitHub；部署内容
   本身不需要 Sandbox I/O。OAuth 缺失或被拒绝时失败关闭，原创建者也遵守该规则。
+  仓库授权还要求用户当前可见的 Installation 元数据中 `suspended_at` 为空；
+  GitHub 的仓库列表接口在 Installation 暂停期间仍可能返回仓库。
   创建／重试为每个 revision 保存执行账号；worker 在检出来源前重新校验该操作者。
   历史执行账号为零时使用原创建者；创建者身份和幂等键归属保持不变。
+- `GET /user/deployments/{id}/pull-request` 为旧 PR 部署补充可选标题元数据。
+  它使用相同的精确仓库授权和 Jobs 的 PR 查询缓存及并发合并，只回填相同 PR ref
+  中为空的标题，保留已有版本标题与生命周期时间。界面在本地缺少标题时独立请求，
+  GitHub 缓慢或不可用不会阻塞详情和日志。页面顶部“刷新”会通过同一缓存重试缺失标题；
+  同一来源／版本后返回的空标题快照不会清除已补全的标题，新版本独立解析标题。
+  新 PR 创建与最新版本重部署已经保存
+  `pull_request_title`。详情标题可跳转到目标仓库的 PR、分支或 Tag 源码树；
+  Tag 无需创建 GitHub Release，fork Commit 链接仍使用保存的来源仓库。
 - `GET /user/deployments/{id}/events` 返回有界的生命周期／输出事件，并支持
   互斥的 exclusive `before_id`／`after_id` 游标。初次返回最新事件并按时间正序展示；
   `after_id` 返回后续正序页，使活动轮询能够连续补齐日志。
@@ -230,6 +246,27 @@ JetBrains Mono 字体。切换版本后重置游标，拒绝前一版本的迟�
 终态保留期结束后，在同一事务中删除 Deployment、所有版本及日志，审计仍保留。
 
 ## 实现迭代方案
+
+2026-10-16 的收尾核对区分实现、浏览器夹具与真实验收。以下证据还不足以关闭
+Issue #125。授权边界采用已确认的“仓库成员可部署”；Sandbox 设置和私有目录仍仅由 owner 管理。
+
+最终分阶段提交前，`task lint` 和 16 项部署生产构建浏览器夹具通过，覆盖 PR 标题／
+来源链接、仓库导航、可刷新详情、五类 OAuth 失效入口及延迟响应隔离。独立暂存快照
+还通过 GitHub／server race 套件、state 套件和 37 项部署 UI 交互测试。这些检查补充
+此前已记录的 `task test`（332 项 UI 测试及 Go race／coverage），浏览器夹具继续与
+真实 Provider 和 OAuth 证据分别记录。
+
+| Issue 验收项 | 证据与剩余边界 |
+| --- | --- |
+| 授权来源、固定 Commit、启动与 HTTP 访问 | 公开 base、fork、历史 PR Commit，以及指定私有来源的 Contents、固定源码、构建及 HTTP 访问均通过。 |
+| CI 清理独立性与 Deploy 不注册 Runner | 已记录同 Commit 的 CI 并行、Runner 释放后服务 HTTP 200 及 Runner 列表检查通过。 |
+| 详情、日志、失败、到期及刷新恢复 | 已记录真实历史／刷新、认证标题 API、PR／分支／Tag 来源页面、本地会话失效登录回跳，以及真实 OAuth Token 撤销后的内置浏览器登录恢复通过。 |
+| 仓库及作用域授权 | 精确权限对拒绝及成员共享自动化测试通过；真实匿名读取返回 401。Installation 真实暂停和 OAuth Token 撤销后缓存到期即拒绝访问，恢复后可重新访问。第二账号共享和单仓库移除仍需单独验收。 |
+| 确认停止／删除／到期／失败清理 | 公开 API／worker 和私有来源失败／停止验收均有 Provider 确认资源不存在；本地记录保留终态历史且 Sandbox 引用为空。 |
+| 重复请求、未知创建结果、重启与 attempt 隔离 | 已记录真实 API 幂等准入、传输故障恢复和完整本地进程重启通过；worker 测试覆盖旧 attempt 隔离。 |
+| 配额、日志预算、Secrets 隔离及 CI 回归 | 已记录配额／重新准入及加速保留期验证通过；state／server／worker 测试约束日志预算、脱敏与隔离。 |
+| 真实项目及完整清理证据 | 下文保留公开分支／PR／Tag、私有来源及 Installation 真实暂停／恢复的证据。共享账号和其他撤权方式仍需单独验收。 |
+| 中英文用户／配置／App 权限文档 | 中英文配置、测试、smoke 和 README 说明 Contents／Members 授权及当前边界。 |
 
 2026-10-13 的公开执行验收使用公共 `base` 模板，以及 `qiniu/deployment` 的完整 Commit
 `fe64a78977093d7c7fd7fb9a159975c5f73f8ff6`，仓库配置保持不变。真实 worker 返回 HTTP 200，
@@ -326,6 +363,78 @@ fixture 仅增加 HTML 仓库／版本标记，部署命令及 Vite Host 校验�
    本地验证和已登录的公开仓库创建／详情／刷新／停止流程已通过；剩余真实验收见上文。
 5. **验收**：完成聚焦测试、本地启动／构建检查，再用真实 GitHub App 和 Sandbox
    验证部署、停止、到期、重启恢复及越权访问证据。
+
+2026-10-16 的本地 API 验收检查了 `qiniu/deployment#1` 的已有部署
+`4hvwtaxjssi5oxc4nqwgnx3hiq`。运行中服务的详情和 PR 元数据均返回
+`test: verify fork deployment preview`，两个保留版本也保存了标题。匿名读取返回 401，
+认证读取返回 200，状态、version、attempt、Sandbox 标识及生命周期更新时间保持不变。
+最终一轮初次详情请求耗时 3,559 ms（包含冷缓存 GitHub 授权查询），随后元数据、版本和
+重复详情请求为 0–1 ms，精度为毫秒。这是一次本地观察，不是延迟保证。本轮开始前标题
+已存在，因此不证明新触发的旧记录回填、浏览器 OAuth 或链接渲染。测试在内存中签发短期
+会话，不修改 Sandbox。
+
+Mac 恢复可操作后，普通 Chrome 的已登录页面在详情标题和侧边栏均显示了该 PR 的真实
+标题；点击标题打开 GitHub PR #1，目标页面显示相同标题。已有 `example/vite` 部署也
+显示了指向 `https://github.com/qiniu/deployment/tree/example/vite` 的分支链接。
+解锁后，Chrome 已成功打开 `example/vite` 分支页面。按用户要求，后续验证改用
+Codex 内置浏览器：未登录的 PR 深链接显示 GitHub 登录入口，完成 OAuth 后返回完全
+相同的部署地址。在另一个本地标签页退出登录，再刷新仍挂载的部署页，页面显示登录
+提示并保留原目标；重新登录后，同一部署的 PR 标题和日志恢复，未捕获到浏览器控制台
+错误。内置浏览器中也打开并核对了 PR 和分支标题链接对应的 GitHub 来源页面。
+本次通过退出登录验证真实会话丢失，不等同于按时间自然过期或 GitHub Token 撤销。
+该轮登录检查未创建、重新部署、停止或删除 Sandbox。
+
+随后在 `qiniu/deployment` 创建测试 Tag `test/deploy-vite-20261016`，指向
+`example/vite` 的 `bd336bdc3e93d5aca8fd25a8aa2258d90e644123`。内置浏览器的创建
+表单成功发现该 Tag，使用 `base`、`.qiniu/deploy.yaml` 和 600 秒 TTL 创建部署
+`2c3xxapu6j4filrefhx6aymzwi`。部署进入 `running`，真实 Vite 页面返回 HTTP 200，
+刷新后 Tag 路由和日志保留。标题链接指向
+`https://github.com/qiniu/deployment/tree/refs/tags/test/deploy-vite-20261016`，
+GitHub 目标页面正确识别该 Tag。手动停止后部署达到 `completed` 并清空活动 Sandbox
+引用；独立 Provider 探针确认保存的 Sandbox 已不存在，同时精确 Tag SHA、版本和
+事件历史保留。未捕获到浏览器控制台错误。测试 Tag 和终态部署记录保留供复查，未创建
+Release。
+
+2026-10-16 的私有来源验收使用用户指定的仓库，匿名访问其 GitHub API 返回 404。
+Installation 所有者批准 `Contents: Read-only` 后，版本发现、配置读取及固定 Commit
+的私有源码拉取成功。1 GB `base` 模板因 Node.js 堆内存不足而构建失败；相同源码使用
+Node.js 22.22.0 和 8 GB Ubuntu 24.04 模板完成构建，预览地址返回 HTTP 200，内置
+浏览器正常渲染应用且未捕获到控制台错误。详情刷新后来源、SHA 和日志保留，匿名读取
+详情返回 401。失败构建和成功后手动停止的部署均保留历史，独立 Provider 探针确认两个
+Sandbox 均已不存在。仓库标识、截图等详细证据保留在本地未跟踪文件中。本轮不证明
+第二账号共享或真实权限撤销。来源项目的类型检查和生产构建通过；其全量 UI 测试为
+396 项通过、3 项失败，原失败项单独复跑全部通过，不记为完整套件全绿或 runnerd
+回归验证。
+
+2026-10-16 的真实授权验收临时暂停了本地 App 的组织 Installation，其白名单仅含公开
+测试仓库。GitHub 不允许保存空仓库列表，因此没有执行单仓库移除。首次暂停暴露出缺口：
+`/user/installations/{id}/repositories` 仍返回 200 和目标仓库，而
+`/user/installations` 已包含 `suspended_at`。现已在 Jobs／Deploy 共用的仓库授权
+入口同时校验这两项证据。修复后等待 30 秒缓存到期，部署列表排除该仓库，详情、日志、
+版本历史、PR 元数据、资源信息、停止、重部署和终端创建均返回 404，内置浏览器
+不再显示原部署内容。随后恢复 Installation，缓存到期后 API 和浏览器访问恢复，原有
+生命周期和版本历史未变化；没有新建 Sandbox 或删除部署。重部署拒绝测试使用无效 mode，
+证明在解析操作参数前拒绝。暂停期间的真实创建探针误将远端 Installation ID 用作本地
+关联记录 ID，因此该项 404 不计入授权验收。自动化测试使用保存的本地 ID，并断言准入／
+发现返回特定的 Installation 不可访问错误，同时覆盖暂停期间删除和源码检出的拒绝。
+下文独立的真实 OAuth Token 验收使用正确的本地 ID 验证了准入／发现。
+本轮证明 Installation 暂停／恢复，
+不等同于单仓库移除、OAuth Token 撤销或第二账号共享。
+暂停校验修复通过 `task lint` 和 `task test`（332 项 UI 测试及 Go race／coverage
+套件），其中包含 Jobs／Deploy 共用授权的暂停与恢复回归覆盖。
+
+2026-10-16 的真实 OAuth Token 撤销验收先通过 GitHub 官方接口确认当前本地 App／
+账号归属，再使用 `DELETE /applications/{client_id}/token` 仅撤销当前 Token，返回
+204；旧 Token 随后访问 GitHub 返回 401。等待 30 秒后，15 项本地 API 检查均返回
+`403 / REAUTH_REQUIRED`，覆盖 Jobs 列表／详情／事件、部署导航／列表／详情／事件／
+版本／PR 元数据／资源信息、停止／重部署／终端创建，以及部署准入和分支发现。
+准入与发现请求使用本地 Installation 关联记录 ID，与 GitHub 远端 Installation ID
+明确区分。内置浏览器进入原部署地址后完成现有 OAuth 登录流程，回到完全相同的部署
+URL；新保存的 Token 通过 GitHub 归属检查，10 项读取检查恢复 200，真实 PR 标题、
+版本 #2 和历史日志恢复显示。原部署生命周期未变化，数据库仍保留 31 个部署和 36 个
+版本，没有新建 Sandbox 或删除部署，证据中不保存凭据或 Cookie。本轮在本地会话丢失、
+Installation 暂停之外，补齐了 GitHub 凭据被拒绝的独立验证；第二账号共享和单仓库移除
+仍未验收。
 
 ## 部署 Web 终端
 

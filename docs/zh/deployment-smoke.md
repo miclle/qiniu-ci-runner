@@ -363,6 +363,12 @@ Workflow 完成后确认：
    权限的其他成员应能查看历史／日志，以及创建、重新部署、停止和删除。OAuth 缺失或被拒绝
    时失败关闭；热缓存读取复用 Jobs 授权。确认成员只能选择公共模板，私有目录和 Sandbox
    设置仍由 owner 管理；检查 revision 执行凭据与每个用户的终端隔离。
+   经 owner 明确批准后临时暂停并恢复测试 Installation：30 秒缓存到期后，仓库列表应
+   排除它，详情／日志／操作应拒绝访问，即使 GitHub 仍返回其仓库。恢复后确认可以重新
+   访问；将此证据与单仓库移除、OAuth Token 撤销分别记录。
+   经账号明确批准后，独立撤销该本地 App 当前 OAuth Token，等待缓存到期，确认 Jobs／
+   Deploy 的读取与操作返回 `403 / REAUTH_REQUIRED`；正常浏览器 OAuth 应恢复有效
+   Token，回到原详情且保留历史。
    创建足够的活动部署后应收到
    `429 deployment_quota_exceeded`；释放一个后准入恢复。超过保留期后终态部署行／事件应清理，
    审计证据仍保留。
@@ -390,3 +396,9 @@ scope 的可用模板。引用为空或加载失败时不能提交旧版本，�
 指定仓库、来源、Commit 和 HTML 标记。推进 PR head 后部署历史完整 SHA，核对保存的 fork
 身份、旧版页面内容及 DELETE 后的 Provider 资源不存在。真实 GitHub 权限撤销、私有仓库
 Contents 权限及第二个用户的访问保持独立验收。
+
+对已有 PR 部署，还需核对真实标题及分支／PR／Tag 的 GitHub 链接。
+[Testing](testing.md#sandbox-deploy-验证) 中主动启用的
+`TestDeploymentLivePullRequestMetadata` 检查认证元数据、匿名拒绝与生命周期保留，
+不创建或停止 Sandbox；它可能回填旧记录缺失的标题。API 证据应与已登录 Chrome 的
+页面渲染、OAuth 过期及回跳验证分别记录；临时签名会话不证明浏览器登录成功。
