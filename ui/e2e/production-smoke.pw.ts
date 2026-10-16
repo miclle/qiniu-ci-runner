@@ -1575,3 +1575,120 @@ test("keeps deployment path IDs and readable source filters through history", as
   }
   diagnostics.expectClean()
 })
+
+for (const surface of ["list", "detail", "logs", "terminal", "creation"] as const) {
+  test(`reauthenticates deployment ${surface} after GitHub token expiry`, async ({ page }) => {
+    test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
+    const detailPath = "/github/fixture-user/project/pull_requests/7/deployments/auth-expiry?revision=1"
+    const initialPath = surface === "list" ? "/github/fixture-user/project/deployments?branch=example/vite"
+      : surface === "creation" ? "/deployments/new?repository=fixture-user%2Fproject" : detailPath
+    const deployment = { id: "auth-expiry", repository_full_name: "fixture-user/project", source: "pull_request", ref: "7", pull_request_number: 7, pull_request_title: "Preview auth expiry", commit_sha: "a".repeat(40), status: "running", sandbox_id: "auth-sandbox", revision_number: 1, created_at: "2026-10-14T00:00:00Z", expires_at: "2026-10-14T01:00:00Z" }
+    let loginRequests = 0
+    let returnTo = ""
+    await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [] }))
+    await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
+    await page.route("**/auth/github/login?**", (route) => {
+      loginRequests++
+      returnTo = new URL(route.request().url()).searchParams.get("return_to") || ""
+      return route.fulfill({ contentType: "text/html", body: "<h1>GitHub sign-in fixture</h1>" })
+    })
+    await page.route("**/user/**", (route) => {
+      const url = new URL(route.request().url())
+      const expired = (surface === "list" && ["/user/deployments", "/user/deployment-repositories"].includes(url.pathname))
+        || (surface === "detail" && url.pathname === "/user/deployments/auth-expiry")
+        || (surface === "logs" && url.pathname.endsWith("/events"))
+        || (surface === "terminal" && url.pathname.endsWith("/terminal"))
+        || (surface === "creation" && url.pathname === "/user/deployment-templates")
+      if (expired) return route.fulfill({ status: 403, json: { code: "REAUTH_REQUIRED", error: "sign in with GitHub again" } })
+      if (url.pathname === "/user/github-app") return route.fulfill({ json: { installations: [{ id: 1, account_login: "fixture-user", account_type: "User", manageable: true, repositories: ["fixture-user/project"] }] } })
+      if (url.pathname.endsWith("/repositories")) return route.fulfill({ json: { repositories: ["fixture-user/project"] } })
+      if (url.pathname === "/user/deployment-refs") return route.fulfill({ json: { refs: ["main"], has_more: false } })
+      if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: deploymentNavigationFixture([deployment]) })
+      if (url.pathname === "/user/deployments") return route.fulfill({ json: { items: [deployment], total: 1 } })
+      if (url.pathname === "/user/deployments/auth-expiry") return route.fulfill({ json: { ...deployment, revisions: [{ ...deployment, ref: "refs/pull/7/head", number: 1 }] } })
+      if (url.pathname.endsWith("/resources")) return route.fulfill({ json: {} })
+      if (url.pathname.endsWith("/events")) return route.fulfill({ json: { events: [], has_more: false } })
+      return route.fulfill({ json: {} })
+    })
+    await page.goto(initialPath, { waitUntil: "domcontentloaded" })
+    if (surface === "terminal") {
+      await page.getByRole("tab", { name: "Terminal", exact: true }).click()
+      await page.getByRole("button", { name: "Connect", exact: true }).click()
+    }
+    await expect(page.getByRole("heading", { name: "GitHub sign-in fixture", exact: true })).toBeVisible()
+    expect(returnTo).toBe(initialPath)
+    expect(loginRequests).toBe(1)
+  })
+}
+
+for (const failure of ["signed-out", "session-check-failed", "forbidden", "rate-limited"] as const) {
+  test(`handles deployment session expiry without confusing ${failure}`, async ({ page }) => {
+    test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
+    const path = "/github/fixture-user/project/deployments?branch=example/vite"
+    let expired = false
+    let sessionChecks = 0
+    let loginRequests = 0
+    await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [] }))
+    await page.route("**/auth/github/login?**", (route) => { loginRequests++; return route.fulfill({ body: "unexpected redirect" }) })
+    await page.route("**/auth/session", (route) => {
+      sessionChecks++
+      if (expired && failure === "session-check-failed") return route.fulfill({ status: 503, json: { error: "fixture session unavailable" } })
+      return route.fulfill({ json: { authenticated: !expired || failure === "forbidden" || failure === "rate-limited", oauth_enabled: true, login: "fixture-user", role: "user" } })
+    })
+    await page.route("**/user/**", (route) => {
+      const url = new URL(route.request().url())
+      if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: { items: [], has_more: false } })
+      if (url.pathname !== "/user/deployments") return route.fulfill({ json: {} })
+      if (!expired) return route.fulfill({ json: { items: [], total: 0 } })
+      if (failure === "forbidden") return route.fulfill({ status: 403, json: { code: "GITHUB_REPOSITORY_ACCESS_FORBIDDEN", error: "fixture access denied" } })
+      if (failure === "rate-limited") return route.fulfill({ status: 503, json: { code: "GITHUB_RATE_LIMITED", error: "fixture rate limited" } })
+      return route.fulfill({ status: 401, json: { error: "missing or invalid github oauth session" } })
+    })
+    await page.goto(path, { waitUntil: "networkidle" })
+    expired = true
+    await page.getByRole("button", { name: "Refresh", exact: true }).click()
+    if (failure === "forbidden" || failure === "rate-limited") {
+      await expect(page.getByText(failure === "forbidden" ? "fixture access denied" : "fixture rate limited", { exact: true })).toBeVisible()
+      await expect(page.getByRole("heading", { name: "Deployments", exact: true })).toBeVisible()
+      expect(sessionChecks).toBe(1)
+    } else {
+      await expect(page.getByRole("heading", { name: "Sign in to continue", exact: true })).toBeVisible()
+      await expect(page.getByRole("link", { name: "Continue with GitHub", exact: true })).toHaveAttribute("href", `/auth/github/login?return_to=${encodeURIComponent(path)}`)
+    }
+    expect(loginRequests).toBe(0)
+    expect(new URL(page.url()).pathname + new URL(page.url()).search).toBe(path)
+  })
+}
+
+test("ignores an old deployment reauthentication failure after navigation", async ({ page }) => {
+  test.skip(Boolean(process.env.RUNNERD_UI_SMOKE_BASE_URL), "local fixture coverage only")
+  let releaseList!: () => void
+  const listReady = new Promise<void>((resolve) => { releaseList = resolve })
+  let loginRequests = 0
+  let listStarted = false
+  await page.route("**/sandbox/regions", (route) => route.fulfill({ json: [] }))
+  await page.route("**/auth/session", (route) => route.fulfill({ json: { authenticated: true, oauth_enabled: true, login: "fixture-user", role: "user" } }))
+  await page.route("**/auth/github/login?**", (route) => { loginRequests++; return route.fulfill({ body: "unexpected redirect" }) })
+  await page.route("**/user/**", async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname === "/user/deployments") {
+      listStarted = true
+      await listReady
+      return route.fulfill({ status: 403, json: { code: "REAUTH_REQUIRED", error: "old request expired" } })
+    }
+    if (url.pathname === "/user/deployment-repositories") return route.fulfill({ json: { items: [], has_more: false } })
+    if (url.pathname === "/user/runner-specs") return route.fulfill({ json: { items: [] } })
+    return route.fulfill({ json: {} })
+  })
+  await page.goto("/deployments", { waitUntil: "domcontentloaded" })
+  await expect.poll(() => listStarted).toBe(true)
+  await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("link", { name: "Runner Specs", exact: true }).first().click()
+  await expect(page.getByRole("heading", { name: "Platform Runner Specs", exact: true })).toBeVisible()
+  const staleResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/user/deployments")
+  releaseList()
+  await staleResponse
+  await page.waitForLoadState("networkidle")
+  await expect(page).toHaveURL(/\/runner-specs$/)
+  await expect(page.getByRole("heading", { name: "Platform Runner Specs", exact: true })).toBeVisible()
+  expect(loginRequests).toBe(0)
+})

@@ -1,6 +1,6 @@
 import { readableQuery } from "@/url-query"
 import { githubContextFromPath, githubContextPath } from "@/github-context-routes"
-import { lazy, Suspense, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { lazy, Suspense, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
@@ -211,6 +211,9 @@ function App() {
   const runnerRequestIdentifier = runnerRequestIdentifierFromAdminPath(locationPath)
   const githubInstallationID = githubInstallationIDFromAdminPath(locationPath)
   const currentAccount = authSession.login ?? ""
+  const requestAccountRef = useRef(currentAccount)
+  // Child effects may start requests immediately after an account switch.
+  useLayoutEffect(() => { requestAccountRef.current = currentAccount }, [currentAccount])
   const currentGithubApp = githubAppLoad?.account === currentAccount ? githubApp : null
   const userPreferences = scopedUserPreferences?.account === currentAccount ? scopedUserPreferences.value : null
   const userPreferencesScope = scopedUserPreferences?.account === currentAccount ? scopedUserPreferences.scope : ""
@@ -386,8 +389,15 @@ function App() {
     [runnerRequestMetrics, t],
   )
 
+  const refreshGitHubOAuthLogin = useCallback(() => {
+    const returnTo = window.location.pathname + window.location.search
+    window.location.href = `/auth/github/login?return_to=${encodeURIComponent(returnTo || "/")}`
+  }, [])
+
   const requestResponse = useCallback(
     async (url: string, options: RequestInit = {}) => {
+      const requestAccount = requestAccountRef.current
+      const requestLocation = window.location.pathname + window.location.search
       const headers = new Headers(options.headers)
       const response = await fetch(url, { ...options, headers, credentials: "same-origin" })
       if (response.status === 401) {
@@ -418,11 +428,20 @@ function App() {
         }
         const error = new Error(message || `${response.status} ${response.statusText}`) as RequestError
         error.code = code
+        if (
+          requiresGitHubReauthentication(error)
+          && requestAccount === requestAccountRef.current
+          && requestLocation === window.location.pathname + window.location.search
+          && beginGitHubReauthentication()
+        ) {
+          toast.message(appI18n.t("app.refreshingGitHubSignIn"))
+          refreshGitHubOAuthLogin()
+        }
         throw error
       }
       return response
     },
-    []
+    [beginGitHubReauthentication, refreshGitHubOAuthLogin]
   )
 
   const request = useCallback(
@@ -519,11 +538,6 @@ function App() {
       .split(",")
       .map((label) => label.trim())
       .filter(Boolean)
-
-  const refreshGitHubOAuthLogin = useCallback(() => {
-    const returnTo = window.location.pathname + window.location.search
-    window.location.href = `/auth/github/login?return_to=${encodeURIComponent(returnTo || "/")}`
-  }, [])
 
   const loadAll = useCallback(async (polling = false) => {
     if (!hasAccess || !isAdminRoute || runnerRequestIdentifier) return
