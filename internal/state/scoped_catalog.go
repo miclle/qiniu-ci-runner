@@ -140,11 +140,7 @@ func (s *DBStore) UpsertScopedProfileIfUnchanged(profile ScopedRunnerProfile, ex
 	updates := map[string]any{"workflow_labels_json": record.WorkflowLabelsJSON, "label_key": record.LabelKey, "template_id": record.TemplateID, "runner_group": record.RunnerGroup, "max_concurrency": record.MaxConcurrency, "enabled": record.Enabled, "updated_at": record.UpdatedAt}
 	var result *gorm.DB
 	if expectedUpdatedAt != nil {
-		expected, err := migrationExpectedUpdatedAt(db, "scoped_runner_profiles", map[string]any{"scope_type": scope.Type, "scope_id": scope.ID, "name": profile.Name}, *expectedUpdatedAt)
-		if err != nil {
-			return ScopedRunnerProfile{}, err
-		}
-		result = db.Model(&scopedRunnerProfileRecord{}).Where("scope_type = ? AND scope_id = ? AND name = ? AND updated_at = ?", scope.Type, scope.ID, profile.Name, expected).Updates(updates)
+		result = db.Model(&scopedRunnerProfileRecord{}).Where("scope_type = ? AND scope_id = ? AND name = ? AND updated_at = ?", scope.Type, scope.ID, profile.Name, *expectedUpdatedAt).Updates(updates)
 		if isDuplicatedKeyError(db, result.Error) {
 			return ScopedRunnerProfile{}, ErrRunnerProfileLabelsConflict
 		}
@@ -183,11 +179,7 @@ func (s *DBStore) DeleteScopedProfileIfUnchanged(scope RunnerProfileScope, name 
 	}
 	query := db.Where("scope_type = ? AND scope_id = ? AND name = ?", scope.Type, scope.ID, strings.TrimSpace(name))
 	if expectedUpdatedAt != nil {
-		expected, err := migrationExpectedUpdatedAt(db, "scoped_runner_profiles", map[string]any{"scope_type": scope.Type, "scope_id": scope.ID, "name": strings.TrimSpace(name)}, *expectedUpdatedAt)
-		if err != nil {
-			return err
-		}
-		query = query.Where("updated_at = ?", expected)
+		query = query.Where("updated_at = ?", *expectedUpdatedAt)
 	}
 	result := query.Delete(&scopedRunnerProfileRecord{})
 	if result.Error != nil {

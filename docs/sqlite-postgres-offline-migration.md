@@ -26,7 +26,7 @@ Start one target runnerd behind maintenance access. Verify health, sign-in, hist
 
 Before formal writes resume, rollback means stopping the PG process and restoring the original SQLite configuration. PG acceptance-test writes are not synchronized back and must be disposable or reconciled; do not duplicate tasks already started there. After formal PG writes resume, returning to the old SQLite is not lossless and requires a separate recovery plan.
 
-An already-active online migration must be finalized through its existing protocol, never by deleting metadata. To rehearse offline from it: verify reverse replication, rollback, finish on SQLite, stop the service, then import into a new empty PG database. Finishing directly on PG is another valid closeout but does not test this importer.
+Online replication and runtime switching have been removed. Legacy `online_migration` configuration is rejected, not silently ignored. Before upgrading an already-active online migration, finalize it using the previous binary and its existing protocol, never by deleting metadata. To rehearse offline from it: verify reverse replication, rollback, finish on SQLite, stop the service, then import into a new empty PG database. Finishing directly on PG is another valid closeout but does not test this importer.
 
 Validation (only dedicated `_test` databases; random per-test schemas):
 
@@ -35,3 +35,11 @@ RUNNERD_CATALOG_BACKEND_TESTS=1 RUNNERD_POSTGRES_TEST_DSN='<test DSN>' \
   go test -tags development ./internal/state ./internal/server \
   -run 'Test(OfflineMigration|PlatformSpecRevision)' -count=1
 ```
+
+## Local acceptance (2026-10-29)
+
+The standalone command imported and verified 18 business tables and 33,827 rows from a finalized SQLite copy into a new PostgreSQL test database. Real PostgreSQL migration/race checks and all Go package tests passed.
+
+The ordinary PG service completed [five Ubuntu Runner Jobs](https://github.com/miclle/qiniu-ci-runner-test/actions/runs/40849697071), with successful Sandbox/GitHub Runner cleanup records. A test Deployment completed creation, HTTP 200 readiness, a new Web Terminal command, recovery after a runnerd restart with the same Sandbox/revision, a new terminal connection, and stop/cleanup. The existing sign-in session remained valid. Surviving the restart with the original PTY is not part of this maintenance-window contract.
+
+Production-copy timing/capacity, backup restore, the maintenance window, webhook redelivery and task reconciliation remain separate release gates. No production migration has run.

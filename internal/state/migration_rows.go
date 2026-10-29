@@ -1,7 +1,6 @@
 package state
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,8 +21,8 @@ type migrationRow map[string]any
 func (r migrationRow) String() string   { return "migration row [redacted]" }
 func (r migrationRow) GoString() string { return r.String() }
 
-func normalizeMigrationValue(column onlineMigrationColumn, value any) (any, error) {
-	invalid := fmt.Errorf("%w: unrepresentable value in column %s", errOnlineMigrationNotReady, column.Name)
+func normalizeMigrationValue(column migrationColumn, value any) (any, error) {
+	invalid := fmt.Errorf("%w: unrepresentable value in column %s", errMigrationInvalid, column.Name)
 	if value == nil {
 		if column.NotNull || column.PrimaryKey {
 			return nil, invalid
@@ -130,44 +129,44 @@ func normalizeMigrationValue(column onlineMigrationColumn, value any) (any, erro
 	}
 }
 
-func decodeMigrationRow(columns []onlineMigrationColumn, encoded string) (migrationRow, error) {
+func decodeMigrationRow(columns []migrationColumn, encoded string) (migrationRow, error) {
 	if !utf8.ValidString(encoded) {
-		return nil, fmt.Errorf("%w: invalid row encoding", errOnlineMigrationNotReady)
+		return nil, fmt.Errorf("%w: invalid row encoding", errMigrationInvalid)
 	}
 	decoder := json.NewDecoder(strings.NewReader(encoded))
 	decoder.UseNumber()
 	start, err := decoder.Token()
 	if err != nil || start != json.Delim('{') {
-		return nil, fmt.Errorf("%w: incomplete row encoding", errOnlineMigrationNotReady)
+		return nil, fmt.Errorf("%w: incomplete row encoding", errMigrationInvalid)
 	}
 	raw := make(map[string]any, len(columns))
 	for decoder.More() {
 		token, err := decoder.Token()
 		name, ok := token.(string)
 		if err != nil || !ok {
-			return nil, fmt.Errorf("%w: invalid row column", errOnlineMigrationNotReady)
+			return nil, fmt.Errorf("%w: invalid row column", errMigrationInvalid)
 		}
 		if _, duplicate := raw[name]; duplicate {
-			return nil, fmt.Errorf("%w: duplicate row column", errOnlineMigrationNotReady)
+			return nil, fmt.Errorf("%w: duplicate row column", errMigrationInvalid)
 		}
 		var value any
 		if err := decoder.Decode(&value); err != nil {
-			return nil, fmt.Errorf("%w: invalid row value", errOnlineMigrationNotReady)
+			return nil, fmt.Errorf("%w: invalid row value", errMigrationInvalid)
 		}
 		raw[name] = value
 	}
 	if end, err := decoder.Token(); err != nil || end != json.Delim('}') || len(raw) != len(columns) {
-		return nil, fmt.Errorf("%w: incomplete row encoding", errOnlineMigrationNotReady)
+		return nil, fmt.Errorf("%w: incomplete row encoding", errMigrationInvalid)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%w: trailing row encoding", errOnlineMigrationNotReady)
+		return nil, fmt.Errorf("%w: trailing row encoding", errMigrationInvalid)
 	}
 	row := make(migrationRow, len(columns))
 	for _, column := range columns {
 		value, exists := raw[column.Name]
 		if !exists {
-			return nil, fmt.Errorf("%w: missing row column %s", errOnlineMigrationNotReady, column.Name)
+			return nil, fmt.Errorf("%w: missing row column %s", errMigrationInvalid, column.Name)
 		}
 		normalized, err := normalizeMigrationValue(column, value)
 		if err != nil {
@@ -178,7 +177,7 @@ func decodeMigrationRow(columns []onlineMigrationColumn, encoded string) (migrat
 	return row, nil
 }
 
-func encodeMigrationKey(table onlineMigrationTable, row migrationRow) (string, error) {
+func encodeMigrationKey(table migrationTable, row migrationRow) (string, error) {
 	key := make(map[string]any)
 	for _, column := range migrationKeyColumns(table) {
 		key[column.Name] = row[column.Name]
@@ -187,7 +186,7 @@ func encodeMigrationKey(table onlineMigrationTable, row migrationRow) (string, e
 	return string(encoded), err
 }
 
-func canonicalMigrationRow(table onlineMigrationTable, row migrationRow) ([]byte, error) {
+func canonicalMigrationRow(table migrationTable, row migrationRow) ([]byte, error) {
 	values := make([]any, 0, len(table.Columns))
 	for _, column := range table.Columns {
 		values = append(values, row[column.Name])
@@ -195,7 +194,7 @@ func canonicalMigrationRow(table onlineMigrationTable, row migrationRow) ([]byte
 	return json.Marshal(values)
 }
 
-func migrationKeyExpression(column onlineMigrationColumn, backend string) string {
+func migrationKeyExpression(column migrationColumn, backend string) string {
 	expression := migrationQuoted(column.Name)
 	if column.Kind == "string" {
 		if backend == BackendPostgres {
@@ -208,9 +207,9 @@ func migrationKeyExpression(column onlineMigrationColumn, backend string) string
 
 // readMigrationRows returns a bounded keyset page. Binary text collation keeps
 // cross-dialect pages aligned even with mixed case or non-ASCII primary keys.
-func readMigrationRows(db *gorm.DB, table onlineMigrationTable, after string, limit int) ([]migrationRow, bool, error) {
+func readMigrationRows(db *gorm.DB, table migrationTable, after string, limit int) ([]migrationRow, bool, error) {
 	if limit < 1 || limit > 1000 {
-		return nil, false, fmt.Errorf("%w: invalid row batch size", errOnlineMigrationNotReady)
+		return nil, false, fmt.Errorf("%w: invalid row batch size", errMigrationInvalid)
 	}
 	var names, order []string
 	for _, column := range table.Columns {
@@ -269,13 +268,4 @@ func readMigrationRows(db *gorm.DB, table onlineMigrationTable, after string, li
 		result = append(result, row)
 	}
 	return result, false, rows.Err()
-}
-
-func equalMigrationKeys(table onlineMigrationTable, key, row migrationRow) bool {
-	first, err := encodeMigrationKey(table, key)
-	if err != nil {
-		return false
-	}
-	second, err := encodeMigrationKey(table, row)
-	return err == nil && bytes.Equal([]byte(first), []byte(second))
 }

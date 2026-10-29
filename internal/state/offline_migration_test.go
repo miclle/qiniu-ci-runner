@@ -93,7 +93,7 @@ func TestOfflineMigrationSQLBackends(t *testing.T) {
 		t.Fatalf("unexpected report: %+v", report)
 	}
 	info, err := os.Stat(opts.BackupPath)
-	if err != nil || info.Mode().Perm() != 0600 {
+	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatal("backup not private")
 	}
 	backupBefore, _ := os.ReadFile(opts.BackupPath)
@@ -146,7 +146,10 @@ func TestOfflineMigrationRejectsActiveFenceAndWriter(t *testing.T) {
 	opts := OfflineMigrationOptions{SQLitePath: source.opts.DatabaseDSN, BackupPath: filepath.Join(offlinePrivateDir(t), "backup.db"), PostgresDSN: "invalid-secret"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := source.installOnlineMigrationCapture(ctx, "migration", "source", "primary", 1); err != nil {
+	if err := db.AutoMigrate(&migrationControlRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&migrationControlRecord{ID: 1, MigrationID: "migration", InstanceID: "source", Role: "primary", ProtocolVersion: 1, Epoch: 1}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := MigrateSQLiteToPostgres(ctx, opts); err == nil || !strings.Contains(err.Error(), "migration fence") {
@@ -211,7 +214,7 @@ func TestOfflineMigrationFailureRollsBackSQLBackends(t *testing.T) {
 func offlinePrivateDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return dir

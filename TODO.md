@@ -5,7 +5,8 @@ This file tracks active project work. Completed behavior should move into `READM
 ## Active Roadmap
 
 - Complete deployed acceptance for CI Runner account/repository concurrency: configure limits, verify an unrelated repository progresses under backlog, cleanup releases slots, and restart with a reduced limit retains existing Runners. Local regression coverage is documented in [Testing](docs/testing.md#ci-runner-account-and-repository-concurrency).
-- Rehearse and authorize the [online SQLite to PostgreSQL migration](docs/sqlite-postgres-online-migration.md) on a production copy before rollout. Transaction capture, resumable baseline/replay, same-process cutover, reverse verification/rollback, startup authority, protected local commands and finalization are implemented; local real-database/server gates do not prove production readiness. Preserve a real Runner Job, Deployment and the same open PTY, measure ingress/lease/latency and disk budgets, and rehearse the preparation-release process upgrade separately. Tracking: https://github.com/qbox/sandbox/issues/535.
+
+- Local PostgreSQL Runner/Deployment/new Web Terminal and restart acceptance passed on 2026-10-29. Before the SQLite migration, complete PR review/CI and rehearse production-copy timing/capacity, backup restore, maintenance webhook redelivery and reconciliation. See [the migration runbook](docs/sqlite-postgres-offline-migration.md). Tracking: https://github.com/qbox/sandbox/issues/535.
 
 - Before promoting the Deploy Sandbox service eligibility fix, run the owner/member platform public-template, personal-repository collaborator versus Installation-owner audience, audience denial, scoped/inherited override, quota and saved-runtime cleanup gates in [Deployment Smoke](docs/deployment-smoke.md#9-sandbox-deploy-acceptance). Local regressions do not replace live provider acceptance.
 

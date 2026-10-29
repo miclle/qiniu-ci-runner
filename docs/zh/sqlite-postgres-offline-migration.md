@@ -1,6 +1,6 @@
 # SQLite 到 PostgreSQL 停服迁移
 
-允许维护窗口时，优先使用一次性离线迁移。业务服务只使用一个数据库，不需要双写、复制线程、在线 authority 或回退协议。现有在线迁移仅保留为显式选择和既有演练的恢复入口，不是此流程的前置条件。
+允许维护窗口时，优先使用一次性离线迁移。业务服务只使用一个数据库，不需要双写、复制线程、在线 authority 或回退协议。本版本已移除在线迁移运行机制；旧配置会明确报错，旧库状态保护仍保留。
 
 ## 工具行为与限制
 
@@ -42,7 +42,7 @@ PG 接受正式业务写入后，原 SQLite 已经落后，不能直接切回。
 
 ## 已进入在线迁移的本地环境
 
-不能直接删配置、删 authority 或绕过 replica fence。本地如选择重新演练离线流程：先 `verify`，确认反向复制追平，再 `rollback`，确认 `sqlite_restored`，然后 `finish`。停止进程后使用该 standalone SQLite 作为离线源，导入新的空 PG 库，旧 PG 保持 fenced 且保留。另一选择是在 PG 主写时 `finish`，直接按普通 PG 配置重启，但这不算离线迁移演练。
+升级前必须用原在线迁移版本完成收尾；新版本不再提供这些命令。不能直接删配置、删 authority 或绕过 replica fence。本地如选择重新演练离线流程：先 `verify`，确认反向复制追平，再 `rollback`，确认 `sqlite_restored`，然后 `finish`。停止进程后使用该 standalone SQLite 作为离线源，导入新的空 PG 库，旧 PG 保持 fenced 且保留。另一选择是在 PG 主写时 `finish`，直接按普通 PG 配置重启，但这不算离线迁移演练。
 
 ## 验证命令
 
@@ -54,3 +54,11 @@ go test -tags development ./internal/state ./internal/server \
 ```
 
 真实数据库测试使用独立随机 schema，拒绝数据库名不以 `_test` 结尾的目标。覆盖分页、历史序列、大整数、密文、时区与精度、重复导入拒绝、失败事务回滚、备份不覆盖，以及在线 fence 和源写锁拒绝。
+
+## 本地验收记录（2026-10-29）
+
+独立命令从已收尾的 SQLite 副本向新的 PG 测试库导入 18 张业务表、33,827 行，逐表校验通过。真实 PG 专项及 race、全项目 Go 测试通过。
+
+普通 PG 服务完成了 [5 个 Ubuntu Runner Job](https://github.com/miclle/qiniu-ci-runner-test/actions/runs/40849697071)，均成功且有 Sandbox / GitHub Runner 清理记录。测试 Deployment 完成新版本创建、HTTP 200、新 Web Terminal 命令回显、runnerd 重启后保留原 Sandbox 与版本、重新连接新终端，以及停止清理。既有登录会话可用。停服方案不要求原 PTY 跨进程存活。
+
+这些结果不替代生产副本耗时和容量测试、备份恢复演练、维护窗口安排、webhook 补投和任务对账。生产尚未执行迁移。

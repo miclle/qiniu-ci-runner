@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-func TestOnlineMigrationRowsStrictEncodingAndRedaction(t *testing.T) {
-	columns := []onlineMigrationColumn{
+func TestMigrationRowsStrictEncodingAndRedaction(t *testing.T) {
+	columns := []migrationColumn{
 		{Name: "id", Kind: "int", Size: 64, PrimaryKey: true},
 		{Name: "enabled", Kind: "bool", NotNull: true},
 		{Name: "updated_at", Kind: "time"},
@@ -38,26 +38,26 @@ func TestOnlineMigrationRowsStrictEncodingAndRedaction(t *testing.T) {
 		strings.Replace(valid, `"updated_at":"2026-10-22 12:30:01.123456789+08:00"`, `"updated_at":"sensitive invalid time"`, 1),
 		"null", "[]", "{}", string([]byte{'{', '"', 0xff, '"', '}'}),
 	} {
-		if _, err := decodeMigrationRow(columns, invalid); !errors.Is(err, errOnlineMigrationNotReady) || strings.Contains(err.Error(), "sensitive") {
+		if _, err := decodeMigrationRow(columns, invalid); !errors.Is(err, errMigrationInvalid) || strings.Contains(err.Error(), "sensitive") {
 			t.Fatalf("invalid row accepted or leaked: %v", err)
 		}
 	}
 	for _, test := range []struct {
-		column onlineMigrationColumn
+		column migrationColumn
 		value  any
 	}{
-		{onlineMigrationColumn{Name: "pid", Kind: "uint", Size: 32}, json.Number("4294967296")},
-		{onlineMigrationColumn{Name: "pid", Kind: "uint", Size: 32}, int64(-1)},
-		{onlineMigrationColumn{Name: "code", Kind: "int", Size: 8}, int64(128)},
-		{onlineMigrationColumn{Name: "number", Kind: "float"}, math.Inf(1)},
-		{onlineMigrationColumn{Name: "secret", Kind: "string"}, []byte{0xff}},
+		{migrationColumn{Name: "pid", Kind: "uint", Size: 32}, json.Number("4294967296")},
+		{migrationColumn{Name: "pid", Kind: "uint", Size: 32}, int64(-1)},
+		{migrationColumn{Name: "code", Kind: "int", Size: 8}, int64(128)},
+		{migrationColumn{Name: "number", Kind: "float"}, math.Inf(1)},
+		{migrationColumn{Name: "secret", Kind: "string"}, []byte{0xff}},
 	} {
-		if _, err := normalizeMigrationValue(test.column, test.value); !errors.Is(err, errOnlineMigrationNotReady) {
+		if _, err := normalizeMigrationValue(test.column, test.value); !errors.Is(err, errMigrationInvalid) {
 			t.Fatalf("unrepresentable column %s accepted: %v", test.column.Name, err)
 		}
 	}
 	row["secret"] = "sensitive-value"
-	for _, rendered := range []string{fmt.Sprint(row), fmt.Sprintf("%#v", row), fmt.Sprint(migrationBaselineRecord{LastKey: "sensitive-value"})} {
+	for _, rendered := range []string{fmt.Sprint(row), fmt.Sprintf("%#v", row)} {
 		if strings.Contains(rendered, "sensitive") {
 			t.Fatal("row or resume key leaked through formatting")
 		}

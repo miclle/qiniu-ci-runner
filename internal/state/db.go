@@ -55,11 +55,8 @@ func (s *DBStore) Ensure() error {
 	if err != nil {
 		return err
 	}
-	// Active migration databases require durable authority recovery before even
-	// startup backfills. Removing migration configuration must never reopen an
-	// old replica as an ordinary primary.
-	standalone := db.Migrator().HasTable(&migrationControlRecord{})
-	if standalone {
+	// Reject an old replica before schema migrations or startup backfills.
+	if db.Migrator().HasTable(&migrationControlRecord{}) {
 		if err := validateStandaloneMigrationDB(db); err != nil {
 			if pool, poolErr := db.DB(); poolErr == nil {
 				_ = pool.Close()
@@ -75,12 +72,6 @@ func (s *DBStore) Ensure() error {
 	}
 	if s.opts.Backend == BackendSQLite {
 		if err := enableSQLiteForeignKeys(db); err != nil {
-			return err
-		}
-	}
-	if standalone {
-		db, err = migrationStandaloneTimeDB(db)
-		if err != nil {
 			return err
 		}
 	}

@@ -27,8 +27,8 @@ func main() {
 		os.Exit(1)
 	}
 	cfg, err := config.Load(*configPath)
-	if err != nil || cfg.StateBackend != state.BackendPostgres || cfg.OnlineMigration.Directory != "" {
-		fmt.Fprintln(os.Stderr, "require a valid standalone PostgreSQL target config; online_migration must be disabled")
+	if err != nil || cfg.StateBackend != state.BackendPostgres {
+		fmt.Fprintln(os.Stderr, "require a valid standalone PostgreSQL target config")
 		os.Exit(1)
 	}
 	parent, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -98,7 +98,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 			return report, err
 		}
 	}
-	inventory, err := newOnlineMigrationInventory()
+	inventory, err := newMigrationInventory()
 	if err != nil {
 		return report, err
 	}
@@ -113,11 +113,11 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 		return report, err
 	}
 	parent, err := os.Stat(filepath.Dir(backupPath))
-	if err != nil || !parent.IsDir() || parent.Mode().Perm()&0077 != 0 {
+	if err != nil || !parent.IsDir() || parent.Mode().Perm()&0o077 != 0 {
 		return report, fmt.Errorf("backup directory must be private")
 	}
 	// O_EXCL forbids accidentally overwriting any existing backup or source.
-	backup, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	backup, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return report, err
 	}
@@ -185,7 +185,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 			return fmt.Errorf("target schema not empty")
 		}
 		stage = "create target schema"
-		if err := tx.AutoMigrate(onlineMigrationModels()...); err != nil {
+		if err := tx.AutoMigrate(migrationModels()...); err != nil {
 			return err
 		}
 		for _, table := range inventory.Tables {
@@ -244,7 +244,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 	return report, nil
 }
 
-func verifyOfflineTable(source, target *gorm.DB, table onlineMigrationTable) (OfflineMigrationTable, error) {
+func verifyOfflineTable(source, target *gorm.DB, table migrationTable) (OfflineMigrationTable, error) {
 	result := OfflineMigrationTable{Table: table.Name}
 	digest := sha256.New()
 	after := ""

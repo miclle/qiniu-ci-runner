@@ -17,35 +17,11 @@ database:
   # dsn: postgres://runner:secret@postgres.example:5432/runnerd?sslmode=require
   # Maintenance-window migration: use cmd/runnerd-migrate with a separate
   # protected Postgres config; see docs/sqlite-postgres-offline-migration.md.
-  # Stop all writers first. The offline importer does not use online_migration.
+  # Stop all writers first. Changing the DSN alone does not transfer existing data.
   # MySQL example:
   # backend: mysql
   # dsn: runner:secret@tcp(mysql.example:3306)/runnerd?parseTime=true&charset=utf8mb4&loc=UTC
 
-  # Optional online SQLite -> PostgreSQL migration; disabled unless uncommented.
-  # See docs/sqlite-postgres-online-migration.md (Chinese: docs/zh/sqlite-postgres-online-migration.md).
-  # Keep backend: sqlite and the original SQLite dsn throughout migration,
-  # including after cutover. Use a dedicated empty PostgreSQL database/schema.
-  # For local rehearsal, set dsn above to a consistent SQLite backup, e.g.
-  # ./var/runnerd-migration-test.db; never copy a live .db file directly or run
-  # two full services against the same tasks and provider credentials.
-  # Configuration takes effect on restart: initialization enables capture,
-  # but cutover requires an explicit command and never happens automatically.
-  # online_migration:
-  #   # Persistent authority directory, relative to this config; parent must exist.
-  #   # Directory mode: 0700. Do not delete or replace it during migration.
-  #   directory: ./var/migration
-  #   # Supports RUNNERD_ENC(v1:...). Protect the config file and configure TLS trust.
-  #   postgres_dsn: 'host=pg.example.internal port=5432 user=runnerd password=REPLACE dbname=runnerd sslmode=verify-full'
-  #   # Local-only alternative: host=127.0.0.1 port=5432 user=runnerd password=REPLACE dbname=runnerd_migration_test sslmode=disable
-  #   # Remove after the first successful initialization; recovery uses saved authority.
-  #   initialize: true
-  #   # Preparation budget: 50..5000 ms; failure recovery may take longer.
-  #   pause_budget_milliseconds: 500
-  # Use --migration-command status/prepare/verify/cutover/rollback/finish with
-  # the running process; follow the runbook for readiness and rollback checks.
-  # Only after successful finish may a later restart use backend: postgres,
-  # move the PG DSN into database.dsn, and remove online_migration.
 
 auth:
   # Generate with: openssl rand -base64 32

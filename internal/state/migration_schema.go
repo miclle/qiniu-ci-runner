@@ -14,17 +14,17 @@ type migrationSchemaReport struct {
 
 // Legacy additions remain in the retained source file. Only the explicit
 // inventory is transferred; missing model fields or differing primary keys
-// reject startup instead of relying on trigger creation to detect a mismatch.
-func inspectMigrationSchema(ctx context.Context, db *gorm.DB, inventory onlineMigrationInventory) (migrationSchemaReport, error) {
+// reject import before writing target data.
+func inspectMigrationSchema(ctx context.Context, db *gorm.DB, inventory migrationInventory) (migrationSchemaReport, error) {
 	var report migrationSchemaReport
 	tables, err := db.WithContext(ctx).Migrator().GetTables()
 	if err != nil {
-		return report, migrationStorageError(ctx, "inspect migration schema", err)
+		return report, fmt.Errorf("inspect migration schema failed")
 	}
 	for _, table := range inventory.Tables {
 		columns, err := db.WithContext(ctx).Migrator().ColumnTypes(table.Name)
 		if err != nil {
-			return report, migrationStorageError(ctx, "inspect migration columns", err)
+			return report, fmt.Errorf("inspect migration columns failed")
 		}
 		actual := make(map[string]gorm.ColumnType, len(columns))
 		for _, column := range columns {
@@ -33,17 +33,17 @@ func inspectMigrationSchema(ctx context.Context, db *gorm.DB, inventory onlineMi
 		for _, column := range table.Columns {
 			found, exists := actual[column.Name]
 			if !exists {
-				return report, fmt.Errorf("%w: required schema column missing in %s", errOnlineMigrationNotReady, table.Name)
+				return report, fmt.Errorf("%w: required schema column missing in %s", errMigrationInvalid, table.Name)
 			}
 			primary, known := found.PrimaryKey()
 			if !known || primary != column.PrimaryKey {
-				return report, fmt.Errorf("%w: schema primary key differs in %s", errOnlineMigrationNotReady, table.Name)
+				return report, fmt.Errorf("%w: schema primary key differs in %s", errMigrationInvalid, table.Name)
 			}
 			delete(actual, column.Name)
 		}
 		for _, column := range actual {
 			if primary, known := column.PrimaryKey(); !known || primary {
-				return report, fmt.Errorf("%w: unexpected schema primary key in %s", errOnlineMigrationNotReady, table.Name)
+				return report, fmt.Errorf("%w: unexpected schema primary key in %s", errMigrationInvalid, table.Name)
 			}
 			report.ExtraColumns++
 		}
