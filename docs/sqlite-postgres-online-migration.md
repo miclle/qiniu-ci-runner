@@ -1,5 +1,7 @@
 # Online SQLite to PostgreSQL Migration Plan
 
+> Prefer [offline migration](sqlite-postgres-offline-migration.md) when a maintenance window is acceptable. This document retains online recovery instructions for initialized environments.
+
 [中文](zh/sqlite-postgres-online-migration.md)
 
 Status: implementation and local acceptance delivered; production rehearsal remains open.

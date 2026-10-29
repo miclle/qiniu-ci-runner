@@ -1,5 +1,7 @@
 # SQLite 在线迁移到 PostgreSQL 实现方案
 
+> 允许停服时，优先采用[停服迁移方案](sqlite-postgres-offline-migration.md)。本文保留在线方案及已初始化环境的恢复流程。
+
 [English](../sqlite-postgres-online-migration.md)
 
 状态：实现与本地验收已交付，生产演练待完成。分支：`feat/sqlite-postgres-online-migration`。

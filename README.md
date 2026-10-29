@@ -112,6 +112,7 @@ Key notes:
 
 - Relative `database.dsn` and `github.app.private_key_file` paths resolve from the config file's directory.
 - Use SQLite for local and single-node deployments. PostgreSQL and MySQL are supported but multi-instance operation on a shared database has not been verified.
+- For a maintenance window, prefer the [offline SQLite-to-PostgreSQL importer](docs/sqlite-postgres-offline-migration.md): one backup and verified import, then ordinary PostgreSQL startup.
 - Opt-in [online SQLite-to-PostgreSQL migration](docs/sqlite-postgres-online-migration.md#11-operations-and-release-gates) provides transactional replay, same-process cutover and controlled rollback. It is disabled by default and still requires production rehearsal. Changing the DSN alone does not copy data.
 - CI creates fresh PostgreSQL and MySQL schemas and reruns migration against an existing catalog before exercising policy-free matching. See [docs/testing.md](docs/testing.md) for the opt-in local real-dialect command.
 - Existing SQLite `runner_requests` and `runner_profiles` tables add missing model columns and indexes on startup without table recreation. This preserves historical runner values plus legacy profile rows and indexes. Creating missing indexes does not rewrite rows, but it can add brief startup I/O and lock contention on a large database; see [docs/testing.md](docs/testing.md) for migration and query-plan checks.

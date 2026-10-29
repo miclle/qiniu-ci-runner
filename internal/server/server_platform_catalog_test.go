@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/qiniu/ci-runner/internal/state"
 )
@@ -145,5 +147,60 @@ func TestNonPublicSpecCannotPublishAndActiveSpecCannotChangeExecutionOrDelete(t 
 	srv.ServeHTTP(stale, adminRequest(http.MethodPatch, "/runner_specs/default", strings.NewReader(`{"priority":7,"expected_updated_at":"2000-01-01T00:00:00Z"}`)))
 	if stale.Code != 409 {
 		t.Fatalf("stale save: %d", stale.Code)
+	}
+}
+
+// The browser echoes the list response verbatim. PostgreSQL can return a
+// non-UTC offset; equivalent instants must not be rejected as stale revisions.
+func TestPlatformSpecRevisionTimezone(t *testing.T) {
+	store := state.New(t.TempDir())
+	srv := newTestServer(t, store, "", &fakeSandbox{})
+	before, err := store.GetProfile("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits, _ := store.ListAuditEvents(100)
+	patch := func(revision string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"expected_updated_at": revision, "priority": before.Priority})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, adminRequest(http.MethodPatch, "/runner_specs/default", strings.NewReader(string(body))))
+		return rec
+	}
+	revision := before.UpdatedAt.In(time.FixedZone("CST", 8*3600)).Format(time.RFC3339Nano)
+	if rec := patch(revision); rec.Code != http.StatusOK {
+		t.Fatalf("equivalent offset rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := patch(revision); rec.Code != http.StatusConflict {
+		t.Fatalf("stale revision accepted: %d", rec.Code)
+	}
+	if rec := patch("invalid"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid revision accepted: %d", rec.Code)
+	}
+	after, _ := store.ListAuditEvents(100)
+	if len(after) != len(audits)+1 {
+		t.Fatalf("expected exactly one committed audit, got %d", len(after)-len(audits))
+	}
+}
+
+func TestPlatformSpecRevisionPostgresSQLBackends(t *testing.T) {
+	if os.Getenv("RUNNERD_CATALOG_BACKEND_TESTS") != "1" {
+		t.Skip("requires dedicated PostgreSQL test database")
+	}
+	store := state.NewWithOptions(state.Options{Backend: state.BackendPostgres, DatabaseDSN: migrationServerTestDSN(t), MigrateOnStart: true})
+	srv := newTestServer(t, store, "", &fakeSandbox{})
+	listed := httptest.NewRecorder()
+	srv.ServeHTTP(listed, adminRequest(http.MethodGet, "/runner_specs", nil))
+	var profiles []state.RunnerProfile
+	if err := json.Unmarshal(listed.Body.Bytes(), &profiles); err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) == 0 {
+		t.Fatal("no test profiles")
+	}
+	body, _ := json.Marshal(map[string]any{"expected_updated_at": profiles[0].UpdatedAt, "priority": profiles[0].Priority})
+	saved := httptest.NewRecorder()
+	srv.ServeHTTP(saved, adminRequest(http.MethodPatch, "/runner_specs/"+profiles[0].Name, strings.NewReader(string(body))))
+	if saved.Code != http.StatusOK {
+		t.Fatalf("PG list/save failed: %d %s", saved.Code, saved.Body.String())
 	}
 }
