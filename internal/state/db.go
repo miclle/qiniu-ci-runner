@@ -98,7 +98,10 @@ func hasMigrationControlTable(db *gorm.DB) (bool, error) {
 			return false, err
 		}
 	default:
-		return false, fmt.Errorf("unsupported legacy migration marker")
+		// The legacy online migration protocol only used SQLite as its source
+		// and PostgreSQL as its target. Other supported state backends (currently
+		// MySQL) cannot contain its control table, so there is nothing to fence.
+		return false, nil
 	}
 	return exists, nil
 }
