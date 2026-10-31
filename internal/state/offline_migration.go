@@ -68,7 +68,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 		}
 	}()
 	if _, ok := ctx.Deadline(); !ok || options.PostgresDSN == "" || options.BackupPath == "" {
-		return report, fmt.Errorf("deadline and explicit paths required")
+		return report, fmt.Errorf("%w: deadline and explicit paths required", errMigrationPrecondition)
 	}
 	sourcePath, err := filepath.Abs(options.SQLitePath)
 	if err != nil {
@@ -76,7 +76,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 	}
 	info, err := os.Stat(sourcePath)
 	if err != nil || !info.Mode().IsRegular() {
-		return report, fmt.Errorf("existing SQLite file required")
+		return report, fmt.Errorf("%w: existing SQLite file required", errMigrationPrecondition)
 	}
 	stage = "open and lock SQLite source (stop all writers first)"
 	uri := (&url.URL{Scheme: "file", Path: sourcePath, RawQuery: "mode=rw"}).String()
@@ -168,7 +168,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 	reader = reader.WithContext(ctx)
 	var integrity string
 	if err = reader.Raw("PRAGMA integrity_check").Scan(&integrity).Error; err != nil || integrity != "ok" {
-		return report, fmt.Errorf("backup integrity failed")
+		return report, fmt.Errorf("%w: backup integrity failed", errMigrationPrecondition)
 	}
 	stage = "connect PostgreSQL target"
 	targetPool, err := sql.Open("pgx", options.PostgresDSN)
@@ -254,7 +254,14 @@ SELECT oid FROM pg_namespace WHERE nspname = current_schema())`).Scan(&count).Er
 					return fmt.Errorf("%w: sequence exhausted", errMigrationPrecondition)
 				}
 				if watermark > 0 {
-					if err := tx.Exec("SELECT setval(pg_get_serial_sequence(?, ?)::regclass, ?, true)", table.Name, column.Name, watermark).Error; err != nil {
+					var sequence sql.NullString
+					if err := tx.Raw("SELECT pg_get_serial_sequence(?, ?)", table.Name, column.Name).Scan(&sequence).Error; err != nil {
+						return err
+					}
+					if !sequence.Valid || sequence.String == "" {
+						return fmt.Errorf("%w: PostgreSQL sequence missing for %s.%s", errMigrationPrecondition, table.Name, column.Name)
+					}
+					if err := tx.Exec("SELECT setval(?::regclass, ?, true)", sequence.String, watermark).Error; err != nil {
 						return err
 					}
 				}

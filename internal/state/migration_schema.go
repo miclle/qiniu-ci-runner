@@ -22,9 +22,19 @@ func inspectMigrationSchema(ctx context.Context, db *gorm.DB, inventory migratio
 		return report, fmt.Errorf("inspect migration schema failed")
 	}
 	for _, table := range inventory.Tables {
+		foundTable := false
+		for _, name := range tables {
+			if name == table.Name {
+				foundTable = true
+				break
+			}
+		}
+		if !foundTable {
+			return report, fmt.Errorf("%w: required schema table missing in %s", errMigrationInvalid, table.Name)
+		}
 		columns, err := db.WithContext(ctx).Migrator().ColumnTypes(table.Name)
 		if err != nil {
-			return report, fmt.Errorf("inspect migration columns failed")
+			return report, fmt.Errorf("%w: inspect migration columns failed for %s", errMigrationInvalid, table.Name)
 		}
 		actual := make(map[string]gorm.ColumnType, len(columns))
 		for _, column := range columns {

@@ -42,7 +42,7 @@ PG 接受正式业务写入后，原 SQLite 已经落后，不能直接切回。
 
 ## 已进入在线迁移的本地环境
 
-如果数据库由 PR #151 合并前的版本创建，升级前先执行 `git fetch origin pull/151/head`，使用 commit `be3b7911650599e5257febcf94976caf57f9fc32` 的在线迁移二进制和原有协议完成收尾，然后再升级。新版本不再提供这些命令。不能直接删配置、删 authority 或绕过 replica fence。本地如选择重新演练离线流程：先 `verify`，确认反向复制追平，再 `rollback`，确认 `sqlite_restored`，然后 `finish`。停止进程后使用该 standalone SQLite 作为离线源，导入新的空 PG 库，旧 PG 保持 fenced 且保留。另一选择是在 PG 主写时 `finish`，直接按普通 PG 配置重启，但这不算离线迁移演练。
+如果数据库由 PR #151 合并前的版本创建，升级前先执行 `git fetch origin pull/151/head`，使用 commit `be3b7911650599e5257febcf94976caf57f9fc32` 的在线迁移二进制和原有协议完成收尾，然后再升级。若迁移尚未切换到 PG 主写，使用旧二进制的 `--migration-command abort` 收尾。若 PG 已经主写，验证反向复制追平后，在需要恢复 SQLite 时执行 `rollback`，在 PG 上结束时执行 `finish`，并在回退窗口结束前保留 fenced 的 PG 副本。新版本不再提供这些命令。不能直接删配置、删 authority 或绕过 replica fence。要重新演练离线流程，先在 SQLite 收尾并停止服务，再导入新的空 PG 库。
 
 ## 验证命令
 

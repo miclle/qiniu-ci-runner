@@ -44,7 +44,10 @@ func validateStandaloneMigrationDB(db *gorm.DB) error {
 		return err
 	}
 	if control.Role != "standalone" {
-		return fmt.Errorf("%w: migration fence database is not a standalone source", errMigrationPrecondition)
+		if control.Role == "primary" || control.Role == "frozen" {
+			return fmt.Errorf("%w: finalize using the online-migration binary from commit be3b7911650599e5257febcf94976caf57f9fc32 before upgrading; for pre-merge PR #151 databases, fetch it with git fetch origin pull/151/head", errLegacyMigration)
+		}
+		return fmt.Errorf("%w: permanently fenced legacy replica is not a standalone source, do not start or import", errMigrationPrecondition)
 	}
 	if control.ActiveTransaction != 0 || control.ProtocolVersion != 1 || !validMigrationIdentity(control.MigrationID) || !validMigrationIdentity(control.InstanceID) {
 		return fmt.Errorf("%w: finalize using the online-migration binary from commit be3b7911650599e5257febcf94976caf57f9fc32 before upgrading; for pre-merge PR #151 databases, fetch it with git fetch origin pull/151/head", errLegacyMigration)

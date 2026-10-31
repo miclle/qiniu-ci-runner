@@ -62,6 +62,13 @@ func TestLegacyMigrationFenceBeforeStartupAndImport(t *testing.T) {
 				if err == nil {
 					t.Fatal("legacy fence bypassed")
 				}
+				if tc.role == "replica" {
+					if !errors.Is(err, errMigrationPrecondition) {
+						t.Fatalf("replica startup error = %v", err)
+					}
+				} else if !errors.Is(err, errLegacyMigration) {
+					t.Fatalf("legacy startup error = %v", err)
+				}
 				if db.Migrator().HasTable(&runnerEventRecord{}) {
 					t.Fatal("schema changed before fence validation")
 				}
@@ -73,7 +80,7 @@ func TestLegacyMigrationFenceBeforeStartupAndImport(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "connect PostgreSQL") {
 					t.Fatalf("finalized source rejected before target connection: %v", err)
 				}
-			} else if err == nil || !strings.Contains(err.Error(), "migration fence") {
+			} else if err == nil || (tc.role == "replica" && !errors.Is(err, errMigrationPrecondition)) || (tc.role != "replica" && !errors.Is(err, errLegacyMigration)) {
 				t.Fatalf("legacy import fence bypassed: %v", err)
 			}
 		})

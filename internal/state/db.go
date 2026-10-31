@@ -55,8 +55,15 @@ func (s *DBStore) Ensure() error {
 	if err != nil {
 		return err
 	}
-	// Reject an old replica before schema migrations or startup backfills.
-	if db.Migrator().HasTable(&migrationControlRecord{}) {
+	// Reject a legacy migration database before schema migrations or backfills.
+	legacyTable, err := hasMigrationControlTable(db)
+	if err != nil {
+		if pool, poolErr := db.DB(); poolErr == nil {
+			_ = pool.Close()
+		}
+		return err
+	}
+	if legacyTable {
 		if err := validateStandaloneMigrationDB(db); err != nil {
 			if pool, poolErr := db.DB(); poolErr == nil {
 				_ = pool.Close()
@@ -77,6 +84,23 @@ func (s *DBStore) Ensure() error {
 	}
 	s.db = db
 	return nil
+}
+
+func hasMigrationControlTable(db *gorm.DB) (bool, error) {
+	var exists bool
+	switch db.Dialector.Name() {
+	case BackendSQLite:
+		if err := db.Raw("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)", (migrationControlRecord{}).TableName()).Scan(&exists).Error; err != nil {
+			return false, err
+		}
+	case BackendPostgres:
+		if err := db.Raw("SELECT to_regclass(?) IS NOT NULL", (migrationControlRecord{}).TableName()).Scan(&exists).Error; err != nil {
+			return false, err
+		}
+	default:
+		return false, fmt.Errorf("unsupported legacy migration marker")
+	}
+	return exists, nil
 }
 
 func (s *DBStore) dbOrEnsure() (*gorm.DB, error) {
