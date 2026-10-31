@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -279,5 +280,67 @@ func TestOfflineMigrationSearchPathSQLBackends(t *testing.T) {
 	var columns int64
 	if err := db.Raw("SELECT count(*) FROM information_schema.columns WHERE table_schema = ? AND table_name = 'accounts'", fallback).Scan(&columns).Error; err != nil || columns != 1 {
 		t.Fatalf("fallback schema modified: %v", err)
+	}
+}
+
+func TestOfflineMigrationVerificationRejectsTargetDifferences(t *testing.T) {
+	openStore := func(t *testing.T) *DBStore {
+		t.Helper()
+		store := New(t.TempDir()).(*DBStore)
+		db, err := store.dbOrEnsure()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { closeTestDB(t, db) })
+		return store
+	}
+	table := migrationTable{Name: "accounts", Columns: []migrationColumn{
+		{Name: "id", Kind: "int", Size: 64, PrimaryKey: true},
+		{Name: "role", Kind: "string"},
+	}}
+	for _, tc := range []struct {
+		name string
+		edit func(*gorm.DB) error
+	}{
+		{name: "missing", edit: func(db *gorm.DB) error { return db.Delete(&accountRecord{}, "id = ?", 1).Error }},
+		{name: "changed", edit: func(db *gorm.DB) error {
+			return db.Model(&accountRecord{}).Where("id = ?", 1).Update("role", "user").Error
+		}},
+		{name: "extra", edit: func(db *gorm.DB) error { return db.Create(&accountRecord{ID: 2, Role: "user"}).Error }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, target := openStore(t), openStore(t)
+			sourceDB, _ := source.dbOrEnsure()
+			targetDB, _ := target.dbOrEnsure()
+			if err := sourceDB.Create(&accountRecord{ID: 1, Role: "admin"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := targetDB.Create(&accountRecord{ID: 1, Role: "admin"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.edit(targetDB); err != nil {
+				t.Fatal(err)
+			}
+			_, err := verifyOfflineTable(sourceDB, targetDB, table)
+			if err == nil || !errors.Is(err, errMigrationPrecondition) {
+				t.Fatalf("verification error = %v, want migration precondition", err)
+			}
+		})
+	}
+}
+
+func TestOfflineMigrationBackupDirectoryValidation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMigrationBackupDirectory(dir); err == nil || !errors.Is(err, errMigrationPrecondition) {
+		t.Fatalf("private directory validation error = %v", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMigrationBackupDirectory(dir); err != nil {
+		t.Fatal(err)
 	}
 }

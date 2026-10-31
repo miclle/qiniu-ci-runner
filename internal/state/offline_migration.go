@@ -53,8 +53,11 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 		// Driver messages can contain credentials or row values. Report only stage.
 		if resultErr != nil {
 			switch {
-			case errors.Is(resultErr, context.Canceled), errors.Is(resultErr, context.DeadlineExceeded),
-				errors.Is(resultErr, errMigrationInvalid), errors.Is(resultErr, errLegacyMigration):
+			case errors.Is(resultErr, context.Canceled):
+				resultErr = fmt.Errorf("offline migration failed at %s: %w", stage, context.Canceled)
+			case errors.Is(resultErr, context.DeadlineExceeded):
+				resultErr = fmt.Errorf("offline migration failed at %s: %w", stage, context.DeadlineExceeded)
+			case errors.Is(resultErr, errMigrationInvalid), errors.Is(resultErr, errMigrationPrecondition), errors.Is(resultErr, errLegacyMigration):
 				resultErr = fmt.Errorf("offline migration failed at %s: %w", stage, resultErr)
 			default:
 				resultErr = fmt.Errorf("offline migration failed at %s", stage)
@@ -135,7 +138,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 		return report, err
 	}
 	if current, statErr := os.Stat(backupPath); statErr != nil || !os.SameFile(backupInfo, current) {
-		return report, fmt.Errorf("backup file was replaced before snapshot")
+		return report, fmt.Errorf("%w: backup file was replaced before snapshot", errMigrationPrecondition)
 	}
 	// A second connection can snapshot while BEGIN IMMEDIATE blocks writers.
 	// Retain even a failed artifact for inspection; a retry needs a fresh path.
@@ -146,7 +149,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 		return report, err
 	}
 	if current, statErr := os.Stat(backupPath); statErr != nil || !os.SameFile(backupInfo, current) {
-		return report, fmt.Errorf("backup file was replaced during snapshot")
+		return report, fmt.Errorf("%w: backup file was replaced during snapshot", errMigrationPrecondition)
 	}
 	stage = "check SQLite backup integrity"
 	backupURI := (&url.URL{Scheme: "file", Path: backupPath, RawQuery: "mode=ro&immutable=1"}).String()
@@ -160,7 +163,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 	}
 	defer readerPool.Close()
 	if current, statErr := os.Stat(backupPath); statErr != nil || !os.SameFile(backupInfo, current) {
-		return report, fmt.Errorf("backup file was replaced before verification")
+		return report, fmt.Errorf("%w: backup file was replaced before verification", errMigrationPrecondition)
 	}
 	reader = reader.WithContext(ctx)
 	var integrity string
@@ -190,7 +193,7 @@ func MigrateSQLiteToPostgres(ctx context.Context, options OfflineMigrationOption
 			return err
 		}
 		if !targetSchema.Valid || targetSchema.String == "" {
-			return fmt.Errorf("target schema unavailable")
+			return fmt.Errorf("%w: target schema unavailable", errMigrationPrecondition)
 		}
 		if err := tx.Exec("SELECT set_config('search_path', quote_ident(?), true)", targetSchema.String).Error; err != nil {
 			return err
@@ -201,7 +204,7 @@ SELECT oid FROM pg_namespace WHERE nspname = current_schema())`).Scan(&count).Er
 			return err
 		}
 		if count != 0 {
-			return fmt.Errorf("target schema not empty")
+			return fmt.Errorf("%w: target schema not empty", errMigrationPrecondition)
 		}
 		stage = "create target schema"
 		if err := tx.AutoMigrate(migrationModels()...); err != nil {
@@ -248,7 +251,7 @@ SELECT oid FROM pg_namespace WHERE nspname = current_schema())`).Scan(&count).Er
 					return err
 				}
 				if watermark == math.MaxInt64 {
-					return fmt.Errorf("sequence exhausted")
+					return fmt.Errorf("%w: sequence exhausted", errMigrationPrecondition)
 				}
 				if watermark > 0 {
 					if err := tx.Exec("SELECT setval(pg_get_serial_sequence(?, ?)::regclass, ?, true)", table.Name, column.Name, watermark).Error; err != nil {
@@ -281,7 +284,7 @@ func verifyOfflineTable(source, target *gorm.DB, table migrationTable) (OfflineM
 			return result, err
 		}
 		if len(rows) != len(others) {
-			return result, fmt.Errorf("row count differs")
+			return result, fmt.Errorf("%w: row count differs", errMigrationPrecondition)
 		}
 		for _, row := range rows {
 			encoded, err := canonicalMigrationRow(table, row)
@@ -294,14 +297,14 @@ func verifyOfflineTable(source, target *gorm.DB, table migrationTable) (OfflineM
 			}
 			other, ok := others[key]
 			if !ok {
-				return result, fmt.Errorf("row key differs")
+				return result, fmt.Errorf("%w: row key differs", errMigrationPrecondition)
 			}
 			otherEncoded, err := canonicalMigrationRow(table, other)
 			if err != nil {
 				return result, err
 			}
 			if !bytes.Equal(encoded, otherEncoded) {
-				return result, fmt.Errorf("row content differs")
+				return result, fmt.Errorf("%w: row content differs", errMigrationPrecondition)
 			}
 			digest.Write(encoded)
 			digest.Write([]byte{'\n'})
@@ -323,7 +326,7 @@ func verifyOfflineTable(source, target *gorm.DB, table migrationTable) (OfflineM
 		return result, err
 	}
 	if sourceCount != targetCount || sourceCount != result.Rows {
-		return result, fmt.Errorf("row count differs")
+		return result, fmt.Errorf("%w: row count differs", errMigrationPrecondition)
 	}
 	result.SHA256 = hex.EncodeToString(digest.Sum(nil))
 	return result, nil

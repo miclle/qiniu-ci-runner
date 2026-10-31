@@ -40,9 +40,14 @@ func validMigrationIdentity(value string) bool {
 // payloads, migration journal or database files are deleted here.
 func validateStandaloneMigrationDB(db *gorm.DB) error {
 	var control migrationControlRecord
-	if err := db.First(&control, 1).Error; err != nil || control.Role != "standalone" || control.ActiveTransaction != 0 ||
-		control.ProtocolVersion != 1 || !validMigrationIdentity(control.MigrationID) || !validMigrationIdentity(control.InstanceID) {
-		return fmt.Errorf("%w: finalize using the online-migration binary from commit be3b791 before upgrading", errLegacyMigration)
+	if err := db.First(&control, 1).Error; err != nil {
+		return err
+	}
+	if control.Role != "standalone" {
+		return fmt.Errorf("%w: migration fence database is not a standalone source", errMigrationPrecondition)
+	}
+	if control.ActiveTransaction != 0 || control.ProtocolVersion != 1 || !validMigrationIdentity(control.MigrationID) || !validMigrationIdentity(control.InstanceID) {
+		return fmt.Errorf("%w: finalize using the online-migration binary from commit be3b7911650599e5257febcf94976caf57f9fc32 before upgrading; for pre-merge PR #151 databases, fetch it with git fetch origin pull/151/head", errLegacyMigration)
 	}
 	var count int64
 	var err error
@@ -54,7 +59,10 @@ JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema()
 	} else {
 		return fmt.Errorf("unsupported legacy migration marker")
 	}
-	if err != nil || count != 0 {
+	if err != nil {
+		return err
+	}
+	if count != 0 {
 		return fmt.Errorf("%w: legacy migration capture triggers remain", errLegacyMigration)
 	}
 	return nil

@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,5 +77,24 @@ func TestLegacyMigrationFenceBeforeStartupAndImport(t *testing.T) {
 				t.Fatalf("legacy import fence bypassed: %v", err)
 			}
 		})
+	}
+}
+
+func TestLegacyMigrationErrorClassification(t *testing.T) {
+	store := New(t.TempDir()).(*DBStore)
+	db, err := store.dbOrEnsure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestDB(t, db)
+	if err := db.AutoMigrate(&migrationControlRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&migrationControlRecord{ID: 1, MigrationID: "legacy", InstanceID: "source", ProtocolVersion: 1, Role: "replica"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	err = validateStandaloneMigrationDB(db)
+	if err == nil || !errors.Is(err, errMigrationPrecondition) || errors.Is(err, errLegacyMigration) {
+		t.Fatalf("replica classification = %v", err)
 	}
 }

@@ -26,7 +26,7 @@ Start one target runnerd behind maintenance access. Verify health, sign-in, hist
 
 Before formal writes resume, rollback means stopping the PG process and restoring the original SQLite configuration. PG acceptance-test writes are not synchronized back and must be disposable or reconciled; do not duplicate tasks already started there. After formal PG writes resume, returning to the old SQLite is not lossless and requires a separate recovery plan.
 
-Online replication and runtime switching have been removed. Legacy `online_migration` configuration is rejected, not silently ignored. Before upgrading an already-active online migration, finalize it using the online-migration binary from commit `be3b791` and its existing protocol, never by deleting metadata. To rehearse offline from it: verify reverse replication, rollback, finish on SQLite, stop the service, then import into a new empty PG database. Finishing directly on PG is another valid closeout but does not test this importer.
+Online replication and runtime switching have been removed. Legacy `online_migration` configuration is rejected, not silently ignored. For a database created by a pre-merge PR #151 build, fetch the online-migration binary with `git fetch origin pull/151/head`, use commit `be3b7911650599e5257febcf94976caf57f9fc32` and its existing protocol to finalize the migration, and then upgrade. Never delete migration metadata. To rehearse offline from it: verify reverse replication, rollback, finish on SQLite, stop the service, then import into a new empty PG database. Finishing directly on PG is another valid closeout but does not test this importer.
 
 Validation (only dedicated `_test` databases; random per-test schemas):
 

@@ -11,11 +11,11 @@ import (
 func validateMigrationBackupDirectory(path string) (os.FileInfo, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
-		return nil, fmt.Errorf("backup directory must be a 0700 directory owned by the current user")
+		return nil, fmt.Errorf("%w: backup directory must be a 0700 directory owned by the current user", errMigrationPrecondition)
 	}
 	owned, err := migrationBackupDirectoryOwnedByCurrentUser(info)
 	if err != nil || !owned {
-		return nil, fmt.Errorf("backup directory must be a 0700 directory owned by the current user")
+		return nil, fmt.Errorf("%w: backup directory must be a 0700 directory owned by the current user", errMigrationPrecondition)
 	}
 	return info, nil
 }
