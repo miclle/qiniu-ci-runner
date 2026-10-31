@@ -9,8 +9,10 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-var errMigrationInvalid = errors.New("migration data is invalid")
-var errMigrationPrecondition = errors.New("migration precondition failed")
+var (
+	errMigrationInvalid      = errors.New("migration data is invalid")
+	errMigrationPrecondition = errors.New("migration precondition failed")
+)
 
 // The inventory is deliberately explicit: retired tables and arbitrary tables
 // found in an operator's database must not become active migration inputs.
