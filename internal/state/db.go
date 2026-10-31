@@ -213,8 +213,8 @@ func (s *DBStore) migrate(db *gorm.DB) error {
 	return initializeStateBackfills(db)
 }
 
-// Captured startup resolves authority and validates schema before calling this
-// against the primary only. Schema DDL is forbidden during active migration.
+// Runs after schema migration. Legacy migration databases are rejected earlier
+// in Ensure before this backfill path is reached.
 func initializeStateBackfills(db *gorm.DB) error {
 	if err := backfillDeploymentRevisions(db); err != nil {
 		return err

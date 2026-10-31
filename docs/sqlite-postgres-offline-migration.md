@@ -16,7 +16,7 @@ Use a maintenance window when downtime is acceptable. `runnerd-migrate` is a one
      --source-stopped --timeout 30m > ./var/offline-backups/report.json
    ```
 
-The importer holds a SQLite writer lock while creating a private, exclusive `VACUUM INTO` backup (including committed WAL data). The lock does not establish service shutdown or fence future writes after the command exits. The backup directory must be `0700`; the file is `0600`. Existing files are never overwritten; failed artifacts remain for inspection.
+The importer holds a SQLite writer lock while creating a private, exclusive `VACUUM INTO` backup (including committed WAL data). The lock does not establish service shutdown or fence future writes after the command exits. The backup directory must be an existing `0700` directory owned by the current user, and the file is `0600`. Existing files are never overwritten; failed artifacts remain for inspection.
 
 It copies the 18 model-owned tables, preserving IDs, nulls, booleans, JSON and ciphertext. Timestamps normalize to microseconds. Legacy extra tables, extra business-table columns, and old online-migration metadata remain in the backup and are not copied. The report counts extra tables in `retained_source_extra_tables`, excluding known legacy migration metadata tables and `sqlite_sequence`; `retained_source_extra_columns` counts only extra columns in business tables. Target schema creation, copying, full row verification and sequence alignment happen in one transaction. Historical deleted-ID sequence watermarks are preserved. The report contains table row counts and SHA-256 digests. No source startup backfill or business hook runs.
 
@@ -26,7 +26,7 @@ Start one target runnerd behind maintenance access. Verify health, sign-in, hist
 
 Before formal writes resume, rollback means stopping the PG process and restoring the original SQLite configuration. PG acceptance-test writes are not synchronized back and must be disposable or reconciled; do not duplicate tasks already started there. After formal PG writes resume, returning to the old SQLite is not lossless and requires a separate recovery plan.
 
-Online replication and runtime switching have been removed. Legacy `online_migration` configuration is rejected, not silently ignored. Before upgrading an already-active online migration, finalize it using the previous binary and its existing protocol, never by deleting metadata. To rehearse offline from it: verify reverse replication, rollback, finish on SQLite, stop the service, then import into a new empty PG database. Finishing directly on PG is another valid closeout but does not test this importer.
+Online replication and runtime switching have been removed. Legacy `online_migration` configuration is rejected, not silently ignored. Before upgrading an already-active online migration, finalize it using the online-migration binary from commit `be3b791` and its existing protocol, never by deleting metadata. To rehearse offline from it: verify reverse replication, rollback, finish on SQLite, stop the service, then import into a new empty PG database. Finishing directly on PG is another valid closeout but does not test this importer.
 
 Validation (only dedicated `_test` databases; random per-test schemas):
 

@@ -186,6 +186,49 @@ func encodeMigrationKey(table migrationTable, row migrationRow) (string, error) 
 	return string(encoded), err
 }
 
+func migrationKeyString(table migrationTable, row migrationRow) (string, error) {
+	return encodeMigrationKey(table, row)
+}
+
+func readMigrationRowsByKeys(db *gorm.DB, table migrationTable, rows []migrationRow) (map[string]migrationRow, error) {
+	result := make(map[string]migrationRow, len(rows))
+	if len(rows) == 0 {
+		return result, nil
+	}
+	keys := migrationKeyColumns(table)
+	var alternatives []string
+	var args []any
+	for _, row := range rows {
+		var parts []string
+		for _, column := range keys {
+			parts = append(parts, migrationQuoted(column.Name)+" = ?")
+			args = append(args, row[column.Name])
+		}
+		alternatives = append(alternatives, "("+strings.Join(parts, " AND ")+")")
+	}
+	query := db.Table(table.Name).Select(columnNames(table)).Where(strings.Join(alternatives, " OR "), args...)
+	fetched, _, err := readMigrationRowsFromQuery(query.Limit(len(rows)+1), table, len(rows))
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range fetched {
+		key, err := migrationKeyString(table, row)
+		if err != nil {
+			return nil, err
+		}
+		result[key] = row
+	}
+	return result, nil
+}
+
+func columnNames(table migrationTable) []string {
+	names := make([]string, 0, len(table.Columns))
+	for _, column := range table.Columns {
+		names = append(names, column.Name)
+	}
+	return names
+}
+
 func canonicalMigrationRow(table migrationTable, row migrationRow) ([]byte, error) {
 	values := make([]any, 0, len(table.Columns))
 	for _, column := range table.Columns {
@@ -211,15 +254,12 @@ func readMigrationRows(db *gorm.DB, table migrationTable, after string, limit in
 	if limit < 1 || limit > 1000 {
 		return nil, false, fmt.Errorf("%w: invalid row batch size", errMigrationInvalid)
 	}
-	var names, order []string
-	for _, column := range table.Columns {
-		names = append(names, column.Name)
-	}
+	var order []string
 	keys := migrationKeyColumns(table)
 	for _, key := range keys {
 		order = append(order, migrationKeyExpression(key, db.Dialector.Name()))
 	}
-	query := db.Table(table.Name).Select(names).Order(strings.Join(order, ",")).Limit(limit + 1)
+	query := db.Table(table.Name).Select(columnNames(table)).Order(strings.Join(order, ",")).Limit(limit + 1)
 	if after != "" {
 		key, err := decodeMigrationRow(keys, after)
 		if err != nil {
@@ -239,6 +279,10 @@ func readMigrationRows(db *gorm.DB, table migrationTable, after string, limit in
 		}
 		query = query.Where("("+strings.Join(alternatives, " OR ")+")", args...)
 	}
+	return readMigrationRowsFromQuery(query, table, limit)
+}
+
+func readMigrationRowsFromQuery(query *gorm.DB, table migrationTable, limit int) ([]migrationRow, bool, error) {
 	rows, err := query.Rows()
 	if err != nil {
 		return nil, false, err

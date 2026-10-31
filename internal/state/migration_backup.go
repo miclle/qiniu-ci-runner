@@ -2,10 +2,23 @@ package state
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 
 	"gorm.io/gorm"
 )
+
+func validateMigrationBackupDirectory(path string) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return nil, fmt.Errorf("backup directory must be a 0700 directory owned by the current user")
+	}
+	owned, err := migrationBackupDirectoryOwnedByCurrentUser(info)
+	if err != nil || !owned {
+		return nil, fmt.Errorf("backup directory must be a 0700 directory owned by the current user")
+	}
+	return info, nil
+}
 
 func syncMigrationSnapshot(path, directory string) error {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)

@@ -184,7 +184,7 @@ func LoadFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
 	}
 	if raw.Database.RetiredOnlineMigration.Kind != 0 {
-		return Config{}, fmt.Errorf("database.online_migration is no longer supported; finalize any legacy migration with the previous binary before removing this configuration")
+		return Config{}, fmt.Errorf("database.online_migration is no longer supported; finalize any legacy migration with the online-migration binary from commit be3b791 before removing this configuration")
 	}
 	if strings.TrimSpace(raw.GitHub.Owner) != "" || strings.TrimSpace(raw.GitHub.Repo) != "" {
 		return Config{}, fmt.Errorf("invalid config github.owner/github.repo: no longer supported; pass repository_full_name on manual runner requests")

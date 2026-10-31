@@ -27,7 +27,11 @@ func main() {
 		os.Exit(1)
 	}
 	cfg, err := config.Load(*configPath)
-	if err != nil || cfg.StateBackend != state.BackendPostgres {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if cfg.StateBackend != state.BackendPostgres {
 		fmt.Fprintln(os.Stderr, "require a valid standalone PostgreSQL target config")
 		os.Exit(1)
 	}

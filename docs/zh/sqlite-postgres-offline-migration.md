@@ -6,7 +6,7 @@
 
 `runnerd-migrate` 不启动 HTTP、GitHub、Runner 或 Deployment 恢复。它要求当前版本的 SQLite 模型结构，拒绝仍处于在线迁移中的源库。缺列时先在副本上完成兼容升级和演练，不允许导入工具修改原库。
 
-工具以 `BEGIN IMMEDIATE` 持有 SQLite 写锁，通过独立连接 `VACUUM INTO` 创建一致性备份（包含 WAL 已提交内容），检查备份完整性。备份目录必须是 `0700`，新文件为 `0600`，绝不覆盖已有文件；失败备份也保留，重试使用新路径。
+工具以 `BEGIN IMMEDIATE` 持有 SQLite 写锁，通过独立连接 `VACUUM INTO` 创建一致性备份（包含 WAL 已提交内容），检查备份完整性。备份目录必须是由当前用户拥有的现有 `0700` 目录，新文件为 `0600`，绝不覆盖已有文件；失败备份也保留，重试使用新路径。
 
 目标必须是专用空 PostgreSQL schema，服务和其他写入者必须停止。导入事务将 `search_path` 固定为选中的目标 schema，避免后备 schema 的同名表被 ORM 使用。目标建表、导入、逐行校验在同一事务内提交，事务失败则回滚；命令因提交连接丢失失败时，结果可能不确定，先检查目标，不能盲目重跑或清空它。仅成功退出和 `verified: true` 表示完整导入已经提交。
 
@@ -42,7 +42,7 @@ PG 接受正式业务写入后，原 SQLite 已经落后，不能直接切回。
 
 ## 已进入在线迁移的本地环境
 
-升级前必须用原在线迁移版本完成收尾；新版本不再提供这些命令。不能直接删配置、删 authority 或绕过 replica fence。本地如选择重新演练离线流程：先 `verify`，确认反向复制追平，再 `rollback`，确认 `sqlite_restored`，然后 `finish`。停止进程后使用该 standalone SQLite 作为离线源，导入新的空 PG 库，旧 PG 保持 fenced 且保留。另一选择是在 PG 主写时 `finish`，直接按普通 PG 配置重启，但这不算离线迁移演练。
+升级前必须用 commit `be3b791` 的原在线迁移版本完成收尾；新版本不再提供这些命令。不能直接删配置、删 authority 或绕过 replica fence。本地如选择重新演练离线流程：先 `verify`，确认反向复制追平，再 `rollback`，确认 `sqlite_restored`，然后 `finish`。停止进程后使用该 standalone SQLite 作为离线源，导入新的空 PG 库，旧 PG 保持 fenced 且保留。另一选择是在 PG 主写时 `finish`，直接按普通 PG 配置重启，但这不算离线迁移演练。
 
 ## 验证命令
 

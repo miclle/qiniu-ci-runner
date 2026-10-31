@@ -1,10 +1,13 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 
 	"gorm.io/gorm"
 )
+
+var errLegacyMigration = errors.New("unfinished legacy online migration")
 
 // Legacy online migration metadata is read only. Never clear a replica fence.
 type migrationControlRecord struct {
@@ -39,7 +42,7 @@ func validateStandaloneMigrationDB(db *gorm.DB) error {
 	var control migrationControlRecord
 	if err := db.First(&control, 1).Error; err != nil || control.Role != "standalone" || control.ActiveTransaction != 0 ||
 		control.ProtocolVersion != 1 || !validMigrationIdentity(control.MigrationID) || !validMigrationIdentity(control.InstanceID) {
-		return fmt.Errorf("unfinished legacy online migration: finalize using the previous binary before upgrading")
+		return fmt.Errorf("%w: finalize using the online-migration binary from commit be3b791 before upgrading", errLegacyMigration)
 	}
 	var count int64
 	var err error
@@ -52,7 +55,7 @@ JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema()
 		return fmt.Errorf("unsupported legacy migration marker")
 	}
 	if err != nil || count != 0 {
-		return fmt.Errorf("legacy migration capture triggers remain")
+		return fmt.Errorf("%w: legacy migration capture triggers remain", errLegacyMigration)
 	}
 	return nil
 }
